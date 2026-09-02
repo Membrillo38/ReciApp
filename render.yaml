@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: recipe-extractor
+    runtime: docker
+    plan: starter
+    region: frankfurt
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: API_KEY
+        generateValue: true
+      - key: MAX_DURATION_SECONDS
+        value: "600"
+      - key: RECIPE_MODEL
+        value: gpt-4o-mini
+      - key: TRANSCRIBE_MODEL
+        value: gpt-4o-mini-transcribe
