@@ -25,6 +25,8 @@ from app.models import (
     ListResponse,
     MeResponse,
     OkResponse,
+    RecipeListResponse,
+    RecipePublic,
 )
 from app.pipeline import run_extract_job
 from app.quota import assert_can_extract, get_quota, record_usage
@@ -36,15 +38,16 @@ from app.store import (
     list_jobs,
     list_profiles,
     list_recipes,
-    list_user_recipes,
-    recipe_from_row,
+    list_user_recipe_summaries,
+    recipe_public_from_row,
     save_user_recipe,
     soft_delete_profile,
+    user_owns_recipe,
 )
 from app.superwall import apply_superwall_event
 from app.url_norm import normalize_url
 
-app = FastAPI(title="ReciApp API", version="1.2.0")
+app = FastAPI(title="ReciApp API", version="1.3.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -127,17 +130,13 @@ def me(user: AuthUser = Depends(current_user)) -> MeResponse:
     q = get_quota(user)
     return MeResponse(
         id=user.id,
-        email=user.email,
         display_name=user.display_name,
         is_pro=user.is_pro,
         pro_expires_at=user.pro_expires_at,
         free_used_this_week=q.free_used_this_week,
         free_limit=q.free_limit,
         free_remaining=q.free_remaining,
-        pro_cost_cents_this_month=q.pro_cost_cents_this_month,
-        pro_budget_cents=q.pro_budget_cents,
-        pro_remaining_cents=q.pro_remaining_cents,
-        pro_monthly_price_cents=q.pro_monthly_price_cents,
+        pro_remaining_cents=q.pro_remaining_cents if user.is_pro else None,
     )
 
 
@@ -221,21 +220,20 @@ def get_job_status(
     if row.get("recipe_id"):
         r = get_recipe(UUID(row["recipe_id"]))
         if r:
-            recipe = recipe_from_row(r)
+            recipe = recipe_public_from_row(r)
 
     return JobResponse(
         job_id=UUID(row["id"]),
         status=JobStatus(row["status"]),
         cache_hit=bool(row.get("cache_hit")),
-        cost_cents=float(row.get("cost_cents") or 0),
         recipe=recipe,
         error=row.get("error"),
     )
 
 
-@app.get("/v1/me/recipes", response_model=ListResponse)
-def my_recipes(user: AuthUser = Depends(current_user)) -> ListResponse:
-    return ListResponse(items=list_user_recipes(user.id))
+@app.get("/v1/me/recipes", response_model=RecipeListResponse)
+def my_recipes(user: AuthUser = Depends(current_user)) -> RecipeListResponse:
+    return RecipeListResponse(items=list_user_recipe_summaries(user.id))
 
 
 @app.delete("/v1/me/recipes/{recipe_id}", response_model=OkResponse)
@@ -249,19 +247,17 @@ def remove_my_recipe(
     return OkResponse()
 
 
-@app.get("/v1/recipes/{recipe_id}")
+@app.get("/v1/recipes/{recipe_id}", response_model=RecipePublic)
 def recipe_detail(
     recipe_id: UUID,
     user: AuthUser = Depends(current_user),
-):
+) -> RecipePublic:
+    if not user_owns_recipe(user.id, recipe_id):
+        raise HTTPException(status_code=403, detail="Recipe not in your list")
     row = get_recipe(recipe_id)
     if not row:
         raise HTTPException(status_code=404, detail="Recipe not found")
-    # must be saved by user (or admin — user path)
-    mine = list_user_recipes(user.id)
-    if not any(str(r.get("id")) == str(recipe_id) for r in mine):
-        raise HTTPException(status_code=403, detail="Recipe not in your list")
-    return recipe_from_row(row)
+    return recipe_public_from_row(row)
 
 
 # --- Admin ---

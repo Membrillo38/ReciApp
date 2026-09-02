@@ -23,7 +23,51 @@ Also: `sb_publishable_qSC1aaMwrYjf2d8tbrHccw_zSw-kZev`
 
 **Do not put `service_role` in the app.**
 
-## 2. App env / Info.plist
+## 2. How the pieces connect (auth + subscriptions)
+
+```
+┌─────────┐     Sign in with Apple      ┌───────────┐
+│ iOS App │ ───────────────────────────►│ Supabase  │
+│         │◄── JWT access_token ────────│   Auth    │
+└────┬────┘                             └─────┬─────┘
+     │                                        │
+     │ Bearer JWT                             │ profiles row
+     │ (extract, /v1/me)                      │ is_pro, limits
+     ▼                                        ▼
+┌─────────┐     service_role (server only) ┌───────────┐
+│ Render  │◄──────────────────────────────►│ Supabase  │
+│  API    │   read/write profiles, recipes │ Postgres  │
+└────┬────┘                                └───────────┘
+     ▲
+     │ signed webhook (Svix)
+     │
+┌────┴────┐     StoreKit purchase        ┌─────────┐
+│Superwall│◄─────────────────────────────│ iOS App │
+│ (SDK)   │   paywall UI + billing         │         │
+└─────────┘                              └─────────┘
+```
+
+**Roles**
+
+| Piece | Job |
+|-------|-----|
+| **Supabase Auth** | Login (Apple). Issues JWT. Creates `profiles` row. |
+| **Superwall SDK (iOS)** | Paywall + App Store subscription UI. **Does not** write to your DB. |
+| **Render API** | Extract recipes, enforce quotas, **only** place that sets `is_pro` from Superwall webhooks. |
+| **Supabase DB** | Source of truth: `profiles.is_pro`, limits, cached recipes, user's saved list. |
+
+**Subscribe flow (step by step)**
+
+1. User logs in → Supabase JWT in app.
+2. App calls `Superwall.identify(supabaseUserId)` + `setUserAttributes(["supabase_user_id": uuid])`.
+3. User buys Pro → Apple charges → Superwall confirms.
+4. Superwall `POST /v1/webhooks/superwall` → Render verifies signature → updates `profiles.is_pro = true` + price in Supabase.
+5. App calls `GET /v1/me` → Render reads profile → `is_pro: true`, higher limits.
+6. On expiry webhook → `is_pro = false`.
+
+**Security:** iOS never gets admin keys. Users only see their own recipes (JWT + ownership check). Transcripts and internal costs stay server-side.
+
+## 3. App env / Info.plist
 
 ```
 RECIPAPP_API_BASE_URL=https://reciapp-4ih5.onrender.com
@@ -33,7 +77,7 @@ SUPABASE_ANON_KEY=<anon key above>
 
 After first Render deploy, replace `RECIPAPP_API_BASE_URL` with the real URL.
 
-## 3. Auth flow (iOS)
+## 4. Auth flow (iOS)
 
 1. Sign in with Apple → identity token.
 2. Supabase Swift SDK: `signInWithIdToken(provider: .apple, idToken: ...)`.
@@ -47,7 +91,7 @@ Content-Type: application/json
 
 Enable Apple provider in Supabase Dashboard → Authentication → Providers.
 
-## 4. Core user API
+## 5. Core user API (JWT required except /health)
 
 ### Health
 
@@ -64,18 +108,17 @@ Authorization: Bearer …
 
 → {
   "id": "uuid",
-  "email": "...",
   "display_name": "...",
   "is_pro": false,
   "pro_expires_at": null,
   "free_used_this_week": 0,
   "free_limit": 1,
   "free_remaining": 1,
-  "pro_cost_cents_this_month": 0,
-  "pro_budget_cents": 399.2,
-  "pro_remaining_cents": 399.2
+  "pro_remaining_cents": null
 }
 ```
+
+Free users: `pro_remaining_cents` is `null`. Pro users: fair-use budget left (optional UI meter). No email, no internal costs.
 
 ### Delete account
 
@@ -101,33 +144,49 @@ GET {API}/v1/jobs/{job_id}
   "job_id": "...",
   "status": "pending"|"processing"|"completed"|"failed",
   "cache_hit": false,
-  "cost_cents": 0.4,
   "recipe": { ... } | null,
   "error": null
 }
 ```
 
+No `cost_cents` or transcript in user responses.
+
 Poll every 2s until `completed` or `failed`. Cache hit returns `completed` immediately.
 
-### My recipes
+### My recipes (list — small)
 
 ```
 GET {API}/v1/me/recipes
-→ { "items": [ { recipe fields..., "saved_at": "..." } ] }
+→ {
+  "items": [{
+    "id": "uuid",
+    "title": "Brownies",
+    "platform": "tiktok",
+    "source_url": "https://...",
+    "thumbnail_url": "https://...",
+    "author": "chef",
+    "servings": 4,
+    "prep_minutes": 10,
+    "cook_minutes": 20,
+    "saved_at": "2026-09-02T..."
+  }]
+}
+```
+
+### Recipe detail (full recipe, no transcript)
+
+```
+GET {API}/v1/recipes/{recipe_id}
+→ RecipePublic (ingredients + steps + metadata)
+```
+
+Only if saved by that user (403 otherwise).
 
 DELETE {API}/v1/me/recipes/{recipe_id}
 → { "ok": true }
 ```
 
-### Recipe detail
-
-```
-GET {API}/v1/recipes/{recipe_id}
-```
-
-Only if saved by that user.
-
-## 5. Recipe JSON shape
+## 6. Recipe JSON shape (user-facing)
 
 ```json
 {
@@ -139,20 +198,19 @@ Only if saved by that user.
   "prep_minutes": 10,
   "cook_minutes": 20,
   "tags": ["postre"],
-  "confidence": 0.85,
-  "missing_fields": [],
   "source_url": "https://...",
   "platform": "tiktok",
   "thumbnail_url": "https://...",
   "author": "chef",
-  "description": "...",
-  "raw_transcript": "..."
+  "description": "..."
 }
 ```
 
+Not sent to app: `raw_transcript`, `confidence`, `missing_fields`, `cost_cents`.
+
 `platform`: `tiktok` | `youtube` | `instagram` | `facebook` | `unknown`
 
-## 6. Quotas (show in UI)
+## 7. Quotas (show in UI)
 
 | Plan | Rule |
 |------|------|

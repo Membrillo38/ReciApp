@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from app.db import get_supabase
-from app.models import Ingredient, Platform, Recipe, Step
+from app.models import Ingredient, Platform, Recipe, RecipePublic, RecipeSummary, Step
 
 
 def recipe_from_row(row: dict) -> Recipe:
@@ -25,6 +25,45 @@ def recipe_from_row(row: dict) -> Recipe:
         author=row.get("author"),
         description=row.get("description"),
         raw_transcript=row.get("raw_transcript"),
+    )
+
+
+def recipe_public_from_row(row: dict) -> RecipePublic:
+    rid = row.get("id")
+    if not rid:
+        raise ValueError("recipe row missing id")
+    return RecipePublic(
+        id=UUID(str(rid)),
+        title=row["title"],
+        ingredients=[Ingredient(**i) for i in (row.get("ingredients") or [])],
+        steps=[Step(**s) for s in (row.get("steps") or [])],
+        servings=row.get("servings"),
+        prep_minutes=row.get("prep_minutes"),
+        cook_minutes=row.get("cook_minutes"),
+        tags=row.get("tags") or [],
+        source_url=row.get("source_url_raw") or row.get("source_url") or "",
+        platform=Platform(row.get("platform") or "unknown"),
+        thumbnail_url=row.get("thumbnail_url"),
+        author=row.get("author"),
+        description=row.get("description"),
+    )
+
+
+def recipe_summary_from_row(row: dict, *, saved_at: str) -> RecipeSummary:
+    rid = row.get("id")
+    if not rid:
+        raise ValueError("recipe row missing id")
+    return RecipeSummary(
+        id=UUID(str(rid)),
+        title=row["title"],
+        platform=Platform(row.get("platform") or "unknown"),
+        source_url=row.get("source_url_raw") or row.get("source_url") or "",
+        thumbnail_url=row.get("thumbnail_url"),
+        author=row.get("author"),
+        servings=row.get("servings"),
+        prep_minutes=row.get("prep_minutes"),
+        cook_minutes=row.get("cook_minutes"),
+        saved_at=saved_at,
     )
 
 
@@ -78,6 +117,42 @@ def save_user_recipe(user_id: UUID, recipe_id: UUID) -> None:
     sb.table("user_recipes").upsert(
         {"user_id": str(user_id), "recipe_id": str(recipe_id)}
     ).execute()
+
+
+_RECIPE_SUMMARY_COLS = (
+    "id,title,thumbnail_url,platform,source_url_raw,author,servings,prep_minutes,cook_minutes"
+)
+
+
+def list_user_recipe_summaries(user_id: UUID) -> list[RecipeSummary]:
+    sb = get_supabase()
+    links = (
+        sb.table("user_recipes")
+        .select(f"saved_at,recipe_id,recipes({_RECIPE_SUMMARY_COLS})")
+        .eq("user_id", str(user_id))
+        .order("saved_at", desc=True)
+        .execute()
+    )
+    out: list[RecipeSummary] = []
+    for row in links.data or []:
+        recipe = row.get("recipes")
+        saved_at = row.get("saved_at")
+        if recipe and saved_at:
+            out.append(recipe_summary_from_row(recipe, saved_at=str(saved_at)))
+    return out
+
+
+def user_owns_recipe(user_id: UUID, recipe_id: UUID) -> bool:
+    sb = get_supabase()
+    res = (
+        sb.table("user_recipes")
+        .select("recipe_id")
+        .eq("user_id", str(user_id))
+        .eq("recipe_id", str(recipe_id))
+        .limit(1)
+        .execute()
+    )
+    return bool(res.data)
 
 
 def list_user_recipes(user_id: UUID) -> list[dict]:

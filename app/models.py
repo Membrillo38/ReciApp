@@ -28,6 +28,7 @@ class Step(BaseModel):
 
 
 class Recipe(BaseModel):
+    """Internal / admin — includes debug fields."""
     id: UUID | None = None
     title: str
     ingredients: list[Ingredient]
@@ -44,6 +45,37 @@ class Recipe(BaseModel):
     author: str | None = None
     description: str | None = None
     raw_transcript: str | None = None
+
+
+class RecipePublic(BaseModel):
+    """User-facing recipe — no transcript or internal QA fields."""
+    id: UUID
+    title: str
+    ingredients: list[Ingredient]
+    steps: list[Step]
+    servings: int | None = None
+    prep_minutes: int | None = None
+    cook_minutes: int | None = None
+    tags: list[str] = Field(default_factory=list)
+    source_url: str
+    platform: Platform
+    thumbnail_url: str | None = None
+    author: str | None = None
+    description: str | None = None
+
+
+class RecipeSummary(BaseModel):
+    """List row — small payload for home/history."""
+    id: UUID
+    title: str
+    platform: Platform
+    source_url: str
+    thumbnail_url: str | None = None
+    author: str | None = None
+    servings: int | None = None
+    prep_minutes: int | None = None
+    cook_minutes: int | None = None
+    saved_at: str
 
 
 class ExtractRequest(BaseModel):
@@ -67,24 +99,23 @@ class JobResponse(BaseModel):
     job_id: UUID
     status: JobStatus
     cache_hit: bool = False
-    cost_cents: float = 0
-    recipe: Recipe | None = None
+    recipe: RecipePublic | None = None
     error: str | None = None
 
 
 class MeResponse(BaseModel):
     id: UUID
-    email: str | None
     display_name: str | None
     is_pro: bool
     pro_expires_at: str | None
     free_used_this_week: int
     free_limit: int
     free_remaining: int
-    pro_cost_cents_this_month: float
-    pro_budget_cents: float
-    pro_remaining_cents: float
-    pro_monthly_price_cents: int
+    pro_remaining_cents: float | None = None
+
+
+class RecipeListResponse(BaseModel):
+    items: list[RecipeSummary]
 
 
 class AdminUserCreate(BaseModel):
