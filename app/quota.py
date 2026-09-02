@@ -7,8 +7,8 @@ from uuid import UUID
 from fastapi import HTTPException
 
 from app.auth import AuthUser
-from app.config import pro_monthly_budget_cents, settings
 from app.db import get_supabase
+from app.limits import resolve_user_limits
 from app.store import week_start_utc
 
 
@@ -21,6 +21,7 @@ class QuotaStatus:
     pro_cost_cents_this_month: float
     pro_budget_cents: float
     pro_remaining_cents: float
+    pro_monthly_price_cents: int
 
 
 def _month_start_utc(now: datetime | None = None) -> datetime:
@@ -32,6 +33,16 @@ def get_quota(user: AuthUser) -> QuotaStatus:
     sb = get_supabase()
     week_start = week_start_utc().isoformat()
     month_start = _month_start_utc().isoformat()
+
+    profile = (
+        sb.table("profiles")
+        .select("free_weekly_limit,pro_monthly_price_cents,pro_margin_ratio,is_pro")
+        .eq("id", str(user.id))
+        .limit(1)
+        .execute()
+    )
+    row = (profile.data or [{}])[0]
+    limits = resolve_user_limits(row)
 
     week = (
         sb.table("usage_events")
@@ -51,16 +62,16 @@ def get_quota(user: AuthUser) -> QuotaStatus:
         .execute()
     )
     pro_cost = sum(float(r.get("cost_cents") or 0) for r in (month.data or []))
-    budget = pro_monthly_budget_cents()
 
     return QuotaStatus(
         is_pro=user.is_pro,
         free_used_this_week=free_used,
-        free_limit=settings.free_weekly_limit,
-        free_remaining=max(settings.free_weekly_limit - free_used, 0),
+        free_limit=limits.free_weekly_limit,
+        free_remaining=max(limits.free_weekly_limit - free_used, 0),
         pro_cost_cents_this_month=pro_cost,
-        pro_budget_cents=budget,
-        pro_remaining_cents=max(budget - pro_cost, 0),
+        pro_budget_cents=limits.pro_budget_cents,
+        pro_remaining_cents=max(limits.pro_budget_cents - pro_cost, 0),
+        pro_monthly_price_cents=limits.pro_monthly_price_cents,
     )
 
 
@@ -73,7 +84,7 @@ def assert_can_extract(user: AuthUser, *, cache_hit: bool) -> None:
                 status_code=403,
                 detail={
                     "code": "FREE_WEEKLY_LIMIT",
-                    "message": "Free plan: 1 recipe per week. Upgrade to Pro.",
+                    "message": f"Free plan: {q.free_limit} recipe(s) per week. Upgrade to Pro.",
                     "free_used_this_week": q.free_used_this_week,
                     "free_limit": q.free_limit,
                 },
@@ -87,9 +98,10 @@ def assert_can_extract(user: AuthUser, *, cache_hit: bool) -> None:
             status_code=403,
             detail={
                 "code": "PRO_FAIR_USE_LIMIT",
-                "message": "Pro fair-use limit reached this month (keeps 20% margin).",
+                "message": "Pro fair-use limit reached this month (keeps margin).",
                 "pro_cost_cents_this_month": q.pro_cost_cents_this_month,
                 "pro_budget_cents": q.pro_budget_cents,
+                "pro_monthly_price_cents": q.pro_monthly_price_cents,
             },
         )
 

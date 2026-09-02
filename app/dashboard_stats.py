@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from app.config import pro_monthly_budget_cents, settings
+from app.limits import get_app_defaults
 from app.db import get_supabase
 
 
@@ -64,6 +64,7 @@ def dashboard_overview() -> dict:
     misses = sum(1 for j in jobs_week if not j.get("cache_hit"))
     failed = sum(1 for j in jobs_week if j.get("status") == "failed")
 
+    defaults = get_app_defaults()
     return {
         "users_total": len(active_users),
         "users_pro": len(pro_users),
@@ -79,9 +80,12 @@ def dashboard_overview() -> dict:
         "cost_usd_month": round(cost_month / 100.0, 4),
         "requests_week": int(reqs_week_count.count or 0),
         "requests_recent": reqs_day[:50],
-        "pro_price_cents": settings.pro_monthly_price_cents,
-        "pro_budget_cents": pro_monthly_budget_cents(),
-        "margin_pct": int(settings.pro_margin_ratio * 100),
+        "pro_price_cents": defaults.default_pro_monthly_price_cents,
+        "pro_budget_cents": round(
+            defaults.default_pro_monthly_price_cents * (1 - defaults.pro_margin_ratio),
+            4,
+        ),
+        "margin_pct": int(defaults.pro_margin_ratio * 100),
     }
 
 

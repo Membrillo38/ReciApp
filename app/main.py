@@ -137,6 +137,7 @@ def me(user: AuthUser = Depends(current_user)) -> MeResponse:
         pro_cost_cents_this_month=q.pro_cost_cents_this_month,
         pro_budget_cents=q.pro_budget_cents,
         pro_remaining_cents=q.pro_remaining_cents,
+        pro_monthly_price_cents=q.pro_monthly_price_cents,
     )
 
 

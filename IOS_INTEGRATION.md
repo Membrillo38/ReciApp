@@ -193,7 +193,7 @@ UI: on `FREE_WEEKLY_LIMIT` → paywall. On `PRO_FAIR_USE_LIMIT` → soft message
 Backend endpoint:
 
 ```
-POST {API}/v1/webhooks/superwall
+POST https://reciapp-4ih5.onrender.com/v1/webhooks/superwall
 ```
 
 Superwall project **40844**, application **54783**, webhook URL above.

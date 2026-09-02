@@ -5,12 +5,12 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from app.db import get_supabase
+from app.limits import get_app_defaults, price_cents_from_superwall
 
 _UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
 
-# Grant / keep Pro
 _PRO_ON = {
     "initial_purchase",
     "renewal",
@@ -19,10 +19,7 @@ _PRO_ON = {
     "subscription_extended",
 }
 
-# Revoke Pro (access ended)
-_PRO_OFF = {
-    "expiration",
-}
+_PRO_OFF = {"expiration"}
 
 
 def extract_supabase_user_id(payload: dict) -> UUID | None:
@@ -62,6 +59,7 @@ def apply_superwall_event(payload: dict) -> dict:
         "user_id": str(user_id) if user_id else None,
         "updated": False,
         "is_pro": None,
+        "pro_monthly_price_cents": None,
         "skipped": None,
     }
 
@@ -74,27 +72,38 @@ def apply_superwall_event(payload: dict) -> dict:
     if isinstance(expires_ms, (int, float)) and expires_ms > 0:
         expires_iso = datetime.fromtimestamp(expires_ms / 1000.0, tz=timezone.utc).isoformat()
 
+    defaults = get_app_defaults()
+    update: dict = {}
+
     if event_name in _PRO_ON:
-        is_pro = True
+        update["is_pro"] = True
+        update["pro_expires_at"] = expires_iso
+        price_cents = price_cents_from_superwall(data)
+        if price_cents:
+            update["pro_monthly_price_cents"] = price_cents
+        elif event_name == "initial_purchase":
+            update["pro_monthly_price_cents"] = defaults.default_pro_monthly_price_cents
     elif event_name in _PRO_OFF:
-        is_pro = False
-        expires_iso = datetime.now(timezone.utc).isoformat()
+        update["is_pro"] = False
+        update["pro_expires_at"] = expires_iso or datetime.now(timezone.utc).isoformat()
+        update["pro_monthly_price_cents"] = None
+        update["free_weekly_limit"] = defaults.free_weekly_limit
     elif event_name in {"cancellation", "billing_issue", "subscription_paused", "product_change"}:
-        # Access usually continues until expirationAt — keep is_pro, refresh expiry
-        is_pro = True
+        update["is_pro"] = True
+        update["pro_expires_at"] = expires_iso
+        price_cents = price_cents_from_superwall(data)
+        if price_cents:
+            update["pro_monthly_price_cents"] = price_cents
     else:
         result["skipped"] = f"unhandled_event:{event_name}"
         return result
 
     sb = get_supabase()
-    update = {"is_pro": is_pro, "pro_expires_at": expires_iso}
     res = sb.table("profiles").update(update).eq("id", str(user_id)).execute()
     if not res.data:
-        # profile missing — upsert shell so webhook not lost
-        sb.table("profiles").upsert(
-            {"id": str(user_id), **update, "display_name": None}
-        ).execute()
+        sb.table("profiles").upsert({"id": str(user_id), **update, "display_name": None}).execute()
 
     result["updated"] = True
-    result["is_pro"] = is_pro
+    result["is_pro"] = update.get("is_pro")
+    result["pro_monthly_price_cents"] = update.get("pro_monthly_price_cents")
     return result

@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: reciapp-api
+    name: reciapp-4ih5
     runtime: docker
     plan: starter
     region: frankfurt

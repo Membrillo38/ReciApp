@@ -84,6 +84,7 @@ class MeResponse(BaseModel):
     pro_cost_cents_this_month: float
     pro_budget_cents: float
     pro_remaining_cents: float
+    pro_monthly_price_cents: int
 
 
 class AdminUserCreate(BaseModel):
@@ -97,6 +98,9 @@ class AdminUserPatch(BaseModel):
     display_name: str | None = None
     is_pro: bool | None = None
     pro_expires_at: str | None = None
+    free_weekly_limit: int | None = None
+    pro_monthly_price_cents: int | None = None
+    pro_margin_ratio: float | None = None
 
 
 class HealthResponse(BaseModel):
