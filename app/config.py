@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     cost_text_cents_per_extract: float = 0.1
     cost_ocr_cents_per_slide: float = 1.0
 
+    superwall_webhook_secret: str = ""
+    superwall_application_id: int = 54783
+    public_api_base_url: str = "https://reciapp-api.onrender.com"
+
 
 settings = Settings()
 

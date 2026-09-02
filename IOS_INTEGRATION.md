@@ -187,17 +187,39 @@ Default Pro price: **$4.99/mo** → budget **~$3.99** cost/month (`PRO_MONTHLY_P
 
 UI: on `FREE_WEEKLY_LIMIT` → paywall. On `PRO_FAIR_USE_LIMIT` → soft message (try cached links / wait next month).
 
-### Mark Pro (after Superwall purchase)
+### Superwall → Pro (already wired)
 
-Backend admin (server-side only, not from app):
+Backend endpoint:
+
+```
+POST {API}/v1/webhooks/superwall
+```
+
+Superwall project **40844**, application **54783**, webhook URL above.
+
+**Required in iOS after Supabase login:**
+
+```swift
+Superwall.shared.identify(userId: supabaseUserId.uuidString)
+Superwall.shared.setUserAttributes(["supabase_user_id": supabaseUserId.uuidString])
+```
+
+Without this, webhook cannot map purchase → `profiles.is_pro`.
+
+Events:
+- `initial_purchase` / `renewal` / `uncancellation` → `is_pro = true`
+- `expiration` → `is_pro = false`
+- `cancellation` → keeps Pro until `expirationAt`
+
+Public API key (SDK): `pk_3QyV6dXg2nPMj9gDTpZkF`
+
+### Mark Pro manually (admin)
 
 ```
 PATCH {API}/v1/admin/users/{user_id}
 X-API-Key: <API_KEY from Render>
 { "is_pro": true, "pro_expires_at": "2026-10-02T00:00:00Z" }
 ```
-
-Later: Superwall/RevenueCat webhook → same patch.
 
 ## 7. Suggested Swift models
 
@@ -242,8 +264,8 @@ Same video URL (normalized) → **no OpenAI call**. Instant job `completed` + `c
 ## 11. Checklist before TestFlight
 
 - [ ] Render service deployed, `/health` OK
-- [ ] Env: `OPENAI_API_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `API_KEY`
+- [ ] Env: `OPENAI_API_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `API_KEY`, `SUPERWALL_WEBHOOK_SECRET`
 - [ ] Supabase Apple Sign In configured
-- [ ] iOS has anon key + API base URL
-- [ ] Paywall sets `is_pro` via webhook/admin
+- [ ] Superwall `identify(supabaseUserId)` after login
+- [ ] iOS has anon key + API base URL + Superwall `pk_3QyV6dXg2nPMj9gDTpZkF`
 - [ ] Handle `FREE_WEEKLY_LIMIT` / `PRO_FAIR_USE_LIMIT`

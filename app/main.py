@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import secrets
 from uuid import UUID
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.auth import AuthUser, current_user, require_api_key
 from app.config import settings
@@ -36,6 +38,7 @@ from app.store import (
     save_user_recipe,
     soft_delete_profile,
 )
+from app.superwall import apply_superwall_event
 from app.url_norm import normalize_url
 
 app = FastAPI(title="ReciApp API", version="1.1.0")
@@ -50,6 +53,46 @@ app.add_middleware(
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse()
+
+
+@app.post("/v1/webhooks/superwall")
+async def superwall_webhook(
+    request: Request,
+    svix_id: str | None = Header(default=None, alias="svix-id"),
+    svix_timestamp: str | None = Header(default=None, alias="svix-timestamp"),
+    svix_signature: str | None = Header(default=None, alias="svix-signature"),
+) -> JSONResponse:
+    raw = await request.body()
+    if settings.superwall_webhook_secret:
+        try:
+            from svix.webhooks import Webhook, WebhookVerificationError
+
+            wh = Webhook(settings.superwall_webhook_secret)
+            payload = wh.verify(
+                raw,
+                {
+                    "svix-id": svix_id or "",
+                    "svix-timestamp": svix_timestamp or "",
+                    "svix-signature": svix_signature or "",
+                },
+            )
+        except WebhookVerificationError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid signature: {exc}") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Webhook verify failed: {exc}") from exc
+    else:
+        # Dev only — set SUPERWALL_WEBHOOK_SECRET in production
+        payload = json.loads(raw.decode("utf-8"))
+
+    if isinstance(payload, (bytes, str)):
+        payload = json.loads(payload)
+
+    app_id = payload.get("applicationId")
+    if app_id is not None and int(app_id) != settings.superwall_application_id:
+        return JSONResponse({"ok": True, "skipped": "wrong_application"})
+
+    result = apply_superwall_event(payload)
+    return JSONResponse({"ok": True, **result})
 
 
 @app.get("/v1/me", response_model=MeResponse)

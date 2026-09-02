@@ -27,3 +27,9 @@ services:
         value: "499"
       - key: PRO_MARGIN_RATIO
         value: "0.20"
+      - key: SUPERWALL_WEBHOOK_SECRET
+        sync: false
+      - key: SUPERWALL_APPLICATION_ID
+        value: "54783"
+      - key: PUBLIC_API_BASE_URL
+        value: https://reciapp-api.onrender.com
