@@ -1,0 +1,28 @@
+# Ping Render /health so free-tier web services stay warm (spin-down after 15 min idle).
+# Interval: every 10 min (5 min buffer before Render's 15 min timeout).
+# Disable: delete this file or set repo variable KEEP_ALIVE_ENABLED=false.
+name: Render keep-alive
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: render-keep-alive
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    if: vars.KEEP_ALIVE_ENABLED != 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping health endpoint
+        env:
+          RENDER_HEALTH_URL: ${{ vars.RENDER_HEALTH_URL }}
+        run: |
+          URL="${RENDER_HEALTH_URL:-https://reciapp-api.onrender.com/health}"
+          echo "GET $URL"
+          curl -fsS --retry 2 --retry-delay 5 --max-time 120 "$URL"
+          echo "ok"

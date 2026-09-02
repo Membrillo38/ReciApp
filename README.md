@@ -34,12 +34,23 @@ uvicorn app.main:app --reload --port 8000
 3. Set env vars from `.env.example` (especially `SUPABASE_SERVICE_ROLE_KEY` from Supabase → Settings → API)
 4. Health: `/health`
 
+## Render keep-alive (Free tier)
+
+Free web services spin down after **15 minutes** without traffic. This repo includes a GitHub Action (`.github/workflows/render-keep-alive.yml`) that pings `/health` every **10 minutes** (buffer before timeout).
+
+- Runs automatically on `main` once pushed to GitHub (Actions enabled).
+- Optional repo variable `RENDER_HEALTH_URL` (default `https://reciapp-api.onrender.com/health`).
+- Set repo variable `KEEP_ALIVE_ENABLED=false` to disable.
+- **Starter ($7) does not spin down** — disable or delete the workflow if you use paid.
+
+Manual run: GitHub → Actions → **Render keep-alive** → Run workflow.
+
 ## Quotas
 
 | Plan | Limit |
 |------|-------|
 | Free | 1 import / week (UTC) |
-| Pro | Cache misses until cost ≈ 80% of `PRO_MONTHLY_PRICE_CENTS` (default $4.99 → $3.99 budget) |
+| Pro | Cache misses until monthly cost ≥ budget (`profiles.pro_monthly_price_cents × (1 - margin)`). Defaults in `app_settings` ($4.99 → ~$3.99). Superwall webhook sets price per user on subscribe. |
 
 ## Schema
 
