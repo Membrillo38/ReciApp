@@ -26,7 +26,7 @@ Also: `sb_publishable_qSC1aaMwrYjf2d8tbrHccw_zSw-kZev`
 ## 2. App env / Info.plist
 
 ```
-RECIPAPP_API_BASE_URL=https://reciapp-api.onrender.com
+RECIPAPP_API_BASE_URL=https://reciapp-4ih5.onrender.com
 SUPABASE_URL=https://nzimdcjxgklopythnpfi.supabase.co
 SUPABASE_ANON_KEY=<anon key above>
 ```
@@ -157,9 +157,9 @@ Only if saved by that user.
 | Plan | Rule |
 |------|------|
 | **Free** | 1 import / calendar week (UTC Mon–Sun). Hit or miss counts. |
-| **Pro** | Unlimited imports; **cache miss** blocked if monthly OpenAI cost ≥ 80% of Pro price (keeps ≥20% margin). Cache hits always free. |
+| **Pro** | Unlimited imports; **cache miss** blocked if monthly OpenAI cost ≥ budget (`pro_monthly_price_cents × (1 - margin)`). Cache hits always free. |
 
-Default Pro price: **$4.99/mo** → budget **~$3.99** cost/month (`PRO_MONTHLY_PRICE_CENTS=499`).
+Limits live in **Supabase** (`app_settings` defaults + per-user `profiles` columns). On subscribe, Superwall webhook writes `pro_monthly_price_cents` from the purchase price. Default Pro: **$4.99/mo** → budget **~$3.99** cost/month.
 
 ### Error bodies (HTTP 403)
 
@@ -180,7 +180,8 @@ Default Pro price: **$4.99/mo** → budget **~$3.99** cost/month (`PRO_MONTHLY_P
     "code": "PRO_FAIR_USE_LIMIT",
     "message": "Pro fair-use limit reached this month (keeps 20% margin).",
     "pro_cost_cents_this_month": 400,
-    "pro_budget_cents": 399.2
+    "pro_budget_cents": 399.2,
+    "pro_monthly_price_cents": 499
   }
 }
 ```

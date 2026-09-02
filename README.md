@@ -39,7 +39,7 @@ uvicorn app.main:app --reload --port 8000
 Free web services spin down after **15 minutes** without traffic. This repo includes a GitHub Action (`.github/workflows/render-keep-alive.yml`) that pings `/health` every **10 minutes** (buffer before timeout).
 
 - Runs automatically on `main` once pushed to GitHub (Actions enabled).
-- Optional repo variable `RENDER_HEALTH_URL` (default `https://reciapp-api.onrender.com/health`).
+- Optional repo variable `RENDER_HEALTH_URL` (default `https://reciapp-4ih5.onrender.com/health`).
 - Set repo variable `KEEP_ALIVE_ENABLED=false` to disable.
 - **Starter ($7) does not spin down** — disable or delete the workflow if you use paid.
 

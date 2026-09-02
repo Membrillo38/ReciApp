@@ -21,18 +21,12 @@ services:
         value: gpt-4o-mini
       - key: TRANSCRIBE_MODEL
         value: gpt-4o-mini-transcribe
-      - key: FREE_WEEKLY_LIMIT
-        value: "1"
-      - key: PRO_MONTHLY_PRICE_CENTS
-        value: "499"
-      - key: PRO_MARGIN_RATIO
-        value: "0.20"
       - key: SUPERWALL_WEBHOOK_SECRET
         sync: false
       - key: SUPERWALL_APPLICATION_ID
         value: "54783"
       - key: PUBLIC_API_BASE_URL
-        value: https://reciapp-api.onrender.com
+        value: https://reciapp-4ih5.onrender.com
       - key: DASHBOARD_PASSWORD
         sync: false
       - key: DASHBOARD_SESSION_SECRET
