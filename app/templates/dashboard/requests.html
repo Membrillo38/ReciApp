@@ -1,0 +1,24 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Requests · ReciApp{% endblock %}
+{% block content %}
+<h1>HTTP requests</h1>
+<div class="card">
+  <table>
+    <thead><tr><th>When</th><th>Method</th><th>Path</th><th>Status</th><th>ms</th><th>IP</th></tr></thead>
+    <tbody>
+      {% for r in requests %}
+      <tr>
+        <td class="muted">{{ r.created_at }}</td>
+        <td>{{ r.method }}</td>
+        <td>{{ r.path }}</td>
+        <td class="{% if r.status_code >= 400 %}bad{% else %}ok{% endif %}">{{ r.status_code }}</td>
+        <td>{{ r.duration_ms }}</td>
+        <td class="muted">{{ r.ip or '—' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="muted">No logs</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

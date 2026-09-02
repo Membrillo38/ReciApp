@@ -1,0 +1,12 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Login · ReciApp Admin{% endblock %}
+{% block content %}
+<div class="login-wrap card">
+  <h1>Admin login</h1>
+  <p class="muted">Solo tú. Cookie httpOnly Secure SameSite=Strict.</p>
+  <form method="post" action="/dashboard/login" style="margin-top:1rem; display:grid; gap:0.75rem;">
+    <input type="password" name="password" placeholder="Dashboard password" autocomplete="current-password" required autofocus />
+    <button type="submit">Entrar</button>
+  </form>
+</div>
+{% endblock %}

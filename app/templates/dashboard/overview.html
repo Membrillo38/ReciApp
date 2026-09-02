@@ -1,0 +1,34 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Overview · ReciApp{% endblock %}
+{% block content %}
+<h1>Overview</h1>
+<div class="grid">
+  <div class="card"><div class="label">Users</div><div class="value">{{ o.users_total }}</div><div class="muted">{{ o.users_pro }} pro · {{ o.users_free }} free</div></div>
+  <div class="card"><div class="label">Recipes cached</div><div class="value">{{ o.recipes_cached }}</div></div>
+  <div class="card"><div class="label">Jobs (7d)</div><div class="value">{{ o.jobs_week }}</div><div class="muted">{{ o.cache_hits_week }} hits · {{ o.cache_misses_week }} miss · {{ o.failed_week }} fail</div></div>
+  <div class="card"><div class="label">API cost (7d)</div><div class="value">${{ '%.4f'|format(o.cost_usd_week) }}</div><div class="muted">{{ o.cost_cents_week }}¢</div></div>
+  <div class="card"><div class="label">API cost (30d)</div><div class="value">${{ '%.4f'|format(o.cost_usd_month) }}</div><div class="muted">{{ o.cost_cents_month }}¢</div></div>
+  <div class="card"><div class="label">HTTP requests (7d)</div><div class="value">{{ o.requests_week }}</div></div>
+  <div class="card"><div class="label">Pro price</div><div class="value">${{ '%.2f'|format(o.pro_price_cents/100) }}</div><div class="muted">budget {{ '%.0f'|format(o.pro_budget_cents) }}¢ · margin {{ o.margin_pct }}%</div></div>
+</div>
+
+<h2>Recent API requests (24h)</h2>
+<div class="card">
+  <table>
+    <thead><tr><th>When</th><th>Method</th><th>Path</th><th>Status</th><th>ms</th></tr></thead>
+    <tbody>
+      {% for r in o.requests_recent %}
+      <tr>
+        <td class="muted">{{ r.created_at }}</td>
+        <td>{{ r.method }}</td>
+        <td>{{ r.path }}</td>
+        <td class="{% if r.status_code >= 400 %}bad{% else %}ok{% endif %}">{{ r.status_code }}</td>
+        <td>{{ r.duration_ms }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="muted">Sin requests aún</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

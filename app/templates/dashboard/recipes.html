@@ -1,0 +1,22 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Recipes · ReciApp{% endblock %}
+{% block content %}
+<h1>Recipe cache</h1>
+<div class="card">
+  <table>
+    <thead><tr><th>Title</th><th>Platform</th><th>URL norm</th><th>Created</th></tr></thead>
+    <tbody>
+      {% for r in recipes %}
+      <tr>
+        <td>{{ r.title }}</td>
+        <td>{{ r.platform }}</td>
+        <td class="muted" style="max-width:280px; word-break:break-all;">{{ r.source_url_norm }}</td>
+        <td class="muted">{{ r.created_at }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="muted">Empty cache</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

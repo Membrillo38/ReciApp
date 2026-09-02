@@ -261,7 +261,21 @@ Header: `X-API-Key: <Render API_KEY>`
 
 Same video URL (normalized) → **no OpenAI call**. Instant job `completed` + `cache_hit: true`. Still counts for Free weekly limit.
 
-## 11. Checklist before TestFlight
+## 12. Admin dashboard (solo tú)
+
+URL: `{API}/dashboard`
+
+Protección:
+- Password env `DASHBOARD_PASSWORD` (solo tú la sabes)
+- Cookie `HttpOnly` + `Secure` + `SameSite=Strict`
+- CSRF en acciones POST
+- `noindex`
+- Sin password → login disabled
+
+Pestañas: Overview (gastos API, requests), Users (make/revoke Pro, delete), Recipes cache, Jobs, Usage, HTTP requests.
+
+Set en Render: `DASHBOARD_PASSWORD`, `DASHBOARD_SESSION_SECRET`.
+
 
 - [ ] Render service deployed, `/health` OK
 - [ ] Env: `OPENAI_API_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `API_KEY`, `SUPERWALL_WEBHOOK_SECRET`
@@ -269,3 +283,4 @@ Same video URL (normalized) → **no OpenAI call**. Instant job `completed` + `c
 - [ ] Superwall `identify(supabaseUserId)` after login
 - [ ] iOS has anon key + API base URL + Superwall `pk_3QyV6dXg2nPMj9gDTpZkF`
 - [ ] Handle `FREE_WEEKLY_LIMIT` / `PRO_FAIR_USE_LIMIT`
+- [ ] `DASHBOARD_PASSWORD` set → `/dashboard` works for you only

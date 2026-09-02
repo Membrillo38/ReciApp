@@ -33,3 +33,9 @@ services:
         value: "54783"
       - key: PUBLIC_API_BASE_URL
         value: https://reciapp-api.onrender.com
+      - key: DASHBOARD_PASSWORD
+        sync: false
+      - key: DASHBOARD_SESSION_SECRET
+        generateValue: true
+      - key: DASHBOARD_COOKIE_SECURE
+        value: "true"

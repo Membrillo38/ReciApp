@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import time
 from uuid import UUID
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request
@@ -10,6 +11,8 @@ from fastapi.responses import JSONResponse
 
 from app.auth import AuthUser, current_user, require_api_key
 from app.config import settings
+from app.dashboard_routes import router as dashboard_router
+from app.dashboard_stats import log_request
 from app.db import get_supabase
 from app.models import (
     AdminUserCreate,
@@ -41,13 +44,37 @@ from app.store import (
 from app.superwall import apply_superwall_event
 from app.url_norm import normalize_url
 
-app = FastAPI(title="ReciApp API", version="1.1.0")
+app = FastAPI(title="ReciApp API", version="1.2.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(dashboard_router)
+
+
+@app.middleware("http")
+async def request_metrics(request: Request, call_next):
+    start = time.perf_counter()
+    response = await call_next(request)
+    duration_ms = int((time.perf_counter() - start) * 1000)
+    # Fire-and-forget style (sync insert; keep tiny)
+    try:
+        ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (
+            request.client.host if request.client else None
+        )
+        log_request(
+            method=request.method,
+            path=request.url.path,
+            status_code=response.status_code,
+            duration_ms=duration_ms,
+            user_id=None,
+            ip=ip,
+        )
+    except Exception:
+        pass
+    return response
 
 
 @app.get("/health", response_model=HealthResponse)

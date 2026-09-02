@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex,nofollow" />
+  <title>{% block title %}ReciApp Admin{% endblock %}</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a222c;
+      --text: #e7ecf1;
+      --muted: #8b9aab;
+      --accent: #3d9cfd;
+      --danger: #ff5c5c;
+      --ok: #3dd68c;
+      --border: #2a3542;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1rem 1.25rem;
+      border-bottom: 1px solid var(--border);
+      background: #12181f;
+      position: sticky;
+      top: 0;
+    }
+    nav a {
+      margin-right: 1rem;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+    nav a.active, nav a:hover { color: var(--text); }
+    main { padding: 1.25rem; max-width: 1100px; margin: 0 auto; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 0.75rem;
+      margin-bottom: 1.5rem;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem;
+    }
+    .card .label { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    .card .value { font-size: 1.5rem; font-weight: 650; margin-top: 0.35rem; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+    }
+    th, td {
+      text-align: left;
+      padding: 0.55rem 0.4rem;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    th { color: var(--muted); font-weight: 500; }
+    .ok { color: var(--ok); }
+    .bad { color: var(--danger); }
+    .muted { color: var(--muted); }
+    input, button, select {
+      font: inherit;
+      padding: 0.55rem 0.75rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: #0d1218;
+      color: var(--text);
+    }
+    button, .btn {
+      background: var(--accent);
+      border: none;
+      color: #041018;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button.danger { background: var(--danger); color: #fff; }
+    button.ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
+    .login-wrap {
+      max-width: 360px;
+      margin: 12vh auto;
+      padding: 1.5rem;
+    }
+    .row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+    .flash { background: #243041; padding: 0.75rem 1rem; border-radius: 8px; margin-bottom: 1rem; }
+    .flash.err { background: #3a1d1d; color: #ffb4b4; }
+    h1 { font-size: 1.25rem; margin: 0 0 1rem; }
+    h2 { font-size: 1rem; margin: 1.5rem 0 0.75rem; color: var(--muted); font-weight: 600; }
+  </style>
+</head>
+<body>
+  {% if show_nav %}
+  <header>
+    <strong>ReciApp Admin</strong>
+    <nav>
+      <a href="/dashboard" class="{% if tab=='overview' %}active{% endif %}">Overview</a>
+      <a href="/dashboard/users" class="{% if tab=='users' %}active{% endif %}">Users</a>
+      <a href="/dashboard/recipes" class="{% if tab=='recipes' %}active{% endif %}">Recipes</a>
+      <a href="/dashboard/jobs" class="{% if tab=='jobs' %}active{% endif %}">Jobs</a>
+      <a href="/dashboard/usage" class="{% if tab=='usage' %}active{% endif %}">Usage</a>
+      <a href="/dashboard/requests" class="{% if tab=='requests' %}active{% endif %}">Requests</a>
+      <a href="/dashboard/logout">Logout</a>
+    </nav>
+  </header>
+  {% endif %}
+  <main>
+    {% if flash %}<div class="flash">{{ flash }}</div>{% endif %}
+    {% if error %}<div class="flash err">{{ error }}</div>{% endif %}
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

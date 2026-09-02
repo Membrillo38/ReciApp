@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     superwall_application_id: int = 54783
     public_api_base_url: str = "https://reciapp-api.onrender.com"
 
+    dashboard_password: str = ""
+    dashboard_session_secret: str = ""
+    dashboard_cookie_secure: bool = True
+
 
 settings = Settings()
 

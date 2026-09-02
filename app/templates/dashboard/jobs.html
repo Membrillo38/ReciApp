@@ -1,0 +1,24 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Jobs · ReciApp{% endblock %}
+{% block content %}
+<h1>Extract jobs</h1>
+<div class="card">
+  <table>
+    <thead><tr><th>Status</th><th>Cache</th><th>Cost ¢</th><th>URL</th><th>Error</th><th>When</th></tr></thead>
+    <tbody>
+      {% for j in jobs %}
+      <tr>
+        <td class="{% if j.status=='failed' %}bad{% elif j.status=='completed' %}ok{% endif %}">{{ j.status }}</td>
+        <td>{% if j.cache_hit %}hit{% else %}miss{% endif %}</td>
+        <td>{{ j.cost_cents }}</td>
+        <td class="muted" style="max-width:240px; word-break:break-all;">{{ j.source_url_norm }}</td>
+        <td class="bad">{{ j.error or '' }}</td>
+        <td class="muted">{{ j.created_at }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="muted">No jobs</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

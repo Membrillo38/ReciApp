@@ -1,0 +1,24 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Usage · ReciApp{% endblock %}
+{% block content %}
+<h1>OpenAI usage events</h1>
+<p class="muted">Costes estimados por extract (transcribe + GPT). Hits = 0¢.</p>
+<div class="card" style="margin-top:1rem;">
+  <table>
+    <thead><tr><th>When</th><th>Kind</th><th>Cost ¢</th><th>User</th><th>Recipe</th></tr></thead>
+    <tbody>
+      {% for u in usage %}
+      <tr>
+        <td class="muted">{{ u.created_at }}</td>
+        <td>{{ u.kind }}</td>
+        <td>{{ u.cost_cents }}</td>
+        <td class="muted">{{ u.user_id }}</td>
+        <td class="muted">{{ u.recipe_id or '—' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="muted">No usage yet</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
