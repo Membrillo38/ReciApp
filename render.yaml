@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: recipe-extractor
+    name: reciapp-api
     runtime: docker
     plan: starter
     region: frankfurt
@@ -11,9 +11,19 @@ services:
         sync: false
       - key: API_KEY
         generateValue: true
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
       - key: MAX_DURATION_SECONDS
         value: "600"
       - key: RECIPE_MODEL
         value: gpt-4o-mini
       - key: TRANSCRIBE_MODEL
         value: gpt-4o-mini-transcribe
+      - key: FREE_WEEKLY_LIMIT
+        value: "1"
+      - key: PRO_MONTHLY_PRICE_CENTS
+        value: "499"
+      - key: PRO_MARGIN_RATIO
+        value: "0.20"
