@@ -16,7 +16,7 @@ from app.transcript import ocr_slides, whisper_transcript, youtube_transcript
 
 
 def run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str) -> None:
-    update_job(job_id, status=JobStatus.processing.value)
+    update_job(job_id, status=JobStatus.processing.value, progress=5)
     audio_path: Path | None = None
     used_transcribe = False
     slide_count = 0
@@ -24,17 +24,20 @@ def run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str) -> Non
 
     try:
         platform = detect_platform(url)
+        update_job(job_id, progress=15)
         if platform == Platform.unknown:
             raise ExtractError("Unsupported URL. Use TikTok, YouTube, Instagram or Facebook.")
 
         slide_info: SlideInfo | None = None
         if platform == Platform.tiktok:
             slide_info = fetch_tiktok_slides(url)
+            update_job(job_id, progress=30)
 
         recipe: Recipe
         if slide_info and slide_info.image_urls:
             slide_count = len(slide_info.image_urls)
             slide_text = ocr_slides(slide_info)
+            update_job(job_id, progress=60)
             recipe = build_recipe(
                 platform=platform,
                 source_url=url,
@@ -47,6 +50,7 @@ def run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str) -> Non
             )
         else:
             media = fetch_media_info(url)
+            update_job(job_id, progress=30)
             audio_path = media.audio_path
             duration_seconds = media.duration_seconds
 
@@ -56,6 +60,7 @@ def run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str) -> Non
             if not transcript and audio_path:
                 transcript = whisper_transcript(audio_path)
                 used_transcribe = True
+            update_job(job_id, progress=60)
             if not transcript and not media.description:
                 raise ExtractError("No transcript, subtitles or description found")
 
@@ -69,6 +74,7 @@ def run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str) -> Non
                 transcript=transcript,
                 slide_text=media.extra_text,
             )
+        update_job(job_id, progress=85)
 
         row = upsert_recipe(recipe, source_url_norm=url_norm)
         recipe_id = UUID(row["id"])
@@ -81,6 +87,7 @@ def run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str) -> Non
         update_job(
             job_id,
             status=JobStatus.completed.value,
+            progress=100,
             recipe_id=recipe_id,
             cost_cents=cost,
             cache_hit=False,
@@ -93,9 +100,9 @@ def run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str) -> Non
             job_id=job_id,
         )
     except ExtractError as exc:
-        update_job(job_id, status=JobStatus.failed.value, error=str(exc))
+        update_job(job_id, status=JobStatus.failed.value, progress=0, error=str(exc))
     except Exception as exc:
-        update_job(job_id, status=JobStatus.failed.value, error=f"Unexpected error: {exc}")
+        update_job(job_id, status=JobStatus.failed.value, progress=0, error=f"Unexpected error: {exc}")
     finally:
         if audio_path:
             shutil.rmtree(audio_path.parent, ignore_errors=True)

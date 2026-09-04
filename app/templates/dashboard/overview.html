@@ -9,7 +9,6 @@
   <div class="card"><div class="label">API cost (7d)</div><div class="value">${{ '%.4f'|format(o.cost_usd_week) }}</div><div class="muted">{{ o.cost_cents_week }}¢</div></div>
   <div class="card"><div class="label">API cost (30d)</div><div class="value">${{ '%.4f'|format(o.cost_usd_month) }}</div><div class="muted">{{ o.cost_cents_month }}¢</div></div>
   <div class="card"><div class="label">HTTP requests (7d)</div><div class="value">{{ o.requests_week }}</div></div>
-  <div class="card"><div class="label">Pro price</div><div class="value">${{ '%.2f'|format(o.pro_price_cents/100) }}</div><div class="muted">budget {{ '%.0f'|format(o.pro_budget_cents) }}¢ · margin {{ o.margin_pct }}%</div></div>
 </div>
 
 <h2>Recent API requests (24h)</h2>

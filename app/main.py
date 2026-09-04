@@ -191,6 +191,7 @@ def extract_recipe(
             job_id=UUID(job["id"]),
             status=JobStatus.completed,
             cache_hit=True,
+            progress=100,
         )
 
     job = create_job(
@@ -228,6 +229,7 @@ def get_job_status(
         cache_hit=bool(row.get("cache_hit")),
         recipe=recipe,
         error=row.get("error"),
+        progress=int(row.get("progress") or 0),
     )
 
 

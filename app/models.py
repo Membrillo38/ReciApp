@@ -93,6 +93,7 @@ class ExtractJobResponse(BaseModel):
     job_id: UUID
     status: JobStatus
     cache_hit: bool = False
+    progress: int = 0
 
 
 class JobResponse(BaseModel):
@@ -101,6 +102,7 @@ class JobResponse(BaseModel):
     cache_hit: bool = False
     recipe: RecipePublic | None = None
     error: str | None = None
+    progress: int = 0
 
 
 class MeResponse(BaseModel):

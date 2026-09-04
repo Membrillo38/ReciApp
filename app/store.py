@@ -205,6 +205,7 @@ def create_job(
         "cache_hit": cache_hit,
         "cost_cents": cost_cents,
         "recipe_id": str(recipe_id) if recipe_id else None,
+        "progress": 100 if status == "completed" else 0,
     }
     res = sb.table("extract_jobs").insert(payload).execute()
     return res.data[0]
