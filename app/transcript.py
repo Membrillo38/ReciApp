@@ -52,7 +52,7 @@ def whisper_transcript(audio_path: Path) -> str:
     return text
 
 
-def ocr_slides(slides: SlideInfo, max_images: int = 8) -> str:
+def ocr_slides(slides: SlideInfo, max_images: int = 4) -> str:
     if not settings.openai_api_key:
         raise ExtractError("OPENAI_API_KEY is not configured")
 
@@ -74,7 +74,7 @@ def ocr_slides(slides: SlideInfo, max_images: int = 8) -> str:
                             "text": (
                                 f"Slide {idx}. Extract all visible recipe text: "
                                 "ingredients, quantities, steps, times. "
-                                "Return plain text only."
+                                "Return concise plain text only. Skip decorative text."
                             ),
                         },
                         {
@@ -84,7 +84,7 @@ def ocr_slides(slides: SlideInfo, max_images: int = 8) -> str:
                     ],
                 }
             ],
-            max_tokens=700,
+            max_tokens=450,
         )
         chunk = (response.choices[0].message.content or "").strip()
         if chunk:

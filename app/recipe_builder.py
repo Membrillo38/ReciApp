@@ -87,12 +87,15 @@ def build_recipe(
         "transcript": transcript,
         "slide_text": slide_text,
     }
+    # Bound source size to keep prompt and output costs predictable.
+    source_json = json.dumps(payload, ensure_ascii=False)
+    source_json = source_json[:12000]
     user_content = (
         "Turn the following social video content into a structured cooking recipe.\n"
         "Use Spanish for step text when source is Spanish; otherwise keep source language.\n"
         "If quantities are missing, set quantity/unit null and list field in missing_fields.\n"
         "Do not invent ingredients not supported by the source text.\n\n"
-        f"SOURCE:\n{json.dumps(payload, ensure_ascii=False)}"
+        f"SOURCE:\n{source_json}"
     )
 
     client = OpenAI(api_key=settings.openai_api_key)
@@ -106,6 +109,7 @@ def build_recipe(
             {"role": "user", "content": user_content},
         ],
         response_format={"type": "json_schema", "json_schema": RECIPE_SCHEMA},
+        max_tokens=900,
     )
 
     raw = response.choices[0].message.content

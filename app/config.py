@@ -21,7 +21,7 @@ class Settings(BaseSettings):
 
     cost_transcribe_cents_per_min: float = 0.3
     cost_text_cents_per_extract: float = 0.1
-    cost_ocr_cents_per_slide: float = 1.0
+    cost_ocr_cents_per_slide: float = 0.25
 
     superwall_webhook_secret: str = ""
     superwall_application_id: int = 54783
