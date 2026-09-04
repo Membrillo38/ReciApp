@@ -1,0 +1,9 @@
+*
+!.gitignore
+!README.md
+
+.gitignore
+DerivedData/
+*.xcuserstate
+xcuserdata/
+Secrets.swift
