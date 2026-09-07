@@ -120,7 +120,20 @@ def test_upstream_disconnect_is_a_retryable_503():
             "server": ("localhost", 8000),
         }
     )
-    response = asyncio.run(main.upstream_request_error(request, httpx.RequestError("disconnect")))
+    reset_calls = 0
+    original_reset = main.reset_supabase
+
+    def record_reset():
+        nonlocal reset_calls
+        reset_calls += 1
+
+    main.reset_supabase = record_reset
+    try:
+        response = asyncio.run(main.upstream_request_error(request, httpx.RequestError("disconnect")))
+    finally:
+        main.reset_supabase = original_reset
+
+    assert reset_calls == 1
     assert response.status_code == 503
     assert response.headers["retry-after"] == "1"
     assert b"Backend temporarily unavailable" in response.body
@@ -142,6 +155,23 @@ def test_job_polling_sends_language_and_client_handles_handoff():
     assert "if values.isEmpty, let thumbnail = recipe.thumbnailUrl.flatMap(URL.init(string:))" in detail
 
 
+def test_ios_recipe_refresh_is_cached_coalesced_and_not_blocked_by_profile():
+    view_model = Path("IosAPP/ReciApp/ViewModels/AppViewModel.swift").read_text(encoding="utf-8")
+    home = Path("IosAPP/ReciApp/Views/HomeView.swift").read_text(encoding="utf-8")
+    api = Path("IosAPP/ReciApp/Services/APIClient.swift").read_text(encoding="utf-8")
+
+    refresh_body = view_model.split("func refreshAll() async {", 1)[1].split("/// Accept raw", 1)[0]
+    assert "guard !refreshInFlight" in refresh_body
+    assert refresh_body.index("fetchRecipeSummariesWithAuthRetry") < refresh_body.index("fetchMeWithAuthRetry")
+    assert "if let recipeFailure, recipes.isEmpty" in refresh_body
+    assert 'recipeCacheKeyPrefix = "reciapp.recipeCache.v2"' in view_model
+    assert "recipe detail cache hit source=disk" in view_model
+    assert "app.groupedRecipesCache" in home
+    assert "app.categoryFoldersCache" in home
+    assert 'request.setValue(requestID, forHTTPHeaderField: "X-Request-ID")' in api
+    assert 'http.value(forHTTPHeaderField: "X-Correlation-ID")' in api
+
+
 def test_ios_polling_covers_backend_media_timeout_with_margin():
     source = Path("IosAPP/ReciApp/Config/AppConfig.swift").read_text(encoding="utf-8")
     assert "static let maxPollAttempts = 330" in source
@@ -156,14 +186,14 @@ def test_ios_warms_render_before_authenticated_requests():
     assert "await app.warmUpBackend()" in app
 
 
-def test_refresh_ignores_stale_responses_and_subscription_poll_does_not_reload_recipes():
+def test_refresh_coalesces_responses_and_subscription_poll_does_not_reload_recipes():
     view_model = Path("IosAPP/ReciApp/ViewModels/AppViewModel.swift").read_text(encoding="utf-8")
     app = Path("IosAPP/ReciApp/ReciAppApp.swift").read_text(encoding="utf-8")
-    assert "private var refreshGeneration = 0" in view_model
+    assert "private var refreshInFlight = false" in view_model
     assert "private var subscriptionRefreshGeneration = 0" in view_model
-    assert "guard generation == refreshGeneration else { return }" in view_model
+    assert "guard !refreshInFlight" in view_model
     assert "generation == subscriptionRefreshGeneration" in view_model
-    assert "let fetchedRecipes = try await api.myRecipes" in view_model
+    assert "fetchRecipeSummariesWithAuthRetry" in view_model
     assert "await app.refreshAll()" in app
     assert "Task { await app.refreshSubscriptionState() }" not in app
 

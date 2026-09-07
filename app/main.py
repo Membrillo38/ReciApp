@@ -17,7 +17,7 @@ from app.apple_notifications import process_signed_notification
 from app.config import settings
 from app.dashboard_routes import router as dashboard_router
 from app.dashboard_stats import log_request
-from app.db import get_supabase
+from app.db import get_supabase, reset_supabase
 from app.models import (
     AdminUserCreate,
     AdminUserPatch,
@@ -69,7 +69,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-API-Key"],
+    allow_headers=["Authorization", "Content-Type", "X-API-Key", "X-Request-ID"],
+    expose_headers=["X-Correlation-ID"],
 )
 app.include_router(dashboard_router)
 
@@ -79,6 +80,7 @@ _STALE_JOB_ERROR = "Job expired before completion. Retry the import."
 @app.exception_handler(httpx.RequestError)
 async def upstream_request_error(request: Request, exc: httpx.RequestError) -> JSONResponse:
     """Turn transient upstream disconnects into an iOS-retryable response."""
+    reset_supabase()
     logger.warning(
         "upstream request failed path=%s error_type=%s correlation_id=%s",
         request.url.path,
@@ -203,7 +205,13 @@ def _ensure_translation_job(
 @app.middleware("http")
 async def request_metrics(request: Request, call_next):
     start = time.perf_counter()
-    correlation_id = new_correlation_id()
+    client_request_id = request.headers.get("x-request-id", "")
+    correlation_id = (
+        client_request_id
+        if 8 <= len(client_request_id) <= 64
+        and all(character.isalnum() or character == "-" for character in client_request_id)
+        else new_correlation_id()
+    )
     request.state.correlation_id = correlation_id
     content_length = request.headers.get("content-length")
     if content_length and content_length.isdigit() and int(content_length) > settings.max_request_body_bytes:
@@ -224,6 +232,15 @@ async def request_metrics(request: Request, call_next):
         )
     except Exception:
         pass
+    logger.info(
+        "request completed method=%s path=%s status=%s duration_ms=%s correlation_id=%s",
+        request.method,
+        request.url.path,
+        response.status_code,
+        duration_ms,
+        correlation_id,
+    )
+    response.headers["X-Correlation-ID"] = correlation_id
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"

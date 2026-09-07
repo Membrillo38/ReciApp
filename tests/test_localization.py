@@ -56,7 +56,7 @@ def test_fallback_recipe_copy_is_localized():
 def test_ios_catalog_covers_all_supported_locales_and_placeholders():
     catalog_path = Path(__file__).parents[1] / "IosAPP" / "ReciApp" / "Localizable.xcstrings"
     catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
-    assert len(catalog["strings"]) == 215
+    assert len(catalog["strings"]) == 218
 
     token_pattern = re.compile(r"%(?:\d+\$)?(?:lld|d|@|%)")
 

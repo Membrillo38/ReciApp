@@ -97,3 +97,12 @@ def get_supabase() -> Client:
         settings.supabase_url,
         settings.supabase_service_role_key,
     )
+
+
+def reset_supabase() -> None:
+    """Discard a client whose upstream connection pool disconnected.
+
+    Existing in-flight requests retain their client. The next request creates
+    fresh Auth and PostgREST transports instead of reusing a poisoned pool.
+    """
+    get_supabase.cache_clear()
