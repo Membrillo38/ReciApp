@@ -47,7 +47,8 @@ SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsI
 |-----------|----------------|
 | **Supabase Auth** | Apple login → JWT. Auto-creates `profiles` row. |
 | **Superwall SDK** | Paywall UI + App Store billing. Does **not** touch your DB. |
-| **Render API** | Extract recipes, enforce quotas, apply Superwall webhooks → `is_pro`. |
+| **Render API** | Create/poll jobs, enforce quotas, apply Superwall webhooks → `is_pro`. |
+| **Render worker** | Optional durable consumer of `extract_jobs`; leases survive web restarts. |
 | **Supabase DB** | Truth: `profiles`, cached `recipes`, `user_recipes`, `usage_events`. |
 
 ### Subscription flow
@@ -60,6 +61,7 @@ SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsI
 6. Superwall sends webhook → `POST /v1/webhooks/superwall` → server sets `profiles.is_pro = true`.
 7. App refreshes `GET /v1/me` → `is_pro: true`.
 8. On subscription expiry webhook → `is_pro = false`.
+9. Restore purchases is available from Profile; the app refreshes `/v1/me` after the result.
 
 **Critical:** without step 2–3, webhook cannot link purchase to Supabase user.
 
@@ -81,10 +83,13 @@ Webhook URL (already configured): `https://reciapp-4ih5.onrender.com/v1/webhooks
 - Tap row → detail screen.
 - Pull to refresh.
 
+TikTok photo posts preserve their ordered source images. Recipe detail renders them
+as a native swipe carousel; legacy recipes fall back to `thumbnail_url`.
+
 ### 3.3 Import recipe
 
 1. User pastes URL or Share Extension sends URL (TikTok / YouTube / IG / FB).
-2. `POST /v1/extract` with `{ "url": "..." }`.
+2. `POST /v1/extract` with `{ "url": "...", "language": "<selected App Store language code>" }`.
 3. Response: `{ job_id, status, cache_hit }`.
 4. If `status == "completed"` (cache hit) → fetch recipe via job or detail endpoint.
 5. Else poll `GET /v1/jobs/{job_id}` every **2s** until `completed` or `failed`.
@@ -96,7 +101,8 @@ Webhook URL (already configured): `https://reciapp-4ih5.onrender.com/v1/webhooks
 
 - Prefer recipe from completed job (already in memory).
 - Or `GET /v1/recipes/{id}` if opened from home list.
-- Show: title, image, ingredients, steps, times, tags, link to source video.
+- Show: title, image, grouped ingredient sections, steps, times, tags, tips at the end, and link to source video.
+- For photo posts, show all valid `carousel_image_urls` in source order.
 
 ### 3.5 Settings / account
 
@@ -110,6 +116,8 @@ Webhook URL (already configured): `https://reciapp-4ih5.onrender.com/v1/webhooks
 1. Receive URL from TikTok / YouTube / Instagram.
 2. Open main app with URL (App Group / deep link) **or** extract in extension if token in Keychain.
 3. Same flow as §3.3.
+
+The app and extension share the selected language through App Group `group.com.membri.reciapp`. Enable that App Group for both targets in Apple Developer and Xcode Signing & Capabilities before device/App Store distribution.
 
 ---
 
@@ -158,7 +166,11 @@ Quota + plan. **No email, no internal costs.**
 
 ### `POST /v1/extract`
 
-Body: `{ "url": "https://…" }`
+Body: `{ "url": "https://…", "language": "es-ES" }`
+
+`language` accepts six canonical Latin-script identifiers: `en-US`, `es-ES`, `fr-FR`, `de`, `it`, and `pt-BR`. Legacy regional values normalize to their canonical code; unsupported values normalize to `en-US`.
+
+The recipe cache is global by normalized source URL and target language. A first request for a missing language creates one background translation job; later users reuse the same `recipe_translations` row and do not trigger another AI call.
 
 Response:
 
@@ -174,9 +186,15 @@ Response:
   "status": "pending"|"processing"|"completed"|"failed",
   "cache_hit": false,
   "recipe": { /* RecipePublic */ } | null,
-  "error": null
+  "error": null,
+  "progress": 0,
+  "next_job_id": null
 }
 ```
+
+Send `?language=<canonical locale>`. If an extraction completed in another
+language, the response can hand polling to the shared translation job by changing
+`job_id`; keep polling the returned ID until it completes.
 
 No `cost_cents`, no transcript.
 
@@ -229,7 +247,7 @@ struct MeResponse: Decodable {
     let proRemainingCents: Double?
 }
 
-struct ExtractRequest: Encodable { let url: String }
+struct ExtractRequest: Encodable { let url: String; let language: String }
 
 struct ExtractJobResponse: Decodable {
     let jobId: UUID
@@ -266,6 +284,7 @@ struct RecipePublic: Decodable, Identifiable {
     let id: UUID
     let title: String
     let ingredients: [Ingredient]
+    let ingredientSections: [IngredientSection]
     let steps: [Step]
     let servings: Int?
     let prepMinutes: Int?
@@ -274,14 +293,28 @@ struct RecipePublic: Decodable, Identifiable {
     let sourceUrl: String
     let platform: String
     let thumbnailUrl: String?
+    let carouselImageUrls: [String]
     let author: String?
     let description: String?
+    let tips: [RecipeTip]
 }
 
 struct Ingredient: Decodable {
     let name: String
     let quantity: String?
     let unit: String?
+}
+
+struct IngredientSection: Decodable, Identifiable {
+    let title: String
+    let ingredients: [Ingredient]
+    var id: String { title }
+}
+
+struct RecipeTip: Decodable, Identifiable {
+    let title: String?
+    let text: String
+    var id: String { "\(title ?? \"\")-\(text)" }
 }
 
 struct Step: Decodable {
@@ -365,17 +398,19 @@ final class ReciAppAPI {
 
     func me() async throws -> MeResponse { … GET /v1/me … }
     func extract(url: URL) async throws -> ExtractJobResponse { … POST /v1/extract … }
-    func job(id: UUID) async throws -> JobResponse { … GET /v1/jobs/{id} … }
+    func job(id: UUID, language: String) async throws -> JobResponse { … GET /v1/jobs/{id}?language=… … }
 
     func extractAndWait(url: URL, pollInterval: Duration = .seconds(2)) async throws -> RecipePublic {
         let started = try await extract(url: url)
-        if started.status == "completed", started.cacheHit {
-            let j = try await job(id: started.jobId)
+        if started.status == "completed" {
+            let j = try await job(id: started.jobId, language: language)
             guard let r = j.recipe else { throw APIError.noRecipe }
             return r
         }
+        var currentJobID = started.jobId
         while true {
-            let j = try await job(id: started.jobId)
+            let j = try await job(id: currentJobID, language: language)
+            currentJobID = j.jobId // extraction can hand off to a shared translation job
             switch j.status {
             case "completed":
                 guard let r = j.recipe else { throw APIError.noRecipe }
@@ -399,7 +434,9 @@ final class ReciAppAPI {
 
 ## 9. Cache behavior
 
-Same normalized URL → instant `completed` + `cache_hit: true`, no OpenAI cost. Still counts toward Free weekly limit.
+Same normalized URL and language → instant `completed` + `cache_hit: true`, no OpenAI cost. Still counts toward Free weekly limit.
+If the base recipe exists but the requested language is missing, the API creates or
+joins one shared translation job and polling follows its returned `job_id`.
 
 ---
 
@@ -419,7 +456,8 @@ Same normalized URL → instant `completed` + `cache_hit: true`, no OpenAI cost.
 
 - [ ] API base URL + Supabase anon in app
 - [ ] Apple Sign In works → JWT
-- [ ] Superwall identify + attributes after login
+- [x] Superwall identify + attributes after login
+- [x] Restore purchases from Profile and refresh `/v1/me`
 - [ ] Import flow: paste TikTok/YouTube URL → recipe UI
 - [ ] Home list loads summaries
 - [ ] Detail shows ingredients + steps

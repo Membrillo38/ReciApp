@@ -13,14 +13,18 @@ from app.dashboard_auth import (
     clear_session_cookie,
     create_session_token,
     csrf_for_request,
+    csrf_matches,
     dashboard_enabled,
     read_session_token,
     set_session_cookie,
     verify_password,
+    verify_totp,
 )
+from app.config import settings
+from app.security import audit_security_event, allow_rate_limit, request_ip
 from app.dashboard_stats import dashboard_overview, list_usage
 from app.db import get_supabase
-from app.store import list_jobs, list_profiles, list_recipes, soft_delete_profile
+from app.store import anonymize_user_data, list_jobs, list_profiles, list_recipes, soft_delete_profile
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -57,9 +61,11 @@ def login_page(request: Request):
     err = request.query_params.get("err")
     msg = None
     if err == "bad":
-        msg = "Password incorrecta"
+        msg = "Credenciales incorrectas"
     elif err == "disabled":
-        msg = "Set DASHBOARD_PASSWORD en Render"
+        msg = "Configura DASHBOARD_PASSWORD, DASHBOARD_SESSION_SECRET y DASHBOARD_TOTP_SECRET en Render"
+    elif err == "rate":
+        msg = "Demasiados intentos; espera unos minutos"
     return templates.TemplateResponse(
         "dashboard/login.html",
         {"request": request, "show_nav": False, "tab": "login", "error": msg, "flash": None},
@@ -67,12 +73,18 @@ def login_page(request: Request):
 
 
 @router.post("/login")
-def login_submit(password: str = Form(...)):
-    if not dashboard_enabled() or not verify_password(password):
+def login_submit(request: Request, password: str = Form(...), totp: str = Form(...)):
+    ip = request_ip(request)
+    if not allow_rate_limit(f"dashboard-login:{ip}", limit=5, window_seconds=15 * 60):
+        audit_security_event(event="dashboard_login_rate_limited", request=request)
+        return RedirectResponse("/dashboard/login?err=rate", status_code=303)
+    if not dashboard_enabled() or not verify_password(password) or not verify_totp(totp):
+        audit_security_event(event="dashboard_login_rejected", request=request)
         return RedirectResponse("/dashboard/login?err=bad", status_code=303)
     token = create_session_token()
     resp = RedirectResponse("/dashboard", status_code=303)
     set_session_cookie(resp, token)
+    audit_security_event(event="dashboard_login_accepted", request=request)
     return resp
 
 
@@ -108,11 +120,12 @@ def users_page(request: Request):
 def toggle_pro(request: Request, user_id: UUID, csrf: str = Form(...), is_pro: str = Form(...)):
     if redir := _guard(request):
         return redir
-    if csrf != csrf_for_request(request):
+    if not csrf_matches(request, csrf):
         return RedirectResponse("/dashboard/users?err=csrf", status_code=303)
     get_supabase().table("profiles").update({"is_pro": is_pro == "1"}).eq(
         "id", str(user_id)
     ).execute()
+    audit_security_event(event="dashboard_pro_changed", request=request, user_id=str(user_id), metadata={"is_pro": is_pro == "1"})
     return RedirectResponse("/dashboard/users?ok=updated", status_code=303)
 
 
@@ -120,13 +133,15 @@ def toggle_pro(request: Request, user_id: UUID, csrf: str = Form(...), is_pro: s
 def delete_user(request: Request, user_id: UUID, csrf: str = Form(...)):
     if redir := _guard(request):
         return redir
-    if csrf != csrf_for_request(request):
+    if not csrf_matches(request, csrf):
         return RedirectResponse("/dashboard/users?err=csrf", status_code=303)
+    anonymize_user_data(user_id)
     soft_delete_profile(user_id)
     try:
         get_supabase().auth.admin.delete_user(str(user_id))
     except Exception:
         pass
+    audit_security_event(event="dashboard_user_deleted", request=request, user_id=str(user_id))
     return RedirectResponse("/dashboard/users?ok=deleted", status_code=303)
 
 

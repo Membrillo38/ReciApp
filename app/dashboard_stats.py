@@ -23,7 +23,7 @@ def dashboard_overview() -> dict:
     recipes = sb.table("recipes").select("id", count="exact").execute()
     jobs_week = (
         sb.table("extract_jobs")
-        .select("id,status,cache_hit,cost_cents,created_at")
+        .select("id,status,progress,cache_hit,cost_cents,created_at")
         .gte("created_at", week)
         .execute()
         .data
@@ -52,6 +52,15 @@ def dashboard_overview() -> dict:
         .select("id", count="exact")
         .gte("created_at", week)
         .execute()
+    )
+    spend_alerts = (
+        sb.table("spend_alerts")
+        .select("scope,threshold,period_start,created_at")
+        .order("created_at", desc=True)
+        .limit(20)
+        .execute()
+        .data
+        or []
     )
 
     cost_month = sum(float(u.get("cost_cents") or 0) for u in usage_month)
@@ -86,6 +95,7 @@ def dashboard_overview() -> dict:
             4,
         ),
         "margin_pct": int(defaults.pro_margin_ratio * 100),
+        "spend_alerts": spend_alerts,
     }
 
 
@@ -110,6 +120,7 @@ def log_request(
     duration_ms: int,
     user_id: str | None,
     ip: str | None,
+    correlation_id: str | None = None,
 ) -> None:
     if path.startswith("/dashboard") or path in {"/health", "/favicon.ico"}:
         return
@@ -122,6 +133,7 @@ def log_request(
                 "duration_ms": duration_ms,
                 "user_id": user_id,
                 "ip": (ip or "")[:64] or None,
+                "correlation_id": correlation_id,
             }
         ).execute()
     except Exception:

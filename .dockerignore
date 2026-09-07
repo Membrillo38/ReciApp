@@ -1,0 +1,16 @@
+.git
+.github
+.env
+.env.*
+.venv
+__pycache__
+*.pyc
+*.log
+IosAPP
+supabase/.temp
+docs
+.DS_Store
+.gitignore
+.gitleaks.toml
+check.py
+scripts

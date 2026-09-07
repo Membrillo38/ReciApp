@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from openai import OpenAI
@@ -13,7 +14,9 @@ from youtube_transcript_api._errors import (
 from app.config import settings
 from app.extract import ExtractError
 from app.platforms import youtube_video_id
-from app.tiktok_slides import SlideInfo, download_image_b64
+from app.tiktok_slides import MAX_CAROUSEL_SLIDES, SlideInfo, download_image_b64
+
+logger = logging.getLogger(__name__)
 
 
 def youtube_transcript(url: str) -> str | None:
@@ -52,41 +55,67 @@ def whisper_transcript(audio_path: Path) -> str:
     return text
 
 
-def ocr_slides(slides: SlideInfo, max_images: int = 4) -> str:
+def ocr_slides(slides: SlideInfo, max_images: int = MAX_CAROUSEL_SLIDES) -> str:
     if not settings.openai_api_key:
         raise ExtractError("OPENAI_API_KEY is not configured")
 
     client = OpenAI(api_key=settings.openai_api_key)
     parts: list[str] = []
 
-    for idx, url in enumerate(slides.image_urls[:max_images], start=1):
-        b64 = download_image_b64(url)
+    for idx, url in enumerate(slides.image_urls[: min(max_images, MAX_CAROUSEL_SLIDES)], start=1):
+        try:
+            b64 = download_image_b64(url)
+        except Exception as exc:
+            logger.warning(
+                "extract stage=ocr_slide_download slide_index=%d error_type=%s",
+                idx,
+                type(exc).__name__,
+            )
+            continue
         if not b64:
             continue
-        response = client.chat.completions.create(
-            model=settings.vision_model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": (
-                                f"Slide {idx}. Extract all visible recipe text: "
-                                "ingredients, quantities, steps, times. "
-                                "Return concise plain text only. Skip decorative text."
-                            ),
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
-                        },
-                    ],
-                }
-            ],
-            max_tokens=450,
-        )
-        chunk = (response.choices[0].message.content or "").strip()
+        try:
+            response = client.chat.completions.create(
+                model=settings.vision_model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": (
+                                    f"Slide {idx}. Extract all visible recipe text: "
+                                    "section headings, ingredients, quantities, steps, times, and tips. "
+                                    "Preserve headings such as component names and storage/reheating tips. "
+                                    "Return concise plain text only. Skip decorative slogans and engagement text."
+                                ),
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+                            },
+                        ],
+                    }
+                ],
+                max_tokens=300,
+            )
+        except Exception as exc:
+            logger.warning(
+                "extract stage=ocr_slide_model slide_index=%d error_type=%s",
+                idx,
+                type(exc).__name__,
+            )
+            continue
+        try:
+            choices = getattr(response, "choices", None) or []
+            chunk = (choices[0].message.content or "").strip()
+        except Exception as exc:
+            logger.warning(
+                "extract stage=ocr_slide_response slide_index=%d error_type=%s",
+                idx,
+                type(exc).__name__,
+            )
+            continue
         if chunk:
             parts.append(chunk)
 

@@ -3,11 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import UUID
 
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, Header, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.config import settings
 from app.db import get_supabase
+from app.security import audit_security_event, safe_compare
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -21,11 +22,14 @@ class AuthUser:
     pro_expires_at: str | None
 
 
-def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
+def require_api_key(request: Request, x_api_key: str | None = Header(default=None)) -> None:
     if not settings.api_key:
+        audit_security_event(event="admin_api_key_unconfigured", request=request)
         raise HTTPException(status_code=503, detail="API_KEY not configured")
-    if x_api_key != settings.api_key:
+    if not safe_compare(x_api_key, settings.api_key):
+        audit_security_event(event="admin_api_key_rejected", request=request)
         raise HTTPException(status_code=401, detail="Invalid API key")
+    audit_security_event(event="admin_api_key_accepted", request=request)
 
 
 def current_user(
@@ -38,7 +42,7 @@ def current_user(
         sb = get_supabase()
         user_resp = sb.auth.get_user(creds.credentials)
     except Exception as exc:
-        raise HTTPException(status_code=401, detail=f"Invalid token: {exc}") from exc
+        raise HTTPException(status_code=401, detail="Invalid token") from exc
 
     user = user_resp.user
     if not user:

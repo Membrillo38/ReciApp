@@ -11,6 +11,22 @@
   <div class="card"><div class="label">HTTP requests (7d)</div><div class="value">{{ o.requests_week }}</div></div>
 </div>
 
+<h2>Spend alerts</h2>
+<div class="card">
+  {% if o.spend_alerts %}
+  <table>
+    <thead><tr><th>Scope</th><th>Threshold</th><th>Period</th><th>Created</th></tr></thead>
+    <tbody>
+      {% for alert in o.spend_alerts %}
+      <tr><td>{{ alert.scope }}</td><td>{{ alert.threshold }}%</td><td>{{ alert.period_start }}</td><td class="muted">{{ alert.created_at }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <span class="muted">Sin alertas de gasto.</span>
+  {% endif %}
+</div>
+
 <h2>Recent API requests (24h)</h2>
 <div class="card">
   <table>

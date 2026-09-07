@@ -21,6 +21,16 @@ class Ingredient(BaseModel):
     unit: str | None = None
 
 
+class IngredientSection(BaseModel):
+    title: str
+    ingredients: list[Ingredient] = Field(default_factory=list)
+
+
+class RecipeTip(BaseModel):
+    title: str | None = None
+    text: str
+
+
 class Step(BaseModel):
     order: int
     text: str
@@ -32,6 +42,7 @@ class Recipe(BaseModel):
     id: UUID | None = None
     title: str
     ingredients: list[Ingredient]
+    ingredient_sections: list[IngredientSection] = Field(default_factory=list)
     steps: list[Step]
     servings: int | None = None
     prep_minutes: int | None = None
@@ -42,9 +53,12 @@ class Recipe(BaseModel):
     source_url: str
     platform: Platform
     thumbnail_url: str | None = None
+    carousel_image_urls: list[str] = Field(default_factory=list)
     author: str | None = None
     description: str | None = None
+    tips: list[RecipeTip] = Field(default_factory=list)
     raw_transcript: str | None = None
+    language_code: str = "en-US"
 
 
 class RecipePublic(BaseModel):
@@ -52,6 +66,7 @@ class RecipePublic(BaseModel):
     id: UUID
     title: str
     ingredients: list[Ingredient]
+    ingredient_sections: list[IngredientSection] = Field(default_factory=list)
     steps: list[Step]
     servings: int | None = None
     prep_minutes: int | None = None
@@ -60,8 +75,11 @@ class RecipePublic(BaseModel):
     source_url: str
     platform: Platform
     thumbnail_url: str | None = None
+    carousel_image_urls: list[str] = Field(default_factory=list)
     author: str | None = None
     description: str | None = None
+    tips: list[RecipeTip] = Field(default_factory=list)
+    language_code: str = "en-US"
 
 
 class RecipeSummary(BaseModel):
@@ -76,10 +94,12 @@ class RecipeSummary(BaseModel):
     prep_minutes: int | None = None
     cook_minutes: int | None = None
     saved_at: str
+    language_code: str = "en-US"
 
 
 class ExtractRequest(BaseModel):
     url: HttpUrl
+    language: str = "en-US"
 
 
 class JobStatus(str, Enum):
@@ -101,8 +121,12 @@ class JobResponse(BaseModel):
     status: JobStatus
     cache_hit: bool = False
     recipe: RecipePublic | None = None
+    recipe_id: UUID | None = None
     error: str | None = None
     progress: int = 0
+    # When a shared base extraction finishes in another language, polling can
+    # hand the client the newly-created shared translation job.
+    next_job_id: UUID | None = None
 
 
 class MeResponse(BaseModel):

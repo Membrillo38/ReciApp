@@ -25,6 +25,12 @@ services:
         sync: false
       - key: SUPERWALL_APPLICATION_ID
         value: "54783"
+      - key: APPLE_ROOT_CA_PEM
+        sync: false
+      - key: APPLE_BUNDLE_ID
+        value: com.membri.reciapp
+      - key: APPLE_ENVIRONMENT
+        value: Production
       - key: PUBLIC_API_BASE_URL
         value: https://reciapp-4ih5.onrender.com
       - key: DASHBOARD_PASSWORD
@@ -33,3 +39,25 @@ services:
         generateValue: true
       - key: DASHBOARD_COOKIE_SECURE
         value: "true"
+      - key: DASHBOARD_TOTP_SECRET
+        sync: false
+      - key: CORS_ORIGINS
+        value: https://reciapp-4ih5.onrender.com
+      - key: BILLING_GUARD_ENABLED
+        value: "true"
+      - key: DAILY_API_BUDGET_CENTS
+        value: "1000"
+      - key: MONTHLY_API_BUDGET_CENTS
+        value: "5000"
+      - key: USER_MONTHLY_BUDGET_CENTS
+        value: "500"
+      - key: MAX_JOB_COST_CENTS
+        value: "100"
+      - key: MAX_CONCURRENT_JOBS
+        value: "8"
+      - key: MAX_CONCURRENT_JOBS_PER_USER
+        value: "2"
+      - key: WORKER_ENABLED
+        value: "false"
+      - key: WORKER_LEASE_SECONDS
+        value: "900"

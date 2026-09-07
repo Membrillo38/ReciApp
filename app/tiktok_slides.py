@@ -1,17 +1,26 @@
 from __future__ import annotations
 
 import base64
+import html as html_lib
 import json
 import re
 import urllib.request
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 from app.extract import ExtractError
+from app.security import safe_urlopen, validate_public_url
 
 UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
+MOBILE_UA = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 "
+    "Mobile/15E148 Safari/604.1"
+)
+MAX_CAROUSEL_SLIDES = 12
 
 
 @dataclass
@@ -24,27 +33,35 @@ class SlideInfo:
 
 
 def fetch_tiktok_slides(url: str) -> SlideInfo | None:
-    html = _fetch_html(url)
-    if not html:
+    is_photo = "/photo/" in (urlparse(url).path or "").lower()
+    if not is_photo:
         return None
 
+    # Mobile SSR exposes imagePost reliably and avoids an unnecessary desktop
+    # request for the only TikTok URL shape that can contain a carousel.
+    mobile_html = _fetch_html(url, user_agent=MOBILE_UA)
+    mobile_slide_info = _slide_info_from_html(mobile_html or "")
+    if mobile_slide_info:
+        return mobile_slide_info
+
+    # TikTok photo pages sometimes omit itemStruct/imagePost while still
+    # publishing Open Graph metadata. It may expose one cover or several
+    # ordered images; use only public HTTPS media and let the recipe pipeline
+    # continue with the available evidence instead of failing the whole job.
+    # Desktop SSR can expose metadata even when mobile SSR is unavailable.
+    html = _fetch_html(url)
+    slide_info = _slide_info_from_html(html or "")
+    return slide_info or _photo_meta_fallback(html or mobile_html or "", url)
+
+
+def _slide_info_from_html(html: str) -> SlideInfo | None:
     item = _item_from_html(html)
     if not item:
         return None
-
-    image_post = item.get("imagePost") or {}
-    images: list[str] = []
-    for image in image_post.get("images") or []:
-        urls = ((image.get("imageURL") or {}).get("urlList")) or []
-        if urls:
-            images.append(urls[0])
-
+    image_post = item.get("imagePost") or item.get("image_post") or {}
+    images = _image_urls(image_post.get("images") if isinstance(image_post, dict) else None)
     if not images:
         return None
-
-    stats = item.get("stats") or {}
-    _ = stats  # reserved for future metadata
-
     return SlideInfo(
         title=(image_post.get("title") or item.get("desc") or "").strip(),
         description=(item.get("desc") or "").strip(),
@@ -53,12 +70,107 @@ def fetch_tiktok_slides(url: str) -> SlideInfo | None:
     )
 
 
-def _fetch_html(url: str) -> str | None:
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
-    try:
-        return urllib.request.urlopen(req, timeout=25).read().decode("utf-8", "replace")
-    except Exception:
+def _image_urls(raw_images: object) -> list[str]:
+    """Return stable, bounded slide URLs from TikTok hydration variants."""
+    if not isinstance(raw_images, list):
+        return []
+
+    output: list[str] = []
+    seen: set[str] = set()
+    for image in raw_images:
+        if isinstance(image, str):
+            candidates = [image]
+        elif isinstance(image, dict):
+            image_data = (
+                image.get("imageURL")
+                or image.get("imageUrl")
+                or image.get("image_url")
+                or image.get("displayImage")
+                or image.get("display_image")
+                or {}
+            )
+            if isinstance(image_data, dict):
+                image_data = image_data.get("urlList") or image_data.get("url_list") or image_data
+            candidates = image_data
+        else:
+            continue
+        if isinstance(candidates, str):
+            candidates = [candidates]
+        if not isinstance(candidates, list):
+            candidates = []
+        # TikTok commonly orders URLs from smaller to larger; try the largest
+        # first while retaining original slide order.
+        for value in reversed(candidates):
+            candidate = str(value or "").strip()
+            parsed = urlparse(candidate)
+            if parsed.scheme != "https" or not parsed.netloc:
+                continue
+            if len(candidate) > 2048 or candidate in seen:
+                continue
+            seen.add(candidate)
+            output.append(candidate)
+            break
+        if len(output) >= MAX_CAROUSEL_SLIDES:
+            break
+    return output
+
+
+def _photo_meta_fallback(html: str, url: str) -> SlideInfo | None:
+    values: dict[str, list[str]] = {}
+    for tag in re.findall(r"<meta\b[^>]*>", html, flags=re.IGNORECASE):
+        attrs: dict[str, str] = {}
+        for match in re.finditer(
+            r"([:\w-]+)\s*=\s*[\"'](.*?)[\"']",
+            tag,
+            flags=re.IGNORECASE | re.DOTALL,
+        ):
+            attrs[match.group(1)] = match.group(2)
+        key = (attrs.get("property") or attrs.get("name") or "").lower()
+        content = html_lib.unescape((attrs.get("content") or "").strip())
+        if key and content:
+            values.setdefault(key, []).append(content)
+
+    images: list[str] = []
+    seen: set[str] = set()
+    for candidate in values.get("og:image", []) + values.get("twitter:image", []):
+        parsed = urlparse(candidate)
+        if parsed.scheme != "https" or not parsed.netloc or candidate in seen:
+            continue
+        seen.add(candidate)
+        images.append(candidate)
+        if len(images) >= MAX_CAROUSEL_SLIDES:
+            break
+    if not images:
         return None
+
+    path_parts = [part for part in (urlparse(url).path or "").split("/") if part]
+    author = next((part[1:] for part in path_parts if part.startswith("@")), None)
+    title = (values.get("og:title") or values.get("twitter:title") or [""])[0]
+    description = (values.get("og:description") or values.get("description") or [""])[0]
+    return SlideInfo(
+        title=title.strip(),
+        description=description.strip(),
+        author=author,
+        image_urls=images,
+    )
+
+
+def _fetch_html(url: str, *, user_agent: str = UA) -> str | None:
+    try:
+        validate_public_url(url, allowed_hosts={"tiktok.com"})
+    except ValueError:
+        return None
+    for _ in range(2):
+        req = urllib.request.Request(url, headers={"User-Agent": user_agent})
+        try:
+            with safe_urlopen(req, timeout=25) as response:
+                raw = response.read(5_000_001)
+            if len(raw) > 5_000_000:
+                return None
+            return raw.decode("utf-8", "replace")
+        except Exception:
+            continue
+    return None
 
 
 def _item_from_html(html: str) -> dict | None:
@@ -89,19 +201,60 @@ def _dig_item_struct(data: dict) -> dict | None:
     # SIGI_STATE fallback
     item_module = data.get("ItemModule")
     if isinstance(item_module, dict) and item_module:
-        return next(iter(item_module.values()))
-    return None
+        return next(
+            (item for item in item_module.values() if isinstance(item, dict)),
+            None,
+        )
+
+    # Hydration keys have changed over time. Find the nearest item containing
+    # TikTok's photo-post payload without assuming one fixed root path.
+    def walk(value: object, depth: int = 0) -> dict | None:
+        if depth > 8:
+            return None
+        if isinstance(value, dict):
+            image_post = value.get("imagePost") or value.get("image_post")
+            if isinstance(image_post, dict) and isinstance(image_post.get("images"), list):
+                return value
+            for child in value.values():
+                found = walk(child, depth + 1)
+                if found:
+                    return found
+        elif isinstance(value, list):
+            for child in value:
+                found = walk(child, depth + 1)
+                if found:
+                    return found
+        return None
+
+    return walk(data)
 
 
 def download_image_b64(url: str) -> str | None:
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": UA, "Referer": "https://www.tiktok.com/"},
-    )
     try:
-        content = urllib.request.urlopen(req, timeout=30).read()
-    except Exception as exc:
-        raise ExtractError(f"Failed to download slide image: {exc}") from exc
+        validate_public_url(url)
+    except ValueError as exc:
+        raise ExtractError(str(exc)) from exc
+    content: bytes | None = None
+    last_error: Exception | None = None
+    for _ in range(2):
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": UA, "Referer": "https://www.tiktok.com/"},
+        )
+        try:
+            with safe_urlopen(req, timeout=30) as response:
+                content = response.read(10_000_001)
+            if len(content) > 10_000_000:
+                raise ExtractError("Slide image is too large")
+            break
+        except ExtractError:
+            raise
+        except Exception as exc:
+            last_error = exc
+            content = None
+    if content is None:
+        error_type = type(last_error).__name__ if last_error else "UnknownError"
+        raise ExtractError(f"Failed to download slide image: {error_type}") from last_error
     if len(content) < 500:
         return None
     encoded = base64.b64encode(content).decode("ascii")

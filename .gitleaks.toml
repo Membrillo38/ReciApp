@@ -1,0 +1,9 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known public client configuration is not a server secret"
+paths = [
+  '''^IOS_INTEGRATION\.md$''',
+  '''^IosAPP/ReciApp/Config/AppConfig\.swift$'''
+]
