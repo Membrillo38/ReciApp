@@ -5,6 +5,9 @@ import re
 from datetime import datetime, timezone
 from uuid import UUID
 
+from fastapi import HTTPException
+from postgrest.exceptions import APIError
+
 from app.config import settings
 from app.db import get_supabase
 from app.limits import get_app_defaults, price_cents_from_superwall, proceeds_cents_from_superwall
@@ -86,7 +89,7 @@ def _record_event(event_id: str, event_name: str, event_at: datetime, user_id: U
     sb = get_supabase()
     existing = sb.table("subscription_events").select("event_id,status").eq("event_id", event_id).limit(1).execute()
     if existing.data:
-        return False
+        return existing.data[0].get("status") not in {"processed", "skipped"}
     try:
         sb.table("subscription_events").insert({
             "event_id": event_id,
@@ -95,26 +98,46 @@ def _record_event(event_id: str, event_name: str, event_at: datetime, user_id: U
             "user_id": str(user_id) if user_id else None,
             "payload": _redacted(copy.deepcopy(payload)),
         }).execute()
-    except Exception as exc:
-        # Svix may retry concurrently; the primary key is the idempotency gate.
-        if "23505" in str(exc) and "event_id" in str(exc):
-            return False
-        raise
+    except APIError as exc:
+        # An insert conflict is not proof that the other delivery succeeded.
+        if exc.code != "23505":
+            raise
+        existing = sb.table("subscription_events").select("status").eq("event_id", event_id).limit(1).execute()
+        if not existing.data:
+            raise
+        return existing.data[0].get("status") not in {"processed", "skipped"}
     return True
 
 
 def _mark_event(event_id: str, *, status: str, error: str | None = None) -> None:
-    try:
-        get_supabase().table("subscription_events").update({
-            "status": status,
-            "error": error[:500] if error else None,
-            "processed_at": datetime.now(timezone.utc).isoformat(),
-        }).eq("event_id", event_id).execute()
-    except Exception:
-        pass
+    response = get_supabase().table("subscription_events").update({
+        "status": status,
+        "error": error[:500] if error else None,
+        "processed_at": datetime.now(timezone.utc).isoformat(),
+    }).eq("event_id", event_id).execute()
+    if not response.data:
+        raise RuntimeError("Subscription event status was not persisted")
 
 
 def apply_superwall_event(payload: dict, event_id: str | None = None) -> dict:
+    if settings.maintenance_mode:
+        raise HTTPException(status_code=503, detail="Maintenance in progress. Retry.", headers={"Retry-After": "30"})
+    try:
+        return _apply_superwall_event(payload, event_id)
+    except (HTTPException, ValueError):
+        raise
+    except Exception:
+        # A failed receipt must remain retryable, never become a successful replay.
+        resolved = _event_id(payload, event_id)
+        if resolved:
+            try:
+                _mark_event(resolved, status="failed", error="processing_failed")
+            except Exception:
+                pass
+        raise HTTPException(status_code=503, detail="Subscription processing temporarily unavailable", headers={"Retry-After": "1"}) from None
+
+
+def _apply_superwall_event(payload: dict, event_id: str | None = None) -> dict:
     data = payload.get("data") or {}
     event_name = str(data.get("name") or payload.get("type") or "").lower()
     resolved_event_id = _event_id(payload, event_id)
@@ -133,7 +156,7 @@ def apply_superwall_event(payload: dict, event_id: str | None = None) -> dict:
 
     event_user_id = user_id
     if user_id:
-        profile_exists = get_supabase().table("profiles").select("id").eq("id", str(user_id)).limit(1).execute()
+        profile_exists = get_supabase().table("profiles").select("id,deleted_at").eq("id", str(user_id)).limit(1).execute()
         if not profile_exists.data:
             event_user_id = None
     if not _record_event(resolved_event_id, event_name, event_at, event_user_id, payload):
@@ -155,8 +178,16 @@ def apply_superwall_event(payload: dict, event_id: str | None = None) -> dict:
         return result
 
     sb = get_supabase()
-    profile = sb.table("profiles").select("subscription_event_at,subscription_event_id").eq("id", str(user_id)).limit(1).execute()
-    current = (profile.data or [{}])[0]
+    profile = sb.table("profiles").select("subscription_event_at,subscription_event_id,deleted_at").eq("id", str(user_id)).limit(1).execute()
+    current = (profile.data or [None])[0]
+    if not current or current.get("deleted_at"):
+        result["skipped"] = "profile_unavailable"
+        _mark_event(resolved_event_id, status="skipped", error=result["skipped"])
+        return result
+    if current.get("subscription_event_id") == resolved_event_id:
+        _mark_event(resolved_event_id, status="processed")
+        result["skipped"] = "duplicate"
+        return result
     if current.get("subscription_event_at"):
         try:
             current_at = datetime.fromisoformat(str(current["subscription_event_at"]).replace("Z", "+00:00")).astimezone(timezone.utc)
@@ -194,18 +225,28 @@ def apply_superwall_event(payload: dict, event_id: str | None = None) -> dict:
         if price_cents:
             update["pro_monthly_price_cents"] = price_cents
 
-    try:
-        res = sb.table("profiles").update(update).eq("id", str(user_id)).execute()
-        if not res.data:
-            sb.table("profiles").upsert({"id": str(user_id), **update, "display_name": None}).execute()
-        _mark_event(resolved_event_id, status="processed")
-    except Exception as exc:
-        _mark_event(
-            resolved_event_id,
-            status="failed",
-            error=f"processing_failed:{type(exc).__name__}",
-        )
-        raise
+    # Compare-and-set prevents an old delivery from overwriting a concurrent
+    # newer event. The deletion predicate also handles deletion after our read.
+    query = sb.table("profiles").update(update).eq("id", str(user_id)).is_("deleted_at", "null")
+    for field in ("subscription_event_at", "subscription_event_id"):
+        query = query.eq(field, current[field]) if current.get(field) is not None else query.is_(field, "null")
+    res = query.execute()
+    if not res.data:
+        latest_response = sb.table("profiles").select("subscription_event_at,subscription_event_id,deleted_at").eq("id", str(user_id)).limit(1).execute()
+        latest = (latest_response.data or [None])[0]
+        if not latest or latest.get("deleted_at"):
+            result["skipped"] = "profile_unavailable"
+        elif latest.get("subscription_event_id") == resolved_event_id:
+            _mark_event(resolved_event_id, status="processed")
+            result["skipped"] = "duplicate"
+            return result
+        elif latest.get("subscription_event_at") and datetime.fromisoformat(str(latest["subscription_event_at"]).replace("Z", "+00:00")) > event_at:
+            result["skipped"] = "out_of_order"
+        else:
+            raise RuntimeError("Subscription changed concurrently; retry event")
+        _mark_event(resolved_event_id, status="skipped", error=result["skipped"])
+        return result
+    _mark_event(resolved_event_id, status="processed")
 
     result["updated"] = True
     result["is_pro"] = update.get("is_pro")

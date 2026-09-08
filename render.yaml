@@ -2,10 +2,10 @@ services:
   - type: web
     name: reciapp-4ih5
     runtime: docker
-    plan: starter
+    plan: free
     region: frankfurt
     healthCheckPath: /health
-    autoDeploy: true
+    autoDeployTrigger: "off"
     envVars:
       - key: OPENAI_API_KEY
         sync: false
@@ -13,6 +13,14 @@ services:
         generateValue: true
       - key: SUPABASE_URL
         sync: false
+      - key: SUPABASE_EXPECTED_HOST
+        sync: false
+      - key: SUPABASE_TIMEOUT_SECONDS
+        value: "10"
+      - key: READINESS_TIMEOUT_SECONDS
+        value: "3"
+      - key: MAINTENANCE_MODE
+        value: "false"
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
       - key: MAX_DURATION_SECONDS

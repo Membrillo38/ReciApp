@@ -13,6 +13,7 @@ from urllib.request import HTTPRedirectHandler, Request as URLRequest, build_ope
 
 from fastapi import HTTPException, Request
 
+from app.config import settings
 from app.db import get_supabase
 
 
@@ -43,6 +44,8 @@ def audit_security_event(
     metadata: dict | None = None,
 ) -> None:
     """Best-effort audit. Never include credentials or request bodies."""
+    if settings.maintenance_mode:
+        return
     try:
         get_supabase().table("security_events").insert(
             {

@@ -1,3 +1,4 @@
+import pytest
 import json
 import re
 from collections import Counter
@@ -53,6 +54,7 @@ def test_fallback_recipe_copy_is_localized():
     assert set(SUPPORTED_LANGUAGE_CODES) == set(INGREDIENT_SECTION_NAMES)
 
 
+@pytest.mark.skipif(not Path("IosAPP/ReciApp").is_dir(), reason="Ignored iOS sources unavailable in backend-only checkout")
 def test_ios_catalog_covers_all_supported_locales_and_placeholders():
     catalog_path = Path(__file__).parents[1] / "IosAPP" / "ReciApp" / "Localizable.xcstrings"
     catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
@@ -70,6 +72,7 @@ def test_ios_catalog_covers_all_supported_locales_and_placeholders():
             assert Counter(localized_tokens) == Counter(source_tokens), (locale, key, value)
 
 
+@pytest.mark.skipif(not Path("IosAPP/ReciApp").is_dir(), reason="Ignored iOS sources unavailable in backend-only checkout")
 def test_share_extension_uses_shared_localization_resources():
     root = Path(__file__).parents[1]
     share_controller = (root / "IosAPP" / "ReciAppShare" / "ShareViewController.swift").read_text(encoding="utf-8")

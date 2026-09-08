@@ -1,6 +1,8 @@
+import pytest
 from pathlib import Path
 
 
+@pytest.mark.skipif(not Path("IosAPP/ReciApp").is_dir(), reason="Ignored iOS sources unavailable in backend-only checkout")
 def test_superwall_is_configured_and_identified_with_supabase_user():
     service = Path("IosAPP/ReciApp/Services/SubscriptionService.swift").read_text(encoding="utf-8")
     auth = Path("IosAPP/ReciApp/Services/AuthService.swift").read_text(encoding="utf-8")

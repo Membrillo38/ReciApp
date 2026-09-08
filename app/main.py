@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
+
 import json
 import logging
 import secrets
@@ -17,7 +20,7 @@ from app.apple_notifications import process_signed_notification
 from app.config import settings
 from app.dashboard_routes import router as dashboard_router
 from app.dashboard_stats import log_request
-from app.db import get_supabase, reset_supabase
+from app.db import get_supabase, reset_supabase, probe_supabase
 from app.models import (
     AdminUserCreate,
     AdminUserPatch,
@@ -63,7 +66,17 @@ from app.superwall import apply_superwall_event
 from app.url_norm import normalize_url
 from app.translation_cache import localized_recipe_row
 
-app = FastAPI(title="ReciApp API", version="1.3.0")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    settings.validate_supabase()
+    get_supabase()  # Validate SDK construction; startup does not contact Supabase.
+    try:
+        yield
+    finally:
+        reset_supabase()
+
+
+app = FastAPI(title="ReciApp API", version="1.3.0", lifespan=lifespan)
 logger = logging.getLogger(__name__)
 app.add_middleware(
     CORSMiddleware,
@@ -77,10 +90,10 @@ app.include_router(dashboard_router)
 _STALE_JOB_ERROR = "Job expired before completion. Retry the import."
 
 
+@app.exception_handler(httpx.HTTPStatusError)
 @app.exception_handler(httpx.RequestError)
-async def upstream_request_error(request: Request, exc: httpx.RequestError) -> JSONResponse:
+async def upstream_request_error(request: Request, exc: httpx.RequestError | httpx.HTTPStatusError) -> JSONResponse:
     """Turn transient upstream disconnects into an iOS-retryable response."""
-    reset_supabase()
     logger.warning(
         "upstream request failed path=%s error_type=%s correlation_id=%s",
         request.url.path,
@@ -110,7 +123,7 @@ def _job_is_stale(row: dict) -> bool:
 
 
 def _expire_stale_job(row: dict) -> bool:
-    if not _job_is_stale(row):
+    if settings.maintenance_mode or not _job_is_stale(row):
         return False
     job_id = UUID(str(row["id"]))
     update_job(
@@ -146,6 +159,7 @@ def _ensure_translation_job(
     language_code: str,
     background: BackgroundTasks,
 ) -> dict:
+    require_writes_enabled()
     language_code = normalize_language(language_code)
     active = get_active_job(
         source_url_norm=source_url_norm,
@@ -214,24 +228,33 @@ async def request_metrics(request: Request, call_next):
     )
     request.state.correlation_id = correlation_id
     content_length = request.headers.get("content-length")
-    if content_length and content_length.isdigit() and int(content_length) > settings.max_request_body_bytes:
-        response = JSONResponse(status_code=413, content={"detail": "Request body too large"})
-        return response
-    response = await call_next(request)
-    duration_ms = int((time.perf_counter() - start) * 1000)
-    # Fire-and-forget style (sync insert; keep tiny)
-    try:
-        log_request(
-            method=request.method,
-            path=request.url.path,
-            status_code=response.status_code,
-            duration_ms=duration_ms,
-            user_id=None,
-            ip=pseudonymous_ip(request_ip(request)),
-            correlation_id=correlation_id,
+    is_probe = request.url.path in {"/health", "/ready"}
+    if settings.maintenance_mode and not is_probe and request.method not in {"GET", "HEAD", "OPTIONS"}:
+        response = JSONResponse(
+            status_code=503, content={"detail": "Maintenance in progress. Retry."},
+            headers={"Retry-After": "30"},
         )
-    except Exception:
-        pass
+    elif content_length and content_length.isdigit() and int(content_length) > settings.max_request_body_bytes:
+        response = JSONResponse(status_code=413, content={"detail": "Request body too large"})
+    else:
+        response = await call_next(request)
+    duration_ms = int((time.perf_counter() - start) * 1000)
+    if not is_probe and not settings.maintenance_mode:
+        try:
+            # Keep the synchronous metrics insert off the event loop.
+            from starlette.concurrency import run_in_threadpool
+            await run_in_threadpool(
+                log_request,
+                method=request.method,
+                path=request.url.path,
+                status_code=response.status_code,
+                duration_ms=duration_ms,
+                user_id=None,
+                ip=pseudonymous_ip(request_ip(request)),
+                correlation_id=correlation_id,
+            )
+        except Exception:
+            pass
     logger.info(
         "request completed method=%s path=%s status=%s duration_ms=%s correlation_id=%s",
         request.method,
@@ -256,6 +279,35 @@ async def request_metrics(request: Request, call_next):
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse()
+
+
+@app.get("/ready")
+async def ready() -> JSONResponse:
+    start = time.perf_counter()
+    error = None
+    try:
+        async with asyncio.timeout(settings.readiness_timeout_seconds):
+            await probe_supabase()
+    except Exception as exc:
+        error = type(exc).__name__
+    return JSONResponse(
+        status_code=503 if error else 200,
+        content={
+            "status": "unavailable" if error else "ready",
+            "latency_ms": round((time.perf_counter() - start) * 1000),
+            "maintenance": settings.maintenance_mode,
+            **({"error": error} if error else {}),
+        },
+        headers={"Cache-Control": "no-store", **({"Retry-After": "1"} if error else {})},
+    )
+
+
+def require_writes_enabled() -> None:
+    if settings.maintenance_mode:
+        raise HTTPException(
+            status_code=503, detail="Maintenance in progress. Retry.",
+            headers={"Retry-After": "30"},
+        )
 
 
 @app.post("/v1/webhooks/superwall")
@@ -510,6 +562,7 @@ def get_job_status(
     language: str = Query("en-US"),
     user: AuthUser = Depends(current_user),
 ) -> JobResponse:
+    require_writes_enabled()  # Polling can expire, attach and translate recipes.
     row = get_job(job_id)
     if not row:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -636,7 +689,7 @@ def admin_create_user(request: Request, body: AdminUserCreate) -> ListResponse:
     try:
         created = sb.auth.admin.create_user(attrs)
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail="User create failed") from None
 
     user = created.user
     if not user:
@@ -647,7 +700,9 @@ def admin_create_user(request: Request, body: AdminUserCreate) -> ListResponse:
         "display_name": body.display_name or body.email,
         "is_pro": body.is_pro,
     }
-    sb.table("profiles").upsert(payload).execute()
+    result = sb.table("profiles").update(payload).eq("id", str(user.id)).is_("deleted_at", "null").execute()
+    if not result.data:
+        raise HTTPException(status_code=503, detail="Account profile unavailable", headers={"Retry-After": "1"})
     audit_security_event(event="admin_user_created", request=request, user_id=str(user.id), metadata={"is_pro": body.is_pro})
     return ListResponse(items=[payload])
 
@@ -677,7 +732,7 @@ def admin_delete_user(request: Request, user_id: UUID) -> OkResponse:
     try:
         get_supabase().auth.admin.delete_user(str(user_id))
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail="User deletion failed") from None
     audit_security_event(event="admin_user_deleted", request=request, user_id=str(user_id))
     return OkResponse()
 

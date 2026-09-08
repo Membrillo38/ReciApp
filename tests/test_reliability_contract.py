@@ -1,3 +1,4 @@
+import pytest
 import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -9,7 +10,7 @@ from starlette.requests import Request
 
 import app.main as main
 from app.auth import AuthUser
-from app.db import _StableSupabaseClient
+from app.db import create_service_client
 from app.main import _job_is_stale
 from app.models import JobStatus
 from app.store import recipe_public_from_row
@@ -96,15 +97,23 @@ def test_legacy_recipe_keeps_thumbnail_as_separate_fallback():
     assert recipe.thumbnail_url == "https://cdn.example/cover.jpg"
 
 
-def test_supabase_auth_and_postgrest_use_http11_transport():
-    key = "a" * 20 + "." + "b" * 20 + "." + "c" * 20
-    client = _StableSupabaseClient.create("https://example.supabase.co", key)
+def test_supabase_auth_and_postgrest_preserve_sdk_request_configuration(monkeypatch):
+    monkeypatch.setattr(main.settings, "supabase_url", "https://example.supabase.co")
+    monkeypatch.setattr(main.settings, "supabase_expected_host", "example.supabase.co")
+    monkeypatch.setattr(main.settings, "supabase_service_role_key", "sb_secret_test")
+    seen = []
+    def record(request):
+        seen.append(request)
+        return httpx.Response(200, json=[])
+    client, owner = create_service_client(transport=httpx.MockTransport(record))
     try:
-        assert client.postgrest.session._transport._pool._http2 is False
-        assert client.auth._http_client._transport._pool._http2 is False
+        client.table("profiles").select("id").execute()
     finally:
-        client.postgrest.session.close()
-        client.auth._http_client.close()
+        owner.close()
+    assert str(seen[0].url) == "https://example.supabase.co/rest/v1/profiles?select=id"
+    assert seen[0].headers["apikey"] == "sb_secret_test"
+    assert seen[0].headers["authorization"] == "Bearer sb_secret_test"
+    assert seen[0].headers["accept-profile"] == "public"
 
 
 def test_upstream_disconnect_is_a_retryable_503():
@@ -133,12 +142,13 @@ def test_upstream_disconnect_is_a_retryable_503():
     finally:
         main.reset_supabase = original_reset
 
-    assert reset_calls == 1
+    assert reset_calls == 0
     assert response.status_code == 503
     assert response.headers["retry-after"] == "1"
     assert b"Backend temporarily unavailable" in response.body
 
 
+@pytest.mark.skipif(not Path("IosAPP/ReciApp").is_dir(), reason="Ignored iOS sources unavailable in backend-only checkout")
 def test_job_polling_sends_language_and_client_handles_handoff():
     source = Path("IosAPP/ReciApp/Services/APIClient.swift").read_text(encoding="utf-8")
     models = Path("IosAPP/ReciApp/Models/Models.swift").read_text(encoding="utf-8")
@@ -155,6 +165,7 @@ def test_job_polling_sends_language_and_client_handles_handoff():
     assert "if values.isEmpty, let thumbnail = recipe.thumbnailUrl.flatMap(URL.init(string:))" in detail
 
 
+@pytest.mark.skipif(not Path("IosAPP/ReciApp").is_dir(), reason="Ignored iOS sources unavailable in backend-only checkout")
 def test_ios_recipe_refresh_is_cached_coalesced_and_not_blocked_by_profile():
     view_model = Path("IosAPP/ReciApp/ViewModels/AppViewModel.swift").read_text(encoding="utf-8")
     home = Path("IosAPP/ReciApp/Views/HomeView.swift").read_text(encoding="utf-8")
@@ -172,11 +183,13 @@ def test_ios_recipe_refresh_is_cached_coalesced_and_not_blocked_by_profile():
     assert 'http.value(forHTTPHeaderField: "X-Correlation-ID")' in api
 
 
+@pytest.mark.skipif(not Path("IosAPP/ReciApp").is_dir(), reason="Ignored iOS sources unavailable in backend-only checkout")
 def test_ios_polling_covers_backend_media_timeout_with_margin():
     source = Path("IosAPP/ReciApp/Config/AppConfig.swift").read_text(encoding="utf-8")
     assert "static let maxPollAttempts = 330" in source
 
 
+@pytest.mark.skipif(not Path("IosAPP/ReciApp").is_dir(), reason="Ignored iOS sources unavailable in backend-only checkout")
 def test_ios_warms_render_before_authenticated_requests():
     client = Path("IosAPP/ReciApp/Services/APIClient.swift").read_text(encoding="utf-8")
     view_model = Path("IosAPP/ReciApp/ViewModels/AppViewModel.swift").read_text(encoding="utf-8")
@@ -186,6 +199,7 @@ def test_ios_warms_render_before_authenticated_requests():
     assert "await app.warmUpBackend()" in app
 
 
+@pytest.mark.skipif(not Path("IosAPP/ReciApp").is_dir(), reason="Ignored iOS sources unavailable in backend-only checkout")
 def test_refresh_coalesces_responses_and_subscription_poll_does_not_reload_recipes():
     view_model = Path("IosAPP/ReciApp/ViewModels/AppViewModel.swift").read_text(encoding="utf-8")
     app = Path("IosAPP/ReciApp/ReciAppApp.swift").read_text(encoding="utf-8")
@@ -347,7 +361,7 @@ def test_account_anonymization_removes_job_identity_and_source():
 
 def test_superwall_processing_errors_are_stored_without_exception_payload():
     source = Path("app/superwall.py").read_text(encoding="utf-8")
-    assert 'error=f"processing_failed:{type(exc).__name__}"' in source
+    assert 'error="processing_failed"' in source
     assert "error=str(exc)" not in source
 
 
@@ -595,3 +609,11 @@ def test_e2e_matrix_is_bounded_and_does_not_echo_secret_payloads():
     assert "carousel_image_urls" in source
     assert "TOKEN=$(" in source
     assert "echo \"$TOKEN\"" not in source
+
+
+@pytest.mark.skipif(not Path("IosAPP/ReciApp").is_dir(), reason="Ignored iOS sources unavailable in backend-only checkout")
+def test_ios_auth_emits_local_session_without_accepting_an_expired_initial_session():
+    auth = Path("IosAPP/ReciApp/Services/AuthService.swift").read_text(encoding="utf-8")
+    assert "emitLocalSessionAsInitialSession: true" in auth
+    assert "event == .initialSession, newSession?.isExpired == true" in auth
+    assert "ignored expired initial session" in auth

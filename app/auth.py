@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import UUID
 
+from supabase_auth.errors import AuthApiError, AuthInvalidCredentialsError, AuthInvalidJwtError, AuthSessionMissingError
+
 from fastapi import Depends, Header, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -41,31 +43,33 @@ def current_user(
     try:
         sb = get_supabase()
         user_resp = sb.auth.get_user(creds.credentials)
-    except Exception as exc:
-        raise HTTPException(status_code=401, detail="Invalid token") from exc
+    except (AuthInvalidCredentialsError, AuthInvalidJwtError, AuthSessionMissingError):
+        raise HTTPException(status_code=401, detail="Invalid token") from None
+    except AuthApiError as exc:
+        if exc.status in {400, 401, 403, 404, 422}:
+            raise HTTPException(status_code=401, detail="Invalid token") from None
+        raise HTTPException(status_code=503, detail="Authentication temporarily unavailable", headers={"Retry-After": "1"}) from None
+    except Exception:
+        raise HTTPException(status_code=503, detail="Authentication temporarily unavailable", headers={"Retry-After": "1"}) from None
 
     user = user_resp.user
     if not user:
         raise HTTPException(status_code=401, detail="Invalid token")
 
     uid = UUID(str(user.id))
-    profile = (
-        sb.table("profiles")
-        .select("display_name,is_pro,pro_expires_at,deleted_at")
-        .eq("id", str(uid))
-        .limit(1)
-        .execute()
-    )
+    try:
+        profile = (
+            sb.table("profiles")
+            .select("display_name,is_pro,pro_expires_at,deleted_at")
+            .eq("id", str(uid))
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        raise HTTPException(status_code=503, detail="Account temporarily unavailable", headers={"Retry-After": "1"}) from None
     row = (profile.data or [None])[0]
     if not row:
-        # trigger may lag; upsert profile
-        sb.table("profiles").upsert(
-            {
-                "id": str(uid),
-                "display_name": user.email,
-            }
-        ).execute()
-        row = {"display_name": user.email, "is_pro": False, "pro_expires_at": None, "deleted_at": None}
+        raise HTTPException(status_code=403, detail="Account unavailable")
 
     if row.get("deleted_at"):
         raise HTTPException(status_code=403, detail="Account deleted")

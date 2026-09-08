@@ -1,108 +1,128 @@
 from __future__ import annotations
 
-from functools import lru_cache
+from threading import Lock
 
-from httpx import Client as HTTPXClient, Limits
-from postgrest import SyncPostgrestClient
-from supabase import Client
-from supabase._sync.auth_client import SyncSupabaseAuthClient
-from supabase._sync.client import SyncClient
+import httpx
+from supabase import Client, ClientOptions, create_client
 
 from app.config import settings
 
-
-_KEEPALIVE_LIMITS = Limits(
-    max_keepalive_connections=10,
-    max_connections=50,
-    keepalive_expiry=30,
+_KEEPALIVE_LIMITS = httpx.Limits(max_keepalive_connections=10, max_connections=50, keepalive_expiry=30)
+_TRANSIENT_ERRORS = (
+    httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadError, httpx.ReadTimeout,
+    httpx.WriteError, httpx.WriteTimeout, httpx.RemoteProtocolError,
 )
 
 
-def _http_client(*, timeout: int | float = 30, verify: bool = True, proxy: str | None = None) -> HTTPXClient:
-    """Create a stable HTTP/1.1 client for Supabase's synchronous SDK.
+class ReadRetryTransport(httpx.BaseTransport):
+    """Retry a safe read once, including failures while reading its response.
 
-    supabase-py 2.11.0 enables HTTP/2 in both PostgREST and GoTrue. Render
-    logs showed intermittent ``RemoteProtocolError: Server disconnected``
-    failures on those connections. HTTP/1.1 with bounded keep-alives avoids
-    the broken multiplexed connection while retaining connection reuse.
+    Mutations are never replayed: a disconnect cannot prove whether an upstream
+    write committed. HTTP status errors and local configuration errors are not
+    transport retries. HTTPX's own connect retries stay disabled.
     """
-    return HTTPXClient(
-        timeout=timeout,
-        verify=verify,
-        proxy=proxy,
-        follow_redirects=True,
-        http2=False,
-        limits=_KEEPALIVE_LIMITS,
+
+    def __init__(self, transport: httpx.BaseTransport | None = None) -> None:
+        self.transport = transport or httpx.HTTPTransport(http2=False, retries=0, limits=_KEEPALIVE_LIMITS)
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        attempts = 2 if request.method in {"GET", "HEAD", "OPTIONS"} else 1
+        for attempt in range(attempts):
+            response = None
+            try:
+                response = self.transport.handle_request(request)
+                # Consume inside the retry boundary; PostgREST/Auth return JSON.
+                response.read()
+                return response
+            except _TRANSIENT_ERRORS:
+                if attempt + 1 == attempts:
+                    raise
+            finally:
+                if response is not None:
+                    response.close()
+        raise AssertionError("unreachable")
+
+    def close(self) -> None:
+        self.transport.close()
+
+
+def _prevent_sdk_status_retries(response: httpx.Response) -> None:
+    # PostgREST 2.31 retries GET 503/520 three times by default. Status errors
+    # are not transport failures; surface them before the SDK retry loop.
+    if response.status_code in {503, 520}:
+        response.raise_for_status()
+
+
+def create_service_client(*, transport: httpx.BaseTransport | None = None) -> tuple[Client, httpx.Client]:
+    """Build via the public SDK and return the HTTP client we own and must close."""
+    settings.validate_supabase()
+    http_client = httpx.Client(
+        transport=ReadRetryTransport(transport),
+        timeout=httpx.Timeout(settings.supabase_timeout_seconds),
+        follow_redirects=False,
+        trust_env=False,
+        event_hooks={"response": [_prevent_sdk_status_retries]},
     )
-
-
-class _StablePostgrestClient(SyncPostgrestClient):
-    def create_session(
-        self,
-        base_url: str,
-        headers: dict,
-        timeout,
-        verify: bool = True,
-        proxy: str | None = None,
-    ) -> HTTPXClient:
-        return _http_client(timeout=timeout, verify=verify, proxy=proxy)
-
-
-class _StableSupabaseClient(SyncClient):
-    """Supabase client with HTTP/2 disabled for auth and database calls."""
-
-    @staticmethod
-    def _init_supabase_auth_client(
-        auth_url: str,
-        client_options,
-        verify: bool = True,
-        proxy: str | None = None,
-    ) -> SyncSupabaseAuthClient:
-        return SyncSupabaseAuthClient(
-            url=auth_url,
-            auto_refresh_token=client_options.auto_refresh_token,
-            persist_session=client_options.persist_session,
-            storage=client_options.storage,
-            headers=client_options.headers,
-            flow_type=client_options.flow_type,
-            verify=verify,
-            proxy=proxy,
-            http_client=_http_client(timeout=30, verify=verify, proxy=proxy),
+    try:
+        client = create_client(
+            settings.supabase_url,
+            settings.supabase_service_role_key,
+            options=ClientOptions(
+                httpx_client=http_client,
+                persist_session=False,
+                auto_refresh_token=False,
+                postgrest_client_timeout=settings.supabase_timeout_seconds,
+            ),
         )
-
-    @staticmethod
-    def _init_postgrest_client(
-        rest_url: str,
-        headers: dict,
-        schema: str,
-        timeout=120,
-        verify: bool = True,
-        proxy: str | None = None,
-    ) -> _StablePostgrestClient:
-        return _StablePostgrestClient(
-            rest_url,
-            headers=headers,
-            schema=schema,
-            timeout=timeout,
-            verify=verify,
-            proxy=proxy,
-        )
+        # Construct the lazy REST client now, without making a network request.
+        client.table("profiles").select("id").limit(1)
+        return client, http_client
+    except Exception:
+        http_client.close()
+        raise RuntimeError("Supabase client initialization failed") from None
 
 
-@lru_cache(maxsize=1)
+_client: Client | None = None
+_http_client: httpx.Client | None = None
+_client_lock = Lock()
+
+
 def get_supabase() -> Client:
-    if not settings.supabase_url or not settings.supabase_service_role_key:
-        raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY required")
-    return _StableSupabaseClient.create(
-        settings.supabase_url,
-        settings.supabase_service_role_key,
-    )
+    global _client, _http_client
+    with _client_lock:
+        if _client is None:
+            _client, _http_client = create_service_client()
+        return _client
 
 
 def reset_supabase() -> None:
-    """Discard a client whose upstream connection pool disconnected.
+    """Close owned resources after requests/workers drain, at process shutdown.
 
-    Existing in-flight requests retain their client. The next request creates
-    fresh Auth and PostgREST transports instead of reusing a poisoned pool.
+    Never call this on individual request failures: that would close a shared
+    pool while other requests still use it. HTTPX discards broken connections.
     """
-    get_supabase.cache_clear()
+    global _client, _http_client
+    with _client_lock:
+        if _http_client is not None:
+            _http_client.close()
+        _client = None
+        _http_client = None
+
+
+async def probe_supabase() -> None:
+    """One bounded async REST read; caller supplies an overall deadline."""
+    async with httpx.AsyncClient(
+        timeout=settings.readiness_timeout_seconds, follow_redirects=False, trust_env=False,
+    ) as client:
+        response = await client.get(
+            settings.supabase_url.rstrip("/") + "/rest/v1/profiles",
+            params={"select": "id", "limit": "1"},
+            headers={
+                "apikey": settings.supabase_service_role_key,
+                "Authorization": "Bearer " + settings.supabase_service_role_key,
+                "Accept-Profile": "public",
+            },
+        )
+        response.raise_for_status()
+        if not isinstance(response.json(), list):
+            raise ValueError("Invalid readiness response")

@@ -4,4 +4,8 @@
 .env
 .venv/
 __pycache__/
-IosAPP/
+IosAPP
+
+supabase/.temp/
+
+.worktrees/

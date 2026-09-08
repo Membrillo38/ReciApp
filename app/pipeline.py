@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 from uuid import UUID
 
+from app.config import settings
 from app.costing import estimate_miss_cost_cents
 from app.extract import ExtractError, fetch_media_info
 from app.models import JobStatus, Platform, Recipe
@@ -47,6 +48,11 @@ def _safe_job_error(error: ExtractError) -> str:
 
 
 def run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, language_code: str) -> None:
+    if settings.maintenance_mode:
+        # Keep the durable job pending; release only the process-local slot.
+        # Operators must drain already-running jobs before backup/reset.
+        release_job(user_id)
+        return
     language_code = normalize_language(language_code)
     audio_path: Path | None = None
     used_transcribe = False
@@ -239,6 +245,11 @@ def _mark_job_failed(job_id: UUID, error: str) -> None:
 
 
 def run_translation_job(job_id: UUID, user_id: UUID, recipe_id: UUID, language_code: str) -> None:
+    if settings.maintenance_mode:
+        # Keep the durable job pending; release only the process-local slot.
+        # Operators must drain already-running jobs before backup/reset.
+        release_job(user_id)
+        return
     language_code = normalize_language(language_code)
     openai_called = False
     estimated_cost = 0.0

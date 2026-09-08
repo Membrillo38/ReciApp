@@ -6,6 +6,8 @@ import json
 from datetime import datetime, timezone
 from uuid import UUID
 
+from fastapi import HTTPException
+
 from app.config import settings
 from app.db import get_supabase
 
@@ -55,6 +57,8 @@ def verify_jws(compact: str) -> dict:
 
 
 def process_signed_notification(signed_payload: str) -> dict:
+    if settings.maintenance_mode:
+        raise HTTPException(status_code=503, detail="Maintenance in progress. Retry.", headers={"Retry-After": "30"})
     notification = verify_jws(signed_payload)
     notification_id = str(notification.get("notificationUUID") or "")
     if not notification_id:
@@ -86,10 +90,10 @@ def process_signed_notification(signed_payload: str) -> dict:
         expires_at = datetime.fromtimestamp(float(expiry_ms) / 1000, tz=timezone.utc)
     off = event_type in {"EXPIRED", "REFUND", "REVOKE"} or bool(transaction.get("revocationDate"))
     update = {"is_pro": not off, "pro_expires_at": expires_at.isoformat() if expires_at else None}
+    updated = False
     if user_uuid:
-        changed = sb.table("profiles").update(update).eq("id", str(user_uuid)).execute()
-        if not changed.data:
-            sb.table("profiles").upsert({"id": str(user_uuid), "display_name": None, **update}).execute()
+        changed = sb.table("profiles").update(update).eq("id", str(user_uuid)).is_("deleted_at", "null").execute()
+        updated = bool(changed.data)
 
     redacted = {"notificationType": event_type, "environment": data.get("environment"), "productId": transaction.get("productId")}
     sb.table("apple_notification_events").insert({
@@ -97,6 +101,6 @@ def process_signed_notification(signed_payload: str) -> dict:
         "notification_type": event_type,
         "signed_payload_sha256": hashlib.sha256(signed_payload.encode()).hexdigest(),
         "payload": redacted,
-        "status": "processed" if user_uuid else "skipped",
+        "status": "processed" if updated else "skipped",
     }).execute()
-    return {"ok": True, "event_id": notification_id, "updated": bool(user_uuid), "is_pro": update["is_pro"] if user_uuid else None}
+    return {"ok": True, "event_id": notification_id, "updated": updated, "is_pro": update["is_pro"] if updated else None}

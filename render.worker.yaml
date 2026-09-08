@@ -8,12 +8,20 @@ services:
     plan: starter
     region: frankfurt
     dockerCommand: python -m app.worker
-    autoDeploy: true
+    autoDeployTrigger: "off"
     envVars:
       - key: OPENAI_API_KEY
         sync: false
       - key: SUPABASE_URL
         sync: false
+      - key: SUPABASE_EXPECTED_HOST
+        sync: false
+      - key: SUPABASE_TIMEOUT_SECONDS
+        value: "10"
+      - key: READINESS_TIMEOUT_SECONDS
+        value: "3"
+      - key: MAINTENANCE_MODE
+        value: "false"
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
       - key: MAX_DURATION_SECONDS
