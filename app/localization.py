@@ -78,6 +78,8 @@ def build_recipe_prompt(target_language: str, source_json: str) -> str:
         "keep overlay quantities and units if they are more precise. "
         "Do not drop spoken-only or overlay-only ingredients. "
         "Do not treat marketing captions as a complete ingredient list when overlay or transcript lists ingredients.\n"
+        "If the source does not contain a real cooking recipe with ingredients and a method, return empty ingredient_sections, empty steps, and confidence 0. "
+        "Do not invent a recipe from a title, marketing caption, or hashtags.\n"
         "Do not invent ingredients, tips, or sections not supported by the source text.\n\n"
         f"SOURCE:\n{source_json}"
     )

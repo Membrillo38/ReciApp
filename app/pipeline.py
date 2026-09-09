@@ -15,7 +15,7 @@ from app.quota import record_usage
 from app.job_guard import release as release_job
 from app.localization import normalize_language
 from app.spend import conservative_failure_cost, settle_spend
-from app.recipe_builder import build_recipe, translate_recipe
+from app.recipe_builder import RECIPE_UNDETERMINED_ERROR, build_recipe, translate_recipe
 from app.store import get_recipe, recipe_from_row, save_user_recipe, update_job, upsert_recipe
 from app.translation_cache import (
     recipe_translation_payload,
@@ -36,6 +36,7 @@ def _safe_job_error(error: ExtractError) -> str:
         "Unsupported URL.",
         "Video too long (",
         "No usable recipe text found in source",
+        RECIPE_UNDETERMINED_ERROR,
         "Incomplete TikTok carousel:",
         "TikTok video evidence incomplete:",
         "Recipe source text exceeds supported bound",
@@ -184,7 +185,7 @@ def run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langua
             if not transcript and not any(
                 text.strip() for text in (media.title, media.description, video_text or "")
             ):
-                raise ExtractError("No usable recipe text found in source")
+                raise ExtractError(RECIPE_UNDETERMINED_ERROR)
 
             openai_called = True
             recipe = build_recipe(

@@ -1059,6 +1059,109 @@ def test_recipe_builder_preserves_ordered_carousel_metadata():
     ]
 
 
+def _recipe_model_payload(**overrides) -> str:
+    data = {
+        "title": "Pasta",
+        "description": "Fast dinner",
+        "ingredient_sections": [
+            {
+                "title": "Ingredients",
+                "ingredients": [{"name": "pasta", "quantity": "250", "unit": "g"}],
+            }
+        ],
+        "tips": [],
+        "steps": [{"order": 1, "text": "Boil", "duration_minutes": 10}],
+        "servings": 2,
+        "prep_minutes": 5,
+        "cook_minutes": 10,
+        "tags": [],
+        "confidence": 0.9,
+        "missing_fields": [],
+    }
+    data.update(overrides)
+    return json.dumps(data)
+
+
+def _build_recipe_from_model_payload(payload: str):
+    original_client = recipe_builder.OpenAI
+    original_key = recipe_builder.settings.openai_api_key
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content=payload, refusal=None),
+                        finish_reason="stop",
+                    )
+                ]
+            )
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    recipe_builder.OpenAI = FakeClient
+    recipe_builder.settings.openai_api_key = "test-key"
+    try:
+        return recipe_builder.build_recipe(
+            platform=Platform.tiktok,
+            source_url="https://www.tiktok.com/@cook/video/1",
+            title="Pasta",
+            description="Fast dinner",
+            author="cook",
+            thumbnail_url=None,
+            transcript=None,
+            slide_text="Boil pasta",
+        )
+    finally:
+        recipe_builder.OpenAI = original_client
+        recipe_builder.settings.openai_api_key = original_key
+
+
+def test_recipe_builder_rejects_empty_or_unknown_output():
+    cases = [
+        {"ingredient_sections": [], "confidence": 0.9},
+        {
+            "ingredient_sections": [
+                {"title": "Ingredients", "ingredients": [{"name": "", "quantity": None, "unit": None}]}
+            ],
+            "confidence": 0.9,
+        },
+        {
+            "ingredient_sections": [
+                {"title": "Ingredients", "ingredients": [{"name": "null", "quantity": None, "unit": None}]}
+            ],
+            "confidence": 0.9,
+        },
+        {"steps": [], "confidence": 0.9},
+        {"steps": [{"order": 1, "text": "null", "duration_minutes": None}], "confidence": 0.9},
+        {"confidence": 0.2},
+    ]
+    for overrides in cases:
+        with pytest.raises(extract.ExtractError, match="Could not determine a recipe from this video"):
+            _build_recipe_from_model_payload(_recipe_model_payload(**overrides))
+
+
+def test_recipe_builder_keeps_named_ingredient_with_null_quantity():
+    recipe = _build_recipe_from_model_payload(
+        _recipe_model_payload(
+            ingredient_sections=[
+                {
+                    "title": "Ingredients",
+                    "ingredients": [{"name": "pasta", "quantity": None, "unit": None}],
+                }
+            ]
+        )
+    )
+    assert [(item.name, item.quantity) for item in recipe.ingredients] == [("pasta", None)]
+
+
+def test_undetermined_recipe_is_an_actionable_job_error():
+    error = extract.ExtractError("Could not determine a recipe from this video.")
+    assert _safe_job_error(error) == "Could not determine a recipe from this video."
+
+
 def test_overlay_sample_times_cover_sequential_ingredient_cards():
     times = extract.overlay_sample_times(148.3)
     assert 24 <= len(times) <= extract.MAX_VIDEO_FRAMES

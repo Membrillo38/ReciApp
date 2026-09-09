@@ -13,6 +13,10 @@ from app.models import Ingredient, IngredientSection, Platform, Recipe, RecipeTi
 
 logger = logging.getLogger(__name__)
 
+RECIPE_UNDETERMINED_ERROR = "Could not determine a recipe from this video."
+_MIN_RECIPE_CONFIDENCE = 0.4
+_BLANK_VALUES = {"", "null", "none", "n/a", "nil", "undefined", "-"}
+
 
 RECIPE_SCHEMA = {
     "name": "recipe",
@@ -133,12 +137,18 @@ def build_recipe(
         {"role": "user", "content": user_content},
     ]
     data = _request_structured_recipe(messages)
-
-    ingredient_sections = [
-        IngredientSection(**section)
-        for section in (data.get("ingredient_sections") or [])
-        if section.get("ingredients")
-    ]
+    ingredient_sections = _usable_ingredient_sections(data.get("ingredient_sections"))
+    steps = _usable_steps(data.get("steps"))
+    try:
+        confidence = float(data.get("confidence"))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if (
+        not ingredient_sections
+        or not steps
+        or confidence < _MIN_RECIPE_CONFIDENCE
+    ):
+        raise ExtractError(RECIPE_UNDETERMINED_ERROR)
     ingredients = [
         ingredient
         for section in ingredient_sections
@@ -147,27 +157,89 @@ def build_recipe(
 
     try:
         return Recipe(
-            title=data["title"] or untitled_recipe_name(language_code),
+            title=_visible_text(data.get("title")) or untitled_recipe_name(language_code),
             ingredients=ingredients,
             ingredient_sections=ingredient_sections,
-            steps=data["steps"],
+            steps=steps,
             servings=data.get("servings"),
             prep_minutes=data.get("prep_minutes"),
             cook_minutes=data.get("cook_minutes"),
             tags=data.get("tags") or [],
-            confidence=float(data.get("confidence") or 0.5),
+            confidence=confidence,
             missing_fields=data.get("missing_fields") or [],
             source_url=source_url,
             platform=platform,
             thumbnail_url=thumbnail_url,
             carousel_image_urls=carousel_image_urls or [],
             author=author,
-            description=data.get("description") or None,
+            description=_optional_text(data.get("description")),
             tips=data.get("tips") or [],
             raw_transcript=_merge_text(transcript, slide_text),
         )
     except (KeyError, TypeError, ValueError, ValidationError) as exc:
         raise ExtractError("Recipe output failed validation") from exc
+
+
+def _visible_text(value: object) -> str:
+    text = str(value).strip() if value is not None else ""
+    if not text or text.lower() in _BLANK_VALUES:
+        return ""
+    return text
+
+
+def _optional_text(value: object) -> str | None:
+    text = _visible_text(value)
+    return text or None
+
+
+def _usable_ingredient_sections(raw_sections: object) -> list[IngredientSection]:
+    sections: list[IngredientSection] = []
+    if not isinstance(raw_sections, list):
+        return sections
+    for section in raw_sections:
+        if not isinstance(section, dict):
+            continue
+        items: list[Ingredient] = []
+        for raw in section.get("ingredients") or []:
+            if not isinstance(raw, dict):
+                continue
+            name = _visible_text(raw.get("name"))
+            if not name:
+                continue
+            items.append(
+                Ingredient(
+                    name=name,
+                    quantity=_optional_text(raw.get("quantity")),
+                    unit=_optional_text(raw.get("unit")),
+                )
+            )
+        if items:
+            sections.append(
+                IngredientSection(
+                    title=_visible_text(section.get("title")) or "Ingredients",
+                    ingredients=items,
+                )
+            )
+    return sections
+
+
+def _usable_steps(raw_steps: object) -> list[dict]:
+    steps: list[dict] = []
+    if not isinstance(raw_steps, list):
+        return steps
+    order = 1
+    for raw in raw_steps:
+        if not isinstance(raw, dict):
+            continue
+        text = _visible_text(raw.get("text"))
+        if not text:
+            continue
+        step = dict(raw)
+        step["text"] = text
+        step["order"] = order
+        order += 1
+        steps.append(step)
+    return steps
 
 
 def _merge_text(transcript: str | None, slide_text: str | None) -> str | None:
