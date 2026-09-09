@@ -30,6 +30,8 @@ class SlideInfo:
     author: str | None
     image_urls: list[str]
     ocr_text: str | None = None
+    total_image_count: int = 0
+    incomplete_reason: str | None = None
 
 
 def fetch_tiktok_slides(url: str) -> SlideInfo | None:
@@ -59,7 +61,8 @@ def _slide_info_from_html(html: str) -> SlideInfo | None:
     if not item:
         return None
     image_post = item.get("imagePost") or item.get("image_post") or {}
-    images = _image_urls(image_post.get("images") if isinstance(image_post, dict) else None)
+    raw_images = image_post.get("images") if isinstance(image_post, dict) else None
+    images, total = _image_urls_with_count(raw_images)
     if not images:
         return None
     return SlideInfo(
@@ -67,16 +70,33 @@ def _slide_info_from_html(html: str) -> SlideInfo | None:
         description=(item.get("desc") or "").strip(),
         author=((item.get("author") or {}).get("uniqueId")),
         image_urls=images,
+        total_image_count=total,
+        incomplete_reason=(
+            f"TikTok carousel has {total} slides; the supported limit is {MAX_CAROUSEL_SLIDES}"
+            if total > MAX_CAROUSEL_SLIDES
+            else (
+                f"TikTok carousel exposes {total} slides but only {len(images)} readable image references"
+                if len(images) != total
+                else None
+            )
+        ),
     )
 
 
 def _image_urls(raw_images: object) -> list[str]:
     """Return stable, bounded slide URLs from TikTok hydration variants."""
+    urls, _ = _image_urls_with_count(raw_images)
+    return urls
+
+
+def _image_urls_with_count(raw_images: object) -> tuple[list[str], int]:
+    """Return bounded URLs plus the complete readable-reference count."""
     if not isinstance(raw_images, list):
-        return []
+        return [], 0
 
     output: list[str] = []
     seen: set[str] = set()
+    total = len(raw_images)
     for image in raw_images:
         if isinstance(image, str):
             candidates = [image]
@@ -100,6 +120,7 @@ def _image_urls(raw_images: object) -> list[str]:
             candidates = []
         # TikTok commonly orders URLs from smaller to larger; try the largest
         # first while retaining original slide order.
+        selected: str | None = None
         for value in reversed(candidates):
             candidate = str(value or "").strip()
             parsed = urlparse(candidate)
@@ -107,12 +128,13 @@ def _image_urls(raw_images: object) -> list[str]:
                 continue
             if len(candidate) > 2048 or candidate in seen:
                 continue
-            seen.add(candidate)
-            output.append(candidate)
+            selected = candidate
             break
-        if len(output) >= MAX_CAROUSEL_SLIDES:
-            break
-    return output
+        if selected:
+            seen.add(selected)
+            if len(output) < MAX_CAROUSEL_SLIDES:
+                output.append(selected)
+    return output, total
 
 
 def _photo_meta_fallback(html: str, url: str) -> SlideInfo | None:
@@ -152,6 +174,11 @@ def _photo_meta_fallback(html: str, url: str) -> SlideInfo | None:
         description=description.strip(),
         author=author,
         image_urls=images,
+        total_image_count=len(images),
+        incomplete_reason=(
+            "TikTok carousel hydration was unavailable; Open Graph images "
+            "do not prove complete carousel coverage"
+        ),
     )
 
 

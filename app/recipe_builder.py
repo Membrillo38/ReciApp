@@ -122,11 +122,7 @@ def build_recipe(
         "slide_text": slide_text,
         "transcript": transcript,
     }
-    # Bound source size to keep prompt and output costs predictable.
-    source_json = json.dumps(payload, ensure_ascii=False)
-    # Carousel OCR is ordered by slide; keep it ahead of optional video
-    # transcript so later ingredient/step slides survive the bound.
-    source_json = source_json[:24000]
+    source_json = _bounded_source_json(payload)
     user_content = build_recipe_prompt(target_language, source_json)
 
     messages = [
@@ -177,6 +173,29 @@ def build_recipe(
 def _merge_text(transcript: str | None, slide_text: str | None) -> str | None:
     parts = [p.strip() for p in (transcript, slide_text) if p and p.strip()]
     return "\n\n".join(parts) if parts else None
+
+
+def _bounded_source_json(payload: dict, max_chars: int = 24_000) -> str:
+    """Bound metadata fields without cutting serialized carousel OCR JSON."""
+    bounded = dict(payload)
+    for key, limit in (("title", 2_000), ("author", 500), ("description", 8_000), ("transcript", 16_000)):
+        value = bounded.get(key)
+        if isinstance(value, str) and len(value) > limit:
+            bounded[key] = value[:limit] + "\n[metadata truncated at supported input bound]"
+
+    encoded = json.dumps(bounded, ensure_ascii=False)
+    if len(encoded) <= max_chars:
+        return encoded
+
+    # Carousel/frame OCR is ordered evidence. Reduce optional metadata first;
+    # never slice the serialized object or silently remove the final slide.
+    for key in ("description", "title", "author", "transcript"):
+        if bounded.get(key):
+            bounded[key] = "[omitted at supported input bound]"
+            encoded = json.dumps(bounded, ensure_ascii=False)
+            if len(encoded) <= max_chars:
+                return encoded
+    raise ExtractError("Recipe source text exceeds supported bound")
 
 
 def translate_recipe(recipe: Recipe, target_language_code: str) -> Recipe:

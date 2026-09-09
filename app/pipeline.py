@@ -3,11 +3,12 @@ from __future__ import annotations
 import shutil
 import logging
 from pathlib import Path
+from urllib.parse import urlparse
 from uuid import UUID
 
 from app.config import settings
 from app.costing import estimate_miss_cost_cents
-from app.extract import ExtractError, fetch_media_info
+from app.extract import ExtractError, VideoFrames, download_tiktok_video_frames, fetch_media_info
 from app.models import JobStatus, Platform, Recipe
 from app.platforms import detect_platform
 from app.quota import record_usage
@@ -22,7 +23,7 @@ from app.translation_cache import (
     upsert_recipe_translation,
 )
 from app.tiktok_slides import SlideInfo, fetch_tiktok_slides
-from app.transcript import ocr_slides, whisper_transcript, youtube_transcript
+from app.transcript import ocr_slides, ocr_video_frames, whisper_transcript, youtube_transcript
 
 logger = logging.getLogger(__name__)
 _RETRYABLE_EXTRACTION_ERROR = "Extraction temporarily failed. Retry the import."
@@ -35,6 +36,8 @@ def _safe_job_error(error: ExtractError) -> str:
         "Unsupported URL.",
         "Video too long (",
         "No usable recipe text found in source",
+        "Incomplete TikTok carousel:",
+        "TikTok video evidence incomplete:",
         "OPENAI_API_KEY is not configured",
         "Recipe model refused",
         "Recipe model returned",
@@ -57,9 +60,25 @@ def run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langua
     audio_path: Path | None = None
     used_transcribe = False
     slide_count = 0
+    frame_count = 0
     duration_seconds: int | None = None
     openai_called = False
     estimated_cost = 0.0
+    video_frames: VideoFrames | None = None
+
+    def record_ocr_attempt() -> None:
+        nonlocal frame_count, slide_count, estimated_cost, openai_called
+        openai_called = True
+        if slide_info is not None:
+            slide_count += 1
+        else:
+            frame_count += 1
+        estimated_cost = estimate_miss_cost_cents(
+            duration_seconds=duration_seconds,
+            slide_count=slide_count,
+            frame_count=frame_count,
+            used_transcribe=used_transcribe,
+        )
 
     try:
         update_job(job_id, status=JobStatus.processing.value, progress=5)
@@ -79,24 +98,19 @@ def run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langua
                 len(slide_info.image_urls) if slide_info else 0,
             )
             update_job(job_id, progress=30)
+            if slide_info is None and "/photo/" in (urlparse(url).path or "").lower():
+                raise ExtractError(
+                    "Incomplete TikTok carousel: complete slide hydration was unavailable"
+                )
 
         recipe: Recipe
         if slide_info and slide_info.image_urls:
-            slide_count = len(slide_info.image_urls)
-            try:
-                slide_text = ocr_slides(slide_info)
-            except Exception as exc:
-                # Metadata/title can still produce a useful structured shell
-                # when one or more CDN slide images cannot be downloaded.
-                logger.warning(
-                    "extract stage=ocr_fallback job_id=%s platform=%s error_type=%s",
-                    job_id,
-                    platform.value,
-                    type(exc).__name__,
-                )
-                slide_text = None
+            if slide_info.incomplete_reason:
+                raise ExtractError(f"Incomplete TikTok carousel: {slide_info.incomplete_reason}")
+            slide_text = ocr_slides(slide_info, on_attempt=record_ocr_attempt)
             update_job(job_id, progress=60)
             openai_called = True
+            estimated_cost = estimate_miss_cost_cents(slide_count=slide_count)
             recipe = build_recipe(
                 platform=platform,
                 source_url=url,
@@ -128,9 +142,13 @@ def run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langua
                 transcript = youtube_transcript(url)
             if not transcript and audio_path:
                 openai_called = True
+                used_transcribe = True
+                estimated_cost = estimate_miss_cost_cents(
+                    duration_seconds=duration_seconds,
+                    used_transcribe=True,
+                )
                 try:
                     transcript = whisper_transcript(audio_path)
-                    used_transcribe = bool(transcript)
                 except Exception as exc:
                     # Continue with title/description instead of converting a
                     # missing audio transcript into a permanently failed job.
@@ -141,9 +159,26 @@ def run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langua
                         type(exc).__name__,
                     )
                     transcript = None
+            video_text = media.extra_text
+            if (
+                platform == Platform.tiktok
+                and not _has_sufficient_recipe_evidence(
+                    transcript,
+                    media.title,
+                    media.description,
+                    video_text,
+                )
+            ):
+                video_frames = download_tiktok_video_frames(
+                    url,
+                    media_id=media.media_id,
+                    duration_seconds=duration_seconds,
+                )
+                openai_called = True
+                video_text = ocr_video_frames(video_frames.paths, on_attempt=record_ocr_attempt)
             update_job(job_id, progress=60)
             if not transcript and not any(
-                text.strip() for text in (media.title, media.description, media.extra_text or "")
+                text.strip() for text in (media.title, media.description, video_text or "")
             ):
                 raise ExtractError("No usable recipe text found in source")
 
@@ -156,7 +191,7 @@ def run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langua
                 author=media.author,
                 thumbnail_url=media.thumbnail_url,
                 transcript=transcript,
-                slide_text=media.extra_text,
+                slide_text=video_text,
                 language_code=language_code,
             )
         update_job(job_id, progress=85)
@@ -174,6 +209,7 @@ def run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langua
         cost = estimate_miss_cost_cents(
             duration_seconds=duration_seconds,
             slide_count=slide_count,
+            frame_count=frame_count,
             used_transcribe=used_transcribe,
         )
         estimated_cost = cost
@@ -228,6 +264,14 @@ def run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langua
         release_job(user_id)
         if audio_path:
             shutil.rmtree(audio_path.parent, ignore_errors=True)
+        if video_frames:
+            shutil.rmtree(video_frames.directory, ignore_errors=True)
+
+
+def _has_sufficient_recipe_evidence(*parts: str | None) -> bool:
+    """Use frames when all available transcript/caption evidence is too sparse."""
+    words = " ".join(part.strip() for part in parts if part and part.strip()).split()
+    return len(words) >= 80
 
 
 def _mark_job_failed(job_id: UUID, error: str) -> None:

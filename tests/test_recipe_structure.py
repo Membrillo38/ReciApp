@@ -84,3 +84,39 @@ def test_recipe_prompt_and_schema_require_sections_and_tips():
     assert "Extract separate actionable tips" in prompt
     assert "ingredient_sections" in properties
     assert "tips" in properties
+
+
+def test_section_flatten_preserves_order_and_intentional_duplicate_names():
+    recipe = recipe_public_from_row(
+        {
+            "id": str(uuid4()),
+            "title": "Layered cake",
+            "ingredient_sections": [
+                {
+                    "title": "Cake",
+                    "ingredients": [
+                        {"name": "sugar", "quantity": "100", "unit": "g"},
+                        {"name": "flour", "quantity": "200", "unit": "g"},
+                    ],
+                },
+                {
+                    "title": "Frosting",
+                    "ingredients": [
+                        {"name": "sugar", "quantity": "50", "unit": "g"},
+                        {"name": "cream", "quantity": "100", "unit": "ml"},
+                    ],
+                },
+            ],
+            "steps": [],
+            "platform": "tiktok",
+            "source_url_raw": "https://www.tiktok.com/@cook/video/2",
+        }
+    )
+
+    assert [section.title for section in recipe.ingredient_sections] == ["Cake", "Frosting"]
+    assert [(item.name, item.quantity) for item in recipe.ingredients] == [
+        ("sugar", "100"),
+        ("flour", "200"),
+        ("sugar", "50"),
+        ("cream", "100"),
+    ]

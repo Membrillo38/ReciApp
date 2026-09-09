@@ -39,6 +39,21 @@ class MediaInfo:
     subtitles_text: str | None
     audio_path: Path | None
     extra_text: str | None = None
+    media_id: str | None = None
+
+
+@dataclass
+class VideoFrames:
+    paths: list[Path]
+    directory: Path
+
+
+MAX_VIDEO_BYTES = 50_000_000
+MAX_VIDEO_FRAMES = 3
+MAX_FRAME_BYTES = 2_000_000
+VIDEO_DOWNLOAD_TIMEOUT_SECONDS = 120
+FRAME_EXTRACT_TIMEOUT_SECONDS = 20
+VIDEO_PROBE_TIMEOUT_SECONDS = 10
 
 
 def _run_ytdlp(args: list[str], timeout: int = 120) -> subprocess.CompletedProcess[str]:
@@ -130,6 +145,7 @@ def fetch_media_info(url: str) -> MediaInfo:
         webpage_url=data.get("webpage_url") or url,
         subtitles_text=subtitles_text,
         audio_path=audio_path,
+        media_id=str(data.get("id") or "video"),
     )
 
 
@@ -162,6 +178,7 @@ def _fetch_tiktok_oembed(url: str) -> MediaInfo | None:
         webpage_url=url,
         subtitles_text=None,
         audio_path=None,
+        media_id=None,
     )
 
 
@@ -277,3 +294,125 @@ def _download_audio(url: str, media_id: str) -> Path | None:
         shutil.rmtree(tmpdir, ignore_errors=True)
         return None
     return matches[0]
+
+
+def download_tiktok_video_frames(
+    url: str,
+    *,
+    media_id: str | None,
+    duration_seconds: int | None,
+) -> VideoFrames:
+    """Download bounded TikTok media and sample at most three ordered frames."""
+    try:
+        validate_public_url(url, allowed_hosts={"tiktok.com"})
+    except ValueError as exc:
+        raise ExtractError(str(exc)) from exc
+    if duration_seconds is not None and duration_seconds > settings.max_duration_seconds:
+        raise ExtractError(
+            f"Video too long ({duration_seconds}s). Max {settings.max_duration_seconds}s."
+        )
+
+    tmpdir = Path(tempfile.mkdtemp(prefix="recipe-video-frames-"))
+    safe_media_id = re.sub(r"[^A-Za-z0-9._-]", "_", str(media_id or "video"))[:100] or "video"
+    output = tmpdir / f"{safe_media_id}.mp4"
+    try:
+        proc = _run_ytdlp(
+            [
+                "--format",
+                "best[ext=mp4]/best",
+                "--max-filesize",
+                "50M",
+                "--socket-timeout",
+                "20",
+                "--retries",
+                "2",
+                "--no-playlist",
+                "--no-warnings",
+                "-o",
+                str(output),
+                url,
+            ],
+            timeout=VIDEO_DOWNLOAD_TIMEOUT_SECONDS,
+        )
+        if proc.returncode != 0 or not output.is_file():
+            raise ExtractError("TikTok video frame fallback download failed")
+        if output.stat().st_size <= 0 or output.stat().st_size > MAX_VIDEO_BYTES:
+            raise ExtractError("TikTok video frame fallback exceeded the download bound")
+        ffmpeg = shutil.which("ffmpeg")
+        ffprobe = shutil.which("ffprobe")
+        if not ffmpeg or not ffprobe:
+            raise ExtractError("ffmpeg and ffprobe are required on the extraction server")
+
+        try:
+            probe = subprocess.run(
+                [
+                    ffprobe,
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    str(output),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=VIDEO_PROBE_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ExtractError("TikTok video duration probe timed out") from exc
+        try:
+            duration = float((probe.stdout or "").strip())
+        except ValueError as exc:
+            raise ExtractError("TikTok video duration could not be verified") from exc
+        if probe.returncode != 0 or duration <= 0:
+            raise ExtractError("TikTok video duration could not be verified")
+        if duration > settings.max_duration_seconds:
+            raise ExtractError(
+                f"Video too long ({int(duration)}s). Max {settings.max_duration_seconds}s."
+            )
+        # The downloaded file is authoritative. Metadata can be absent or stale.
+        duration = max(1.0, duration)
+        fractions = (0.15, 0.5, 0.85)
+        paths: list[Path] = []
+        for index, fraction in enumerate(fractions[:MAX_VIDEO_FRAMES], start=1):
+            timestamp = min(max(duration * fraction, 0), max(duration - 0.1, 0))
+            frame_path = tmpdir / f"frame-{index:02d}.jpg"
+            try:
+                frame = subprocess.run(
+                    [
+                        ffmpeg,
+                        "-nostdin",
+                        "-loglevel",
+                        "error",
+                        "-ss",
+                        f"{timestamp:.3f}",
+                        "-i",
+                        str(output),
+                        "-frames:v",
+                        "1",
+                        "-vf",
+                        "scale=1280:1280:force_original_aspect_ratio=decrease",
+                        "-q:v",
+                        "4",
+                        "-y",
+                        str(frame_path),
+                    ],
+                    capture_output=True,
+                    timeout=FRAME_EXTRACT_TIMEOUT_SECONDS,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise ExtractError("TikTok video frame extraction timed out") from exc
+            if frame.returncode != 0 or not frame_path.is_file():
+                raise ExtractError(f"TikTok video frame {index} could not be sampled")
+            size = frame_path.stat().st_size
+            if size <= 0 or size > MAX_FRAME_BYTES:
+                raise ExtractError(f"TikTok video frame {index} exceeded the size bound")
+            paths.append(frame_path)
+        output.unlink(missing_ok=True)
+        return VideoFrames(paths=paths, directory=tmpdir)
+    except Exception:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise
