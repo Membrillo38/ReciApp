@@ -12,11 +12,19 @@ from app.extract import ExtractError, VideoFrames, download_tiktok_video_frames,
 from app.models import JobStatus, Platform, Recipe
 from app.platforms import detect_platform
 from app.quota import record_usage
-from app.job_guard import release as release_job
+from app.job_guard import release as release_job, try_claim as try_claim_job
 from app.localization import normalize_language
 from app.spend import conservative_failure_cost, settle_spend
 from app.recipe_builder import RECIPE_UNDETERMINED_ERROR, build_recipe, translate_recipe
-from app.store import get_recipe, recipe_from_row, save_user_recipe, update_job, upsert_recipe
+from app.store import (
+    claim_next_pending_extract,
+    claim_next_pending_extract_for_user,
+    get_recipe,
+    recipe_from_row,
+    save_user_recipe,
+    update_job,
+    upsert_recipe,
+)
 from app.translation_cache import (
     recipe_translation_payload,
     source_recipe_fingerprint,
@@ -271,6 +279,44 @@ def run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langua
             shutil.rmtree(audio_path.parent, ignore_errors=True)
         if video_frames:
             shutil.rmtree(video_frames.directory, ignore_errors=True)
+        _drain_next_extract_for_user(user_id)
+
+
+def _drain_next_extract_for_user(user_id: UUID) -> None:
+    """Start oldest pending for this user; if none, kick oldest global pending."""
+    if settings.maintenance_mode or settings.worker_enabled:
+        return
+    if try_claim_job(user_id):
+        row = claim_next_pending_extract_for_user(user_id)
+        if row:
+            _run_claimed_pending(row, user_id)
+            return
+        release_job(user_id)
+
+    row = claim_next_pending_extract()
+    if not row:
+        return
+    owner = UUID(str(row["user_id"]))
+    if not try_claim_job(owner):
+        update_job(UUID(str(row["id"])), status=JobStatus.pending.value, progress=0)
+        return
+    _run_claimed_pending(row, owner)
+
+
+def _run_claimed_pending(row: dict, user_id: UUID) -> None:
+    try:
+        run_extract_job(
+            UUID(str(row["id"])),
+            user_id,
+            str(row["source_url_raw"]),
+            str(row["source_url_norm"]),
+            str(row.get("language_code") or "en-US"),
+        )
+    except Exception:
+        logger.exception(
+            "drain next extract failed user_id=%s",
+            user_id,
+        )
 
 
 def _has_sufficient_recipe_evidence(*parts: str | None) -> bool:

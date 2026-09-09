@@ -69,6 +69,8 @@ struct ExtractResponse: Decodable, Sendable {
     let status: String
     let cacheHit: Bool
     let progress: Int
+    let queued: Bool?
+    let queuePosition: Int?
 }
 struct JobResponse: Decodable, Sendable {
     let jobId: UUID
@@ -80,6 +82,16 @@ struct JobResponse: Decodable, Sendable {
     let progress: Int
     let nextJobId: UUID?
 }
+struct QueuedJobItem: Decodable, Sendable {
+    let jobId: UUID
+    let status: String
+    let progress: Int
+    let sourceUrl: String
+    let queuePosition: Int
+    let createdAt: String?
+    let jobKind: String?
+}
+struct QueuedJobsResponse: Decodable, Sendable { let items: [QueuedJobItem] }
 struct OkResponse: Decodable, Sendable { let ok: Bool }
 struct ReciAPIError: Error, LocalizedError, Sendable {
     let status: Int
@@ -161,6 +173,9 @@ actor ReciAppAPI {
     func extract(url: URL, language: String) async throws -> ExtractResponse {
         let body = try JSONEncoder().encode(ExtractRequest(url: url.absoluteString, language: language))
         return try await request("v1/extract", method: "POST", body: body)
+    }
+    func myJobs() async throws -> QueuedJobsResponse {
+        try await request("v1/me/jobs")
     }
     func job(id: UUID, language: String) async throws -> JobResponse {
         try await request("v1/jobs/\(id.uuidString)", language: language)

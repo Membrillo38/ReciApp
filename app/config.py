@@ -51,7 +51,10 @@ class Settings(BaseSettings):
     user_monthly_budget_cents: float = 500.0
     max_job_cost_cents: float = 100.0
     max_concurrent_jobs: int = 8
+    # Process slots (extract + translation). Serial extract starts are gated in
+    # extract_recipe via user_has_processing_extract, not this counter alone.
     max_concurrent_jobs_per_user: int = 2
+    max_pending_jobs_per_user: int = 20
     # Web requests use FastAPI BackgroundTasks by default. A separate worker
     # can be enabled after the durable lease migration is deployed.
     worker_enabled: bool = False

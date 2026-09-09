@@ -24,7 +24,7 @@ from app.config import settings
 from app.security import audit_security_event, allow_rate_limit, request_ip
 from app.dashboard_stats import dashboard_overview, list_usage
 from app.db import get_supabase
-from app.store import anonymize_user_data, list_jobs, list_profiles, list_recipes, soft_delete_profile
+from app.store import anonymize_user_data, list_jobs, list_live_queue_jobs, list_profiles, list_recipes, soft_delete_profile
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -159,9 +159,17 @@ def recipes_page(request: Request):
 def jobs_page(request: Request):
     if redir := _guard(request):
         return redir
+    queue = list_live_queue_jobs(limit=100)
+    for index, row in enumerate(queue):
+        row["queue_position"] = index + 1
+    live = {
+        "queue": queue,
+        "processing_count": sum(1 for row in queue if row.get("status") == "processing"),
+        "pending_count": sum(1 for row in queue if row.get("status") == "pending"),
+    }
     return templates.TemplateResponse(
         "dashboard/jobs.html",
-        _ctx(request, "jobs", jobs=list_jobs(100)),
+        _ctx(request, "jobs", jobs=list_jobs(100), live=live),
     )
 
 

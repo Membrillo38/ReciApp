@@ -79,7 +79,10 @@ let recipe = try await api.waitForRecipe(
 
 El servidor acepta URLs públicas de TikTok, YouTube, Instagram y Facebook. Descargas privadas, contenido eliminado, restricciones de plataformas o falta de información culinaria pueden acabar en un job fallido.
 
-- `POST /v1/extract` devuelve `job_id`, `status`, `cache_hit`, `progress`.
+- `POST /v1/extract` devuelve `job_id`, `status`, `cache_hit`, `progress`, y opcionalmente `queued` / `queue_position`.
+- Si el usuario ya tiene extracts `pending`/`processing`, el servidor **encola** el nuevo job (`queued=true`) en vez de rechazarlo con 429 (salvo tope de 20 o rate limit).
+- La cola es **serial por usuario**: un extract activo; al terminar, el proceso arranca el `pending` más viejo.
+- `GET /v1/me/jobs` lista extracts abiertos (oldest first) con `queue_position`, `source_url`, `progress`, `status`. Úsalo para “Receta 2 de 5”.
 - También en cache hit, consulta el job para obtener la receta.
 - `GET /v1/jobs/{id}?language=es-ES` devuelve `pending`, `processing`, `completed` o `failed`.
 - Sigue siempre `next_job_id ?? job_id` de la respuesta: una extracción puede continuar con otro job de traducción.
@@ -87,6 +90,8 @@ El servidor acepta URLs públicas de TikTok, YouTube, Instagram y Facebook. Desc
 - El cliente espera cada 2 segundos y termina tras aproximadamente 10 minutos más la petición en curso. Cancelar la tarea o agotar la espera no cancela el trabajo del servidor.
 - Ante error transitorio al consultar un job, ofrece reanudar ese ID. No vuelvas a crear una extracción automáticamente.
 - Una receta fallida puede aparecer en el payload de una traducción: comprueba primero `status`, después `recipe`.
+- Pegar o compartir **varios enlaces** debe encolar todos (cap 20). No marques un share como procesado hasta que `POST /v1/extract` cree el job (o cache hit).
+- Free plan: el 2.º miss nuevo puede devolver 403 `FREE_WEEKLY_LIMIT` (paywall); los jobs ya aceptados siguen. Cache hit no gasta cupo.
 
 Render Free ejecuta las tareas con `BackgroundTasks` dentro del proceso web. Un reinicio puede interrumpirlas. El servidor expira jobs antiguos; no existe garantía de ejecución durable en este despliegue. `render.worker.yaml` está deliberadamente vacío y `WORKER_ENABLED=false` debe mantenerse mientras no exista un worker autorizado y operativo.
 
@@ -112,7 +117,7 @@ Para Superwall, configura la clave pública del proyecto, identifica al usuario 
 
 ## 6. Share Extension y eliminación
 
-Comparte URL e idioma mediante App Group `group.com.membri.reciapp`; habilítalo en ambos targets y sus perfiles de firma. Conserva enlaces recibidos sin sesión hasta terminar login. Deduplica entregas para no lanzar dos POST. La app principal debe crear el job y guardar su ID; la extensión no debe depender de ejecutar una extracción larga.
+Comparte URL e idioma mediante App Group `group.com.membri.reciapp`; habilítalo en ambos targets y sus perfiles de firma. La Share Extension debe encolar **todos** los adjuntos compatibles (no solo el primero) y abrir la app una vez. Conserva enlaces recibidos sin sesión hasta terminar login. Deduplica entregas para no lanzar dos POST. La app principal debe crear el job y guardar su ID; la extensión no debe depender de ejecutar una extracción larga. Si llega un segundo share mientras importa, encola y haz `POST /v1/extract` (quedará `pending`); no descartes el delivery.
 
 `removeRecipe(id:)` elimina la asociación del usuario, no la caché global. `deleteAccount()` solicita eliminar la cuenta; después del éxito, cierra sesión y borra cachés locales. Presenta confirmación explícita en la UI para borrar la cuenta. Actualmente el servidor bloquea primero el perfil y puede devolver éxito aunque el proveedor Auth falle al eliminar su registro; la eliminación completa en ese caso requiere revisión operativa. No afirmes en la UI una eliminación física instantánea de todos los sistemas.
 

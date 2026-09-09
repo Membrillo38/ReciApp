@@ -114,6 +114,8 @@ class ExtractJobResponse(BaseModel):
     status: JobStatus
     cache_hit: bool = False
     progress: int = 0
+    queued: bool = False
+    queue_position: int | None = None
 
 
 class JobResponse(BaseModel):
@@ -127,6 +129,20 @@ class JobResponse(BaseModel):
     # When a shared base extraction finishes in another language, polling can
     # hand the client the newly-created shared translation job.
     next_job_id: UUID | None = None
+
+
+class QueuedJobItem(BaseModel):
+    job_id: UUID
+    status: JobStatus
+    progress: int = 0
+    source_url: str
+    queue_position: int
+    created_at: str | None = None
+    job_kind: str = "extract"
+
+
+class QueuedJobsResponse(BaseModel):
+    items: list[QueuedJobItem] = Field(default_factory=list)
 
 
 class MeResponse(BaseModel):

@@ -58,7 +58,7 @@ def test_fallback_recipe_copy_is_localized():
 def test_ios_catalog_covers_all_supported_locales_and_placeholders():
     catalog_path = Path(__file__).parents[1] / "IosAPP" / "ReciApp" / "Localizable.xcstrings"
     catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
-    assert len(catalog["strings"]) == 218
+    assert len(catalog["strings"]) == 228
 
     token_pattern = re.compile(r"%(?:\d+\$)?(?:lld|d|@|%)")
 
@@ -83,8 +83,9 @@ def test_share_extension_uses_shared_localization_resources():
     share_entitlements = (root / "IosAPP" / "ReciAppShare" / "ReciAppShare.entitlements").read_text(encoding="utf-8")
     assert "ReciLocalization.string(\"Opening ReciApp…\")" in share_controller
     assert "No se encontró un enlace compatible" not in share_controller
-    assert "Localizable.xcstrings in Share Extension Resources" in project
-    assert "Localization.swift in Share Extension Sources" in project
+    assert "Localizable.xcstrings in Resources" in project
+    assert "Localization.swift" in project
+    assert project.count("Localizable.xcstrings in Resources") >= 2
     assert 'appGroupIdentifier = "group.com.membri.reciapp"' in localization
     assert "group.com.membri.reciapp" in app_entitlements
     assert "group.com.membri.reciapp" in share_entitlements

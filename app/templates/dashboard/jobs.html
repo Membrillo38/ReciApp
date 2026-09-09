@@ -2,6 +2,43 @@
 {% block title %}Jobs · ReciApp{% endblock %}
 {% block content %}
 <h1>Extract jobs</h1>
+
+<div class="grid">
+  <div class="card"><div class="label">Processing now</div><div class="value">{{ live.processing_count }}</div></div>
+  <div class="card"><div class="label">Queued</div><div class="value">{{ live.pending_count }}</div></div>
+</div>
+
+<h2>Cola ahora</h2>
+<div class="card">
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Status</th>
+        <th>Progress</th>
+        <th>User</th>
+        <th>URL</th>
+        <th>Age</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for j in live.queue %}
+      <tr>
+        <td>{{ j.queue_position }}</td>
+        <td class="{% if j.status=='processing' %}ok{% endif %}">{{ j.status }}</td>
+        <td>{{ j.progress or 0 }}%</td>
+        <td class="muted" style="max-width:120px; word-break:break-all;">{{ j.user_id }}</td>
+        <td class="muted" style="max-width:240px; word-break:break-all;">{{ j.source_url_norm }}</td>
+        <td class="muted">{{ j.created_at }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="muted">Cola vacía</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h2>Historial reciente</h2>
 <div class="card">
   <table>
     <thead><tr><th>Status</th><th>Progress</th><th>Cache</th><th>Cost ¢</th><th>URL</th><th>Error</th><th>When</th></tr></thead>
@@ -22,4 +59,8 @@
     </tbody>
   </table>
 </div>
+<script>
+  // Live queue for operators; refresh quietly every 5s.
+  setTimeout(function () { location.reload(); }, 5000);
+</script>
 {% endblock %}

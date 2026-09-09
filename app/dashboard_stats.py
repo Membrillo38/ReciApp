@@ -73,6 +73,18 @@ def dashboard_overview() -> dict:
     misses = sum(1 for j in jobs_week if not j.get("cache_hit"))
     failed = sum(1 for j in jobs_week if j.get("status") == "failed")
 
+    live = (
+        sb.table("extract_jobs")
+        .select("id,status")
+        .eq("job_kind", "extract")
+        .in_("status", ["pending", "processing"])
+        .execute()
+        .data
+        or []
+    )
+    processing_now = sum(1 for j in live if j.get("status") == "processing")
+    queued_now = sum(1 for j in live if j.get("status") == "pending")
+
     defaults = get_app_defaults()
     return {
         "users_total": len(active_users),
@@ -83,6 +95,8 @@ def dashboard_overview() -> dict:
         "cache_hits_week": hits,
         "cache_misses_week": misses,
         "failed_week": failed,
+        "processing_now": processing_now,
+        "queued_now": queued_now,
         "cost_cents_week": round(cost_week, 4),
         "cost_cents_month": round(cost_month, 4),
         "cost_usd_week": round(cost_week / 100.0, 4),

@@ -414,6 +414,117 @@ def list_jobs(limit: int = 50) -> list[dict]:
     return res.data or []
 
 
+def count_user_open_extract_jobs(user_id: UUID) -> int:
+    """Pending + processing extract jobs owned by the user (serial queue size)."""
+    sb = get_supabase()
+    res = (
+        sb.table("extract_jobs")
+        .select("id", count="exact")
+        .eq("user_id", str(user_id))
+        .eq("job_kind", "extract")
+        .in_("status", ["pending", "processing"])
+        .execute()
+    )
+    return int(res.count or 0)
+
+
+def user_has_processing_extract(user_id: UUID) -> bool:
+    sb = get_supabase()
+    res = (
+        sb.table("extract_jobs")
+        .select("id")
+        .eq("user_id", str(user_id))
+        .eq("job_kind", "extract")
+        .eq("status", "processing")
+        .limit(1)
+        .execute()
+    )
+    return bool(res.data)
+
+
+def list_user_open_extract_jobs(user_id: UUID, *, limit: int = 50) -> list[dict]:
+    """Oldest-first pending/processing extracts for the user's import queue."""
+    sb = get_supabase()
+    res = (
+        sb.table("extract_jobs")
+        .select("*")
+        .eq("user_id", str(user_id))
+        .eq("job_kind", "extract")
+        .in_("status", ["pending", "processing"])
+        .order("created_at")
+        .limit(limit)
+        .execute()
+    )
+    return res.data or []
+
+
+def list_live_queue_jobs(*, limit: int = 100) -> list[dict]:
+    """Dashboard live queue: processing then pending, oldest first."""
+    sb = get_supabase()
+    processing = (
+        sb.table("extract_jobs")
+        .select("*")
+        .eq("job_kind", "extract")
+        .eq("status", "processing")
+        .order("created_at")
+        .limit(limit)
+        .execute()
+        .data
+        or []
+    )
+    remaining = max(0, limit - len(processing))
+    pending = (
+        sb.table("extract_jobs")
+        .select("*")
+        .eq("job_kind", "extract")
+        .eq("status", "pending")
+        .order("created_at")
+        .limit(remaining)
+        .execute()
+        .data
+        or []
+    ) if remaining else []
+    return list(processing) + list(pending)
+
+
+def claim_next_pending_extract_for_user(user_id: UUID) -> dict | None:
+    """Atomically flip oldest pending extract for user to processing. Returns row or None."""
+    return _claim_next_pending_extract(user_id=user_id)
+
+
+def claim_next_pending_extract() -> dict | None:
+    """Oldest pending extract across all users (global drain when a slot frees)."""
+    return _claim_next_pending_extract(user_id=None)
+
+
+def _claim_next_pending_extract(*, user_id: UUID | None) -> dict | None:
+    sb = get_supabase()
+    query = (
+        sb.table("extract_jobs")
+        .select("*")
+        .eq("job_kind", "extract")
+        .eq("status", "pending")
+        .order("created_at")
+        .limit(1)
+    )
+    if user_id is not None:
+        query = query.eq("user_id", str(user_id))
+    pending = query.execute().data or []
+    if not pending:
+        return None
+    row = pending[0]
+    job_id = row["id"]
+    updated = (
+        sb.table("extract_jobs")
+        .update({"status": "processing", "progress": 0, "error": None})
+        .eq("id", str(job_id))
+        .eq("status", "pending")
+        .execute()
+    )
+    rows = updated.data or []
+    return rows[0] if rows else None
+
+
 def list_recipes(limit: int = 50) -> list[dict]:
     sb = get_supabase()
     res = (

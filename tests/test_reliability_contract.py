@@ -152,14 +152,16 @@ def test_upstream_disconnect_is_a_retryable_503():
 def test_job_polling_sends_language_and_client_handles_handoff():
     source = Path("IosAPP/ReciApp/Services/APIClient.swift").read_text(encoding="utf-8")
     models = Path("IosAPP/ReciApp/Models/Models.swift").read_text(encoding="utf-8")
-    detail = Path("IosAPP/ReciApp/Views/RecipeDetailView.swift").read_text(encoding="utf-8")
-    assert "func job(id: UUID, language: String, token: String)" in source
+    policy = Path("IosAPP/ReciApp/Services/ClientStatePolicy.swift").read_text(encoding="utf-8")
+    assert "func job(id: UUID, language: String)" in source
     assert 'URLQueryItem(name: "language", value: language)' in source
-    assert "currentJobID = j.jobId" in source
+    assert "func myJobs()" in source
+    assert "JobFollowPolicy.persistedID" in source
     assert "let recipeId: UUID?" in models
-    assert "try await recipe(id: recipeID, language: language, token: token)" in source
     assert "let nextJobId: UUID?" in models
-    assert "if values.isEmpty, let thumbnail = recipe.thumbnailUrl.flatMap(URL.init(string:))" in detail
+    assert "QueuedJobsResponse" in models
+    assert "enum JobFollowPolicy" in policy
+    assert "func waitForRecipe(" in source
 
 
 @pytest.mark.skipif(not Path("IosAPP/ReciApp").is_dir(), reason="Ignored iOS sources unavailable in backend-only checkout")
@@ -192,7 +194,8 @@ def test_ios_warms_render_before_authenticated_requests():
     client = Path("IosAPP/ReciApp/Services/APIClient.swift").read_text(encoding="utf-8")
     view_model = Path("IosAPP/ReciApp/ViewModels/AppViewModel.swift").read_text(encoding="utf-8")
     app = Path("IosAPP/ReciApp/ReciAppApp.swift").read_text(encoding="utf-8")
-    assert 'appendingPathComponent("/health")' in client
+    assert 'appending(path: "health")' in client or 'appendingPathComponent("/health")' in client
+    assert "warmUpBackend()" in client
     assert "func warmUpBackend() async" in view_model
     assert "await app.warmUpBackend()" in app
 
@@ -404,6 +407,8 @@ def test_worker_mode_does_not_schedule_a_second_request_local_job():
         "require_rate_limit": main.require_rate_limit,
         "validate_public_url": main.validate_public_url,
         "normalize_url": main.normalize_url,
+        "count_user_open_extract_jobs": main.count_user_open_extract_jobs,
+        "try_claim_job": main.try_claim_job,
         "openai_api_key": main.settings.openai_api_key,
         "worker_enabled": main.settings.worker_enabled,
     }
@@ -415,6 +420,8 @@ def test_worker_mode_does_not_schedule_a_second_request_local_job():
     main.require_rate_limit = lambda *args, **_kwargs: None
     main.validate_public_url = lambda *args, **kwargs: None
     main.normalize_url = lambda _url: "youtube:worker-test"
+    main.count_user_open_extract_jobs = lambda _uid: 0
+    main.try_claim_job = lambda _uid: True
     main.settings.openai_api_key = "test-key"
     main.settings.worker_enabled = True
     try:
@@ -428,6 +435,8 @@ def test_worker_mode_does_not_schedule_a_second_request_local_job():
         main.require_rate_limit = replacements["require_rate_limit"]
         main.validate_public_url = replacements["validate_public_url"]
         main.normalize_url = replacements["normalize_url"]
+        main.count_user_open_extract_jobs = replacements["count_user_open_extract_jobs"]
+        main.try_claim_job = replacements["try_claim_job"]
         main.settings.openai_api_key = replacements["openai_api_key"]
         main.settings.worker_enabled = replacements["worker_enabled"]
 

@@ -17,7 +17,9 @@ def test_failed_admission_releases_capacity(monkeypatch, kind, failure):
     monkeypatch.setattr(main.settings, "worker_enabled", False)
     monkeypatch.setattr(main.settings, "openai_api_key", "test")
     monkeypatch.setattr(main, "claim_job", lambda uid: claims.append(uid))
+    monkeypatch.setattr(main, "try_claim_job", lambda uid: claims.append(uid) or True)
     monkeypatch.setattr(main, "release_job", lambda uid: releases.append(uid))
+    monkeypatch.setattr(main, "count_user_open_extract_jobs", lambda uid: 0)
     for name in ("require_rate_limit", "validate_public_url", "assert_can_extract"):
         monkeypatch.setattr(main, name, lambda *a, **kw: None)
     monkeypatch.setattr(main, "get_recipe_by_norm", lambda *a: None)

@@ -5,6 +5,7 @@
 <div class="grid">
   <div class="card"><div class="label">Users</div><div class="value">{{ o.users_total }}</div><div class="muted">{{ o.users_pro }} pro · {{ o.users_free }} free</div></div>
   <div class="card"><div class="label">Recipes cached</div><div class="value">{{ o.recipes_cached }}</div></div>
+  <div class="card"><div class="label">Cola ahora</div><div class="value">{{ o.processing_now }}</div><div class="muted">{{ o.queued_now }} en espera</div></div>
   <div class="card"><div class="label">Jobs (7d)</div><div class="value">{{ o.jobs_week }}</div><div class="muted">{{ o.cache_hits_week }} hits · {{ o.cache_misses_week }} miss · {{ o.failed_week }} fail</div></div>
   <div class="card"><div class="label">API cost (7d)</div><div class="value">${{ '%.4f'|format(o.cost_usd_week) }}</div><div class="muted">{{ o.cost_cents_week }}¢</div></div>
   <div class="card"><div class="label">API cost (30d)</div><div class="value">${{ '%.4f'|format(o.cost_usd_month) }}</div><div class="muted">{{ o.cost_cents_month }}¢</div></div>

@@ -79,17 +79,20 @@ class SlidingWindowLimiter:
             return True
 
 
-_rate_limiter: SlidingWindowLimiter | None = None
+_rate_limiters: dict[tuple[int, int], SlidingWindowLimiter] = {}
+_rate_limiters_lock = threading.Lock()
 
 
 def allow_rate_limit(key: str, *, limit: int, window_seconds: int) -> bool:
-    global _rate_limiter
-    if _rate_limiter is None or (
-        _rate_limiter.limit != max(1, limit)
-        or _rate_limiter.window_seconds != max(1, window_seconds)
-    ):
-        _rate_limiter = SlidingWindowLimiter(limit, window_seconds)
-    return _rate_limiter.allow(key)
+    limit = max(1, limit)
+    window_seconds = max(1, window_seconds)
+    cache_key = (limit, window_seconds)
+    with _rate_limiters_lock:
+        limiter = _rate_limiters.get(cache_key)
+        if limiter is None:
+            limiter = SlidingWindowLimiter(limit, window_seconds)
+            _rate_limiters[cache_key] = limiter
+    return limiter.allow(key)
 
 
 def require_rate_limit(
@@ -99,11 +102,16 @@ def require_rate_limit(
     limit: int,
     window_seconds: int,
     event: str,
+    retry_after_seconds: int = 60,
 ) -> None:
     if allow_rate_limit(key, limit=limit, window_seconds=window_seconds):
         return
     audit_security_event(event=event, request=request)
-    raise HTTPException(status_code=429, detail="Too many requests")
+    raise HTTPException(
+        status_code=429,
+        detail="Too many requests",
+        headers={"Retry-After": str(max(1, retry_after_seconds))},
+    )
 
 
 def validate_public_url(url: str, *, allowed_hosts: set[str] | None = None) -> None:

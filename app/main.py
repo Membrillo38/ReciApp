@@ -32,16 +32,20 @@ from app.models import (
     ListResponse,
     MeResponse,
     OkResponse,
+    QueuedJobItem,
+    QueuedJobsResponse,
     RecipeListResponse,
     RecipePublic,
 )
 from app.pipeline import run_extract_job, run_translation_job
 from app.quota import assert_can_extract, get_quota, record_usage
-from app.job_guard import claim as claim_job, release as release_job
+from app.job_guard import claim as claim_job, release as release_job, try_claim as try_claim_job
 from app.localization import normalize_language
 from app.security import audit_security_event, new_correlation_id, pseudonymous_ip, request_ip, require_rate_limit, validate_public_url
 from app.spend import reserve_spend, settle_spend
 from app.store import (
+    claim_next_pending_extract_for_user,
+    count_user_open_extract_jobs,
     create_job,
     delete_user_recipe,
     get_job,
@@ -53,6 +57,7 @@ from app.store import (
     list_jobs,
     list_profiles,
     list_recipes,
+    list_user_open_extract_jobs,
     list_user_recipe_summaries,
     recipe_public_from_row,
     save_user_recipe,
@@ -514,9 +519,21 @@ def extract_recipe(
 
     assert_can_extract(user, cache_hit=False)
 
-    local_claimed = not settings.worker_enabled
-    if local_claimed:
-        claim_job(user.id)
+    open_count = count_user_open_extract_jobs(user.id)
+    if open_count >= settings.max_pending_jobs_per_user:
+        raise HTTPException(
+            status_code=429,
+            detail="Import queue is full. Wait for a recipe to finish.",
+            headers={"Retry-After": "30"},
+        )
+
+    # Serial per user: start now only when this user has no open extract yet.
+    should_start = not settings.worker_enabled and open_count == 0
+    local_claimed = False
+    if should_start:
+        local_claimed = try_claim_job(user.id)
+        should_start = local_claimed
+
     try:
         job = create_job(
             user_id=user.id,
@@ -546,9 +563,44 @@ def extract_recipe(
                 progress=int(active.get("progress") or 0),
             )
         raise
-    if not settings.worker_enabled:
+
+    queue_position = open_count + 1
+    if should_start and not settings.worker_enabled:
         background.add_task(run_extract_job, job_id, user.id, url, url_norm, language_code)
-    return ExtractJobResponse(job_id=job_id, status=JobStatus.pending, cache_hit=False)
+        return ExtractJobResponse(
+            job_id=job_id,
+            status=JobStatus.pending,
+            cache_hit=False,
+            queued=False,
+            queue_position=queue_position,
+        )
+
+    # Left pending: drain starts it after the user's current extract finishes.
+    return ExtractJobResponse(
+        job_id=job_id,
+        status=JobStatus.pending,
+        cache_hit=False,
+        queued=True,
+        queue_position=queue_position,
+    )
+
+
+@app.get("/v1/me/jobs", response_model=QueuedJobsResponse)
+def list_my_jobs(user: AuthUser = Depends(current_user)) -> QueuedJobsResponse:
+    rows = list_user_open_extract_jobs(user.id, limit=settings.max_pending_jobs_per_user)
+    items = [
+        QueuedJobItem(
+            job_id=UUID(str(row["id"])),
+            status=JobStatus(row["status"]),
+            progress=int(row.get("progress") or 0),
+            source_url=str(row.get("source_url_raw") or row.get("source_url_norm") or ""),
+            queue_position=index + 1,
+            created_at=str(row["created_at"]) if row.get("created_at") else None,
+            job_kind=str(row.get("job_kind") or "extract"),
+        )
+        for index, row in enumerate(rows)
+    ]
+    return QueuedJobsResponse(items=items)
 
 
 @app.get("/v1/jobs/{job_id}", response_model=JobResponse)
