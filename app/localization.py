@@ -73,6 +73,11 @@ def build_recipe_prompt(target_language: str, source_json: str) -> str:
         "do not merge separate components. If no headings are supported, use one section named with the localized equivalent of 'Ingredients'.\n"
         "Extract separate actionable tips from the source, including storage, reheating, serving, "
         "or substitutions. Do not duplicate method steps as tips. Use an empty tips list when none exist.\n"
+        "slide_text is on-screen overlay OCR. transcript is spoken audio or captions. "
+        "Include every ingredient supported by either source. When the same ingredient appears in both, "
+        "keep overlay quantities and units if they are more precise. "
+        "Do not drop spoken-only or overlay-only ingredients. "
+        "Do not treat marketing captions as a complete ingredient list when overlay or transcript lists ingredients.\n"
         "Do not invent ingredients, tips, or sections not supported by the source text.\n\n"
         f"SOURCE:\n{source_json}"
     )

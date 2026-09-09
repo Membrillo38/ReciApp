@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.parse import quote, urlparse
 from urllib.request import Request
@@ -40,6 +40,7 @@ class MediaInfo:
     audio_path: Path | None
     extra_text: str | None = None
     media_id: str | None = None
+    play_urls: list[str] | None = None
 
 
 @dataclass
@@ -49,11 +50,16 @@ class VideoFrames:
 
 
 MAX_VIDEO_BYTES = 50_000_000
-MAX_VIDEO_FRAMES = 3
+MAX_VIDEO_FRAMES = 32
+MIN_OVERLAY_INTERVAL_SECONDS = 1.5
 MAX_FRAME_BYTES = 2_000_000
 VIDEO_DOWNLOAD_TIMEOUT_SECONDS = 120
-FRAME_EXTRACT_TIMEOUT_SECONDS = 20
+FRAME_EXTRACT_TIMEOUT_SECONDS = 45
 VIDEO_PROBE_TIMEOUT_SECONDS = 10
+_VIDEO_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
 
 
 def _run_ytdlp(args: list[str], timeout: int = 120) -> subprocess.CompletedProcess[str]:
@@ -104,13 +110,13 @@ def fetch_media_info(url: str) -> MediaInfo:
     except ExtractError:
         fallback = _metadata_fallback(url)
         if fallback:
-            return fallback
+            return _with_tiktok_page_evidence(url, fallback)
         raise
     if meta.returncode != 0:
         err = (meta.stderr or meta.stdout or "unknown yt-dlp error").strip()
         fallback = _metadata_fallback(url)
         if fallback:
-            return fallback
+            return _with_tiktok_page_evidence(url, fallback)
         raise ExtractError(err[-500:])
 
     try:
@@ -118,7 +124,7 @@ def fetch_media_info(url: str) -> MediaInfo:
     except ExtractError:
         fallback = _metadata_fallback(url)
         if fallback:
-            return fallback
+            return _with_tiktok_page_evidence(url, fallback)
         raise
     duration = data.get("duration")
     if isinstance(duration, (int, float)) and duration > settings.max_duration_seconds:
@@ -126,32 +132,109 @@ def fetch_media_info(url: str) -> MediaInfo:
             f"Video too long ({int(duration)}s). Max {settings.max_duration_seconds}s."
         )
 
-    subtitles_text = _extract_subtitles_from_info(data)
-    audio_path = None
-    if not subtitles_text:
+    media = _with_tiktok_page_evidence(
+        url,
+        MediaInfo(
+            title=(data.get("title") or "").strip(),
+            description=(data.get("description") or "").strip(),
+            author=_author_from_info(data),
+            thumbnail_url=_thumbnail_from_info(data),
+            duration_seconds=int(duration) if isinstance(duration, (int, float)) else None,
+            webpage_url=data.get("webpage_url") or url,
+            subtitles_text=_extract_subtitles_from_info(data),
+            audio_path=None,
+            media_id=str(data.get("id") or "video"),
+        ),
+    )
+    if not media.subtitles_text:
         try:
             audio_path = _download_audio(url, data.get("id") or "audio")
         except ExtractError:
             # Metadata can still yield a valid recipe when media download or
             # post-processing is temporarily unavailable.
             audio_path = None
-
-    return MediaInfo(
-        title=(data.get("title") or "").strip(),
-        description=(data.get("description") or "").strip(),
-        author=_author_from_info(data),
-        thumbnail_url=_thumbnail_from_info(data),
-        duration_seconds=int(duration) if isinstance(duration, (int, float)) else None,
-        webpage_url=data.get("webpage_url") or url,
-        subtitles_text=subtitles_text,
-        audio_path=audio_path,
-        media_id=str(data.get("id") or "video"),
-    )
+        else:
+            media = replace(media, audio_path=audio_path)
+    return media
 
 
 def _host_matches(url: str, *roots: str) -> bool:
     host = (urlparse(url).hostname or "").lower().rstrip(".")
     return any(host == root or host.endswith(f".{root}") for root in roots)
+
+
+def overlay_frame_interval(duration: float, max_frames: int = MAX_VIDEO_FRAMES) -> float:
+    """Space overlay samples tightly enough to catch short ingredient cards."""
+    frames = max(1, min(int(max_frames), MAX_VIDEO_FRAMES))
+    return max(MIN_OVERLAY_INTERVAL_SECONDS, max(float(duration), 1.0) / frames)
+
+
+def overlay_sample_times(duration: float, max_frames: int = MAX_VIDEO_FRAMES) -> list[float]:
+    """Return ordered timestamps covering sequential on-screen ingredient cards."""
+    duration = max(float(duration), 1.0)
+    interval = overlay_frame_interval(duration, max_frames)
+    start = min(1.2, max(duration * 0.08, 0.2))
+    times: list[float] = []
+    t = start
+    while len(times) < max_frames and t < duration - 0.12:
+        times.append(round(t, 3))
+        t += interval
+    last = round(max(duration - 0.35, 0.0), 3)
+    if not times:
+        return [min(last, duration / 2)]
+    if abs(times[-1] - last) > interval * 0.45:
+        if len(times) < max_frames:
+            times.append(last)
+        else:
+            times[-1] = last
+    out: list[float] = []
+    for stamp in times:
+        clipped = min(max(stamp, 0.0), max(duration - 0.05, 0.0))
+        if not out or abs(out[-1] - clipped) > 0.2:
+            out.append(clipped)
+    return out
+
+
+def _with_tiktok_page_evidence(url: str, media: MediaInfo) -> MediaInfo:
+    """Fill spoken captions and play URLs from TikTok page hydration."""
+    if not _host_matches(url, "tiktok.com"):
+        return media
+    try:
+        from app.tiktok_slides import fetch_tiktok_item, tiktok_caption_urls, tiktok_play_urls
+
+        item = fetch_tiktok_item(url)
+    except Exception:
+        return media
+    if not item or item.get("imagePost") or item.get("image_post"):
+        return media
+    captions = None
+    for caption_url in tiktok_caption_urls(item)[:4]:
+        captions = _download_subtitle_url(caption_url)
+        if captions:
+            break
+    video = item.get("video") if isinstance(item.get("video"), dict) else {}
+    duration = media.duration_seconds
+    raw_duration = video.get("duration") if isinstance(video, dict) else None
+    if duration is None and isinstance(raw_duration, (int, float)) and raw_duration > 0:
+        duration = int(raw_duration)
+    desc = str(item.get("desc") or "").strip()
+    author = media.author
+    raw_author = item.get("author")
+    if not author and isinstance(raw_author, dict):
+        author = str(raw_author.get("uniqueId") or "").strip() or None
+    subtitles = media.subtitles_text
+    if captions and len(captions) > len(subtitles or ""):
+        subtitles = captions
+    play_urls = list(media.play_urls or []) or tiktok_play_urls(item)
+    return replace(
+        media,
+        title=media.title or desc,
+        description=media.description or desc,
+        author=author,
+        duration_seconds=duration,
+        subtitles_text=subtitles,
+        play_urls=play_urls or None,
+    )
 
 
 def _metadata_fallback(url: str) -> MediaInfo | None:
@@ -336,25 +419,28 @@ def _download_audio(url: str, media_id: str) -> Path | None:
     return matches[0]
 
 
-def download_tiktok_video_frames(
-    url: str,
-    *,
-    media_id: str | None,
-    duration_seconds: int | None,
-) -> VideoFrames:
-    """Download bounded TikTok media and sample at most three ordered frames."""
-    try:
-        validate_public_url(url, allowed_hosts={"tiktok.com"})
-    except ValueError as exc:
-        raise ExtractError(str(exc)) from exc
-    if duration_seconds is not None and duration_seconds > settings.max_duration_seconds:
-        raise ExtractError(
-            f"Video too long ({duration_seconds}s). Max {settings.max_duration_seconds}s."
-        )
+def _http_download_video(play_url: str, output: Path) -> None:
+    validate_public_url(play_url)
+    request = Request(
+        play_url,
+        headers={"User-Agent": _VIDEO_UA, "Referer": "https://www.tiktok.com/"},
+    )
+    with safe_urlopen(request, timeout=VIDEO_DOWNLOAD_TIMEOUT_SECONDS) as response:
+        written = 0
+        with output.open("wb") as handle:
+            while True:
+                chunk = response.read(65_536)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > MAX_VIDEO_BYTES:
+                    raise ExtractError("TikTok video frame fallback exceeded the download bound")
+                handle.write(chunk)
+    if written <= 0:
+        raise ExtractError("TikTok video frame fallback download failed")
 
-    tmpdir = Path(tempfile.mkdtemp(prefix="recipe-video-frames-"))
-    safe_media_id = re.sub(r"[^A-Za-z0-9._-]", "_", str(media_id or "video"))[:100] or "video"
-    output = tmpdir / f"{safe_media_id}.mp4"
+
+def _download_tiktok_media(url: str, output: Path, play_urls: list[str] | None) -> None:
     try:
         proc = _run_ytdlp(
             [
@@ -374,9 +460,46 @@ def download_tiktok_video_frames(
             ],
             timeout=VIDEO_DOWNLOAD_TIMEOUT_SECONDS,
         )
-        if proc.returncode != 0 or not output.is_file():
-            raise ExtractError("TikTok video frame fallback download failed")
-        if output.stat().st_size <= 0 or output.stat().st_size > MAX_VIDEO_BYTES:
+        if proc.returncode == 0 and output.is_file() and 0 < output.stat().st_size <= MAX_VIDEO_BYTES:
+            return
+    except ExtractError:
+        pass
+    output.unlink(missing_ok=True)
+    last_error: Exception | None = None
+    for play_url in (play_urls or [])[:3]:
+        try:
+            _http_download_video(play_url, output)
+            if output.is_file() and 0 < output.stat().st_size <= MAX_VIDEO_BYTES:
+                return
+        except Exception as exc:
+            last_error = exc
+            output.unlink(missing_ok=True)
+    raise ExtractError("TikTok video frame fallback download failed") from last_error
+
+
+def download_tiktok_video_frames(
+    url: str,
+    *,
+    media_id: str | None,
+    duration_seconds: int | None,
+    play_urls: list[str] | None = None,
+) -> VideoFrames:
+    """Download bounded TikTok media and sample ordered overlay frames."""
+    try:
+        validate_public_url(url, allowed_hosts={"tiktok.com"})
+    except ValueError as exc:
+        raise ExtractError(str(exc)) from exc
+    if duration_seconds is not None and duration_seconds > settings.max_duration_seconds:
+        raise ExtractError(
+            f"Video too long ({duration_seconds}s). Max {settings.max_duration_seconds}s."
+        )
+
+    tmpdir = Path(tempfile.mkdtemp(prefix="recipe-video-frames-"))
+    safe_media_id = re.sub(r"[^A-Za-z0-9._-]", "_", str(media_id or "video"))[:100] or "video"
+    output = tmpdir / f"{safe_media_id}.mp4"
+    try:
+        _download_tiktok_media(url, output, play_urls)
+        if not output.is_file() or output.stat().st_size <= 0 or output.stat().st_size > MAX_VIDEO_BYTES:
             raise ExtractError("TikTok video frame fallback exceeded the download bound")
         ffmpeg = shutil.which("ffmpeg")
         ffprobe = shutil.which("ffprobe")
@@ -414,43 +537,40 @@ def download_tiktok_video_frames(
             )
         # The downloaded file is authoritative. Metadata can be absent or stale.
         duration = max(1.0, duration)
-        fractions = (0.15, 0.5, 0.85)
-        paths: list[Path] = []
-        for index, fraction in enumerate(fractions[:MAX_VIDEO_FRAMES], start=1):
-            timestamp = min(max(duration * fraction, 0), max(duration - 0.1, 0))
-            frame_path = tmpdir / f"frame-{index:02d}.jpg"
-            try:
-                frame = subprocess.run(
-                    [
-                        ffmpeg,
-                        "-nostdin",
-                        "-loglevel",
-                        "error",
-                        "-ss",
-                        f"{timestamp:.3f}",
-                        "-i",
-                        str(output),
-                        "-frames:v",
-                        "1",
-                        "-vf",
-                        "scale=1280:1280:force_original_aspect_ratio=decrease",
-                        "-q:v",
-                        "4",
-                        "-y",
-                        str(frame_path),
-                    ],
-                    capture_output=True,
-                    timeout=FRAME_EXTRACT_TIMEOUT_SECONDS,
-                    check=False,
-                )
-            except subprocess.TimeoutExpired as exc:
-                raise ExtractError("TikTok video frame extraction timed out") from exc
-            if frame.returncode != 0 or not frame_path.is_file():
-                raise ExtractError(f"TikTok video frame {index} could not be sampled")
+        interval = overlay_frame_interval(duration)
+        fps = 1.0 / interval
+        pattern = tmpdir / "frame-%03d.jpg"
+        try:
+            frame = subprocess.run(
+                [
+                    ffmpeg,
+                    "-nostdin",
+                    "-loglevel",
+                    "error",
+                    "-i",
+                    str(output),
+                    "-vf",
+                    f"fps={fps:.4f},scale=720:720:force_original_aspect_ratio=decrease",
+                    "-q:v",
+                    "4",
+                    "-y",
+                    str(pattern),
+                ],
+                capture_output=True,
+                timeout=FRAME_EXTRACT_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ExtractError("TikTok video frame extraction timed out") from exc
+        if frame.returncode != 0:
+            raise ExtractError("TikTok video frame 1 could not be sampled")
+        paths = sorted(path for path in tmpdir.glob("frame-*.jpg") if path.is_file())[:MAX_VIDEO_FRAMES]
+        if not paths:
+            raise ExtractError("TikTok video frame 1 could not be sampled")
+        for index, frame_path in enumerate(paths, start=1):
             size = frame_path.stat().st_size
             if size <= 0 or size > MAX_FRAME_BYTES:
                 raise ExtractError(f"TikTok video frame {index} exceeded the size bound")
-            paths.append(frame_path)
         output.unlink(missing_ok=True)
         return VideoFrames(paths=paths, directory=tmpdir)
     except Exception:

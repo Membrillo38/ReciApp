@@ -256,6 +256,98 @@ def _dig_item_struct(data: dict) -> dict | None:
     return walk(data)
 
 
+def fetch_tiktok_item(url: str) -> dict | None:
+    """Hydrate the public TikTok item payload for videos or photos."""
+    html = _fetch_html(url, user_agent=UA)
+    item = _item_from_html(html or "")
+    if item:
+        return item
+    html = _fetch_html(url, user_agent=MOBILE_UA)
+    return _item_from_html(html or "")
+
+
+def tiktok_caption_urls(item: dict) -> list[str]:
+    """Return HTTPS caption/WebVTT URLs, original language first."""
+    video = item.get("video") if isinstance(item, dict) else None
+    if not isinstance(video, dict):
+        return []
+    preferred: list[object] = []
+    other: list[object] = []
+    cla = video.get("claInfo") or video.get("cla") or {}
+    captions = cla.get("captionInfos") if isinstance(cla, dict) else None
+    if isinstance(captions, list):
+        for cap in captions:
+            if not isinstance(cap, dict):
+                continue
+            target = cap.get("url") or cap.get("Url")
+            if cap.get("isOriginalCaption"):
+                preferred.append(target)
+            else:
+                other.append(target)
+    for info in video.get("subtitleInfos") or video.get("subtitle_infos") or []:
+        if isinstance(info, dict):
+            other.append(info.get("Url") or info.get("url"))
+    urls: list[str] = []
+    seen: set[str] = set()
+    for target in preferred + other:
+        candidate = str(target or "").strip()
+        parsed = urlparse(candidate)
+        if (
+            parsed.scheme != "https"
+            or not parsed.netloc
+            or candidate in seen
+            or len(candidate) > 4096
+        ):
+            continue
+        seen.add(candidate)
+        urls.append(candidate)
+    return urls
+
+
+def tiktok_play_urls(item: dict) -> list[str]:
+    """Return bounded HTTPS media URLs from hydrated play/download addresses."""
+    video = item.get("video") if isinstance(item, dict) else None
+    if not isinstance(video, dict):
+        return []
+    urls: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: object) -> None:
+        if len(urls) >= 6:
+            return
+        if isinstance(value, str):
+            candidate = value.strip()
+            parsed = urlparse(candidate)
+            if (
+                parsed.scheme != "https"
+                or not parsed.netloc
+                or candidate in seen
+                or len(candidate) > 4096
+            ):
+                return
+            seen.add(candidate)
+            urls.append(candidate)
+            return
+        if isinstance(value, dict):
+            for key in ("url_list", "urlList", "UrlList", "url", "Url", "playAddr", "PlayAddr"):
+                if key in value:
+                    add(value.get(key))
+                    if len(urls) >= 6:
+                        return
+            return
+        if isinstance(value, list):
+            for child in value[:8]:
+                add(child)
+                if len(urls) >= 6:
+                    return
+
+    add(video.get("playAddr") or video.get("play_addr"))
+    add(video.get("PlayAddrStruct"))
+    add(video.get("downloadAddr") or video.get("download_addr"))
+    add(video.get("bitrateInfo") or video.get("bitrate_info"))
+    return urls
+
+
 def download_image_b64(url: str) -> str | None:
     try:
         validate_public_url(url)

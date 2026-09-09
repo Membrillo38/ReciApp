@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.config import settings
+from app.extract import MAX_VIDEO_FRAMES
 from app.tiktok_slides import MAX_CAROUSEL_SLIDES
 
 
@@ -18,5 +19,5 @@ def estimate_miss_cost_cents(
     if slide_count > 0:
         cost += min(slide_count, MAX_CAROUSEL_SLIDES) * settings.cost_ocr_cents_per_slide
     if frame_count > 0:
-        cost += min(frame_count, 3) * settings.cost_ocr_cents_per_slide
+        cost += min(frame_count, MAX_VIDEO_FRAMES) * settings.cost_ocr_cents_per_slide
     return round(cost, 4)

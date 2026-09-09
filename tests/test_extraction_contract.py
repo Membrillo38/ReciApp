@@ -379,12 +379,17 @@ def test_carousel_cost_accounts_for_all_bounded_ocr_slides():
     assert estimate_miss_cost_cents(slide_count=MAX_CAROUSEL_SLIDES) == expected
 
 
-def test_video_frame_cost_is_bounded_to_three_attempts():
+def test_video_frame_cost_is_bounded_to_overlay_attempts():
+    from app.extract import MAX_VIDEO_FRAMES
+
     expected = round(
-        settings.cost_text_cents_per_extract + 3 * settings.cost_ocr_cents_per_slide,
+        settings.cost_text_cents_per_extract
+        + MAX_VIDEO_FRAMES * settings.cost_ocr_cents_per_slide,
         4,
     )
-    assert estimate_miss_cost_cents(frame_count=20) == expected
+    assert estimate_miss_cost_cents(frame_count=80) == expected
+
+
 def test_structured_output_retries_malformed_json():
     calls = []
 
@@ -533,11 +538,7 @@ def test_video_frame_ocr_preserves_order_and_counts_attempts(tmp_path):
         transcript.OpenAI = original_client
         transcript.settings.openai_api_key = original_key
 
-    assert result.split("\n\n") == [
-        "Sampled video frame 1",
-        "Sampled video frame 2",
-        "Sampled video frame 3",
-    ]
+    assert result == "Overlay frames 1-3 of one cooking video"
     assert len(attempts) == 3
 
 
@@ -558,8 +559,12 @@ def test_video_frame_sampler_bounds_tools_and_removes_download(tmp_path):
         if command[0].endswith("ffprobe"):
             calls.append((command, kwargs))
             return SimpleNamespace(returncode=0, stdout="20.0\n", stderr="")
-        frame = Path(command[-1])
-        frame.write_bytes(b"j" * 600)
+        output = Path(command[-1])
+        if "%03d" in output.name:
+            for index in range(1, 8):
+                Path(str(output).replace("%03d", f"{index:03d}")).write_bytes(b"j" * 600)
+        else:
+            output.write_bytes(b"j" * 600)
         calls.append((command, kwargs))
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -573,12 +578,12 @@ def test_video_frame_sampler_bounds_tools_and_removes_download(tmp_path):
             media_id="../../unsafe",
             duration_seconds=20,
         )
-        assert len(result.paths) == 3
+        assert 1 <= len(result.paths) <= extract.MAX_VIDEO_FRAMES
         assert all(path.is_file() for path in result.paths)
         assert not calls[0][2].exists()
         assert calls[0][1] == extract.VIDEO_DOWNLOAD_TIMEOUT_SECONDS
         assert calls[1][1]["timeout"] == extract.VIDEO_PROBE_TIMEOUT_SECONDS
-        assert all(call[1]["timeout"] == extract.FRAME_EXTRACT_TIMEOUT_SECONDS for call in calls[2:])
+        assert calls[2][1]["timeout"] == extract.FRAME_EXTRACT_TIMEOUT_SECONDS
     finally:
         extract._run_ytdlp = original_ytdlp
         extract.subprocess.run = original_run
@@ -889,8 +894,10 @@ def test_tiktok_metadata_fallback_is_available_when_ytdlp_fails():
     original_run = extract._run_ytdlp
     original_oembed = extract._fetch_tiktok_oembed
     original_validate = extract.validate_public_url
+    original_merge = extract._with_tiktok_page_evidence
     extract._run_ytdlp = lambda *args, **kwargs: (_ for _ in ()).throw(extract.ExtractError("yt-dlp unavailable"))
     extract.validate_public_url = lambda *args, **kwargs: None
+    extract._with_tiktok_page_evidence = lambda url, media: media
     extract._fetch_tiktok_oembed = lambda url: extract.MediaInfo(
         title="Crispy chicken",
         description="",
@@ -907,6 +914,7 @@ def test_tiktok_metadata_fallback_is_available_when_ytdlp_fails():
         extract._run_ytdlp = original_run
         extract._fetch_tiktok_oembed = original_oembed
         extract.validate_public_url = original_validate
+        extract._with_tiktok_page_evidence = original_merge
     assert result.title == "Crispy chicken"
 
 
@@ -944,12 +952,14 @@ def test_tiktok_metadata_fallback_is_available_when_ytdlp_json_is_invalid():
     original_run = extract._run_ytdlp
     original_oembed = extract._fetch_tiktok_oembed
     original_validate = extract.validate_public_url
+    original_merge = extract._with_tiktok_page_evidence
     extract._run_ytdlp = lambda *args, **kwargs: SimpleNamespace(
         returncode=0,
         stdout="{invalid",
         stderr="",
     )
     extract.validate_public_url = lambda *args, **kwargs: None
+    extract._with_tiktok_page_evidence = lambda url, media: media
     extract._fetch_tiktok_oembed = lambda url: extract.MediaInfo(
         title="Pasta bake",
         description="",
@@ -966,6 +976,7 @@ def test_tiktok_metadata_fallback_is_available_when_ytdlp_json_is_invalid():
         extract._run_ytdlp = original_run
         extract._fetch_tiktok_oembed = original_oembed
         extract.validate_public_url = original_validate
+        extract._with_tiktok_page_evidence = original_merge
     assert result.title == "Pasta bake"
 
 
@@ -1046,3 +1057,205 @@ def test_recipe_builder_preserves_ordered_carousel_metadata():
         "https://cdn.example/slide-1.jpg",
         "https://cdn.example/slide-2.jpg",
     ]
+
+
+def test_overlay_sample_times_cover_sequential_ingredient_cards():
+    times = extract.overlay_sample_times(148.3)
+    assert 24 <= len(times) <= extract.MAX_VIDEO_FRAMES
+    for beat in (21.0, 34.5, 55.0, 90.0):
+        assert min(abs(stamp - beat) for stamp in times) <= 2.4
+
+
+def test_tiktok_caption_urls_prefer_original_track():
+    from app.tiktok_slides import tiktok_caption_urls, tiktok_play_urls
+
+    item = {
+        "video": {
+            "playAddr": "https://v16-webapp-prime.tiktok.com/play.mp4",
+            "claInfo": {
+                "captionInfos": [
+                    {"url": "https://cdn.example/other.vtt", "isOriginalCaption": False},
+                    {"url": "https://cdn.example/orig.vtt", "isOriginalCaption": True},
+                ]
+            },
+            "subtitleInfos": [{"Url": "https://cdn.example/sub.vtt"}],
+        }
+    }
+    assert tiktok_caption_urls(item)[0] == "https://cdn.example/orig.vtt"
+    assert tiktok_play_urls(item) == ["https://v16-webapp-prime.tiktok.com/play.mp4"]
+
+
+def test_tiktok_page_captions_replace_empty_ytdlp_subtitles(monkeypatch):
+    import app.tiktok_slides as slides
+
+    monkeypatch.setattr(
+        slides,
+        "fetch_tiktok_item",
+        lambda url: {
+            "desc": "Tiramisu",
+            "author": {"uniqueId": "bromabakery"},
+            "video": {
+                "duration": 148,
+                "playAddr": "https://v16-webapp-prime.tiktok.com/play.mp4",
+                "claInfo": {
+                    "captionInfos": [
+                        {"url": "https://cdn.example/cap.vtt", "isOriginalCaption": True}
+                    ]
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(extract, "_download_subtitle_url", lambda url: "four eggs and mascarpone")
+    media = extract.MediaInfo(
+        title="Anyone Can Bake",
+        description="find the full recipe",
+        author=None,
+        thumbnail_url=None,
+        duration_seconds=None,
+        webpage_url="https://vm.tiktok.com/ZGdQ62tdt/",
+        subtitles_text=None,
+        audio_path=None,
+    )
+    result = extract._with_tiktok_page_evidence("https://vm.tiktok.com/ZGdQ62tdt/", media)
+    assert result.subtitles_text == "four eggs and mascarpone"
+    assert result.duration_seconds == 148
+    assert result.author == "bromabakery"
+    assert result.play_urls == ["https://v16-webapp-prime.tiktok.com/play.mp4"]
+
+
+def test_overlay_ocr_skips_empty_marker_without_failing(tmp_path):
+    import app.transcript as transcript
+
+    path = tmp_path / "frame-001.jpg"
+    path.write_bytes(b"frame")
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            return SimpleNamespace(
+                choices=[SimpleNamespace(
+                    message=SimpleNamespace(content="NO_RECIPE_TEXT"),
+                    finish_reason="stop",
+                )]
+            )
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    original_client = transcript.OpenAI
+    original_key = transcript.settings.openai_api_key
+    transcript.OpenAI = FakeClient
+    transcript.settings.openai_api_key = "test-key"
+    try:
+        assert transcript.ocr_video_frames([path]) == ""
+    finally:
+        transcript.OpenAI = original_client
+        transcript.settings.openai_api_key = original_key
+
+
+def test_tiktok_spoken_caption_still_ocrs_on_screen_overlays(monkeypatch, tmp_path):
+    from uuid import uuid4
+    import app.pipeline as pipeline
+    from app.models import Ingredient, IngredientSection, Recipe, Step
+
+    frame_dir = tmp_path / "frames"
+    frame_dir.mkdir()
+    paths = []
+    for index in range(3):
+        path = frame_dir / f"{index}.jpg"
+        path.write_bytes(b"frame")
+        paths.append(path)
+    media = extract.MediaInfo(
+        title="Anyone Can Bake Ep. 4: Tiramisu marketing caption with many filler words "
+        "about dinner parties silky mascarpone cream and bakery layers",
+        description="find the full recipe bromabakery.com under Classic Tiramisu enjoyyyyy",
+        author="Broma Bakery",
+        thumbnail_url=None,
+        duration_seconds=148,
+        webpage_url="https://vm.tiktok.com/ZGdQ62tdt/",
+        subtitles_text=" ".join(["spoken"] * 100),
+        audio_path=None,
+        media_id="1",
+    )
+    built = []
+    downloads = []
+    recipe_id = uuid4()
+    monkeypatch.setattr(pipeline, "detect_platform", lambda url: Platform.tiktok)
+    monkeypatch.setattr(pipeline, "fetch_tiktok_slides", lambda url: None)
+    monkeypatch.setattr(pipeline, "fetch_media_info", lambda url: media)
+
+    def fake_download(*args, **kwargs):
+        downloads.append(kwargs)
+        return extract.VideoFrames(paths, frame_dir)
+
+    def fake_ocr(frame_paths, *, on_attempt):
+        for _ in frame_paths:
+            on_attempt()
+        return "4 large eggs, separated\n\n1/3 cup (67g) granulated sugar"
+
+    def fake_build(**kwargs):
+        built.append(kwargs)
+        ingredient = Ingredient(name="egg", quantity="4", unit="large")
+        return Recipe(
+            title="Tiramisu",
+            ingredients=[ingredient],
+            ingredient_sections=[IngredientSection(title="Ingredients", ingredients=[ingredient])],
+            steps=[Step(order=1, text="Mix")],
+            source_url=kwargs["source_url"],
+            platform=Platform.tiktok,
+        )
+
+    monkeypatch.setattr(pipeline, "download_tiktok_video_frames", fake_download)
+    monkeypatch.setattr(pipeline, "ocr_video_frames", fake_ocr)
+    monkeypatch.setattr(pipeline, "build_recipe", fake_build)
+    monkeypatch.setattr(pipeline, "update_job", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pipeline, "upsert_recipe", lambda *args, **kwargs: {"id": str(recipe_id)})
+    monkeypatch.setattr(pipeline, "save_user_recipe", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pipeline, "record_usage", lambda **kwargs: None)
+    monkeypatch.setattr(pipeline, "settle_spend", lambda **kwargs: None)
+    monkeypatch.setattr(pipeline, "release_job", lambda *args: None)
+
+    pipeline.run_extract_job(uuid4(), uuid4(), media.webpage_url, "tiktok:tiramisu:1", "en-US")
+
+    assert downloads
+    assert built[0]["transcript"].startswith("spoken")
+    assert "1/3 cup (67g) granulated sugar" in built[0]["slide_text"]
+
+
+def test_tiktok_play_url_is_used_when_ytdlp_download_fails(tmp_path):
+    output = tmp_path / "video.mp4"
+    original_ytdlp = extract._run_ytdlp
+    original_open = extract.safe_urlopen
+    original_validate = extract.validate_public_url
+
+    class FakeResponse:
+        def __init__(self):
+            self._sent = False
+
+        def read(self, _n):
+            if self._sent:
+                return b""
+            self._sent = True
+            return b"v" * 1000
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    extract._run_ytdlp = lambda args, timeout: SimpleNamespace(returncode=1, stdout="", stderr="blocked")
+    extract.validate_public_url = lambda *args, **kwargs: None
+    extract.safe_urlopen = lambda request, timeout=20: FakeResponse()
+    try:
+        extract._download_tiktok_media(
+            "https://www.tiktok.com/@cook/video/1",
+            output,
+            ["https://v16-webapp-prime.tiktok.com/play.mp4"],
+        )
+        assert output.read_bytes() == b"v" * 1000
+    finally:
+        extract._run_ytdlp = original_ytdlp
+        extract.safe_urlopen = original_open
+        extract.validate_public_url = original_validate
+

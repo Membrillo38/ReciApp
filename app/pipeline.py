@@ -141,7 +141,7 @@ def run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langua
             transcript = media.subtitles_text
             if not transcript and platform == Platform.youtube:
                 transcript = youtube_transcript(url)
-            if not transcript and audio_path:
+            if audio_path and not _has_sufficient_recipe_evidence(transcript):
                 openai_called = True
                 used_transcribe = True
                 estimated_cost = estimate_miss_cost_cents(
@@ -149,7 +149,8 @@ def run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langua
                     used_transcribe=True,
                 )
                 try:
-                    transcript = whisper_transcript(audio_path)
+                    spoken = whisper_transcript(audio_path)
+                    transcript = spoken if not transcript else f"{transcript}\n\n{spoken}"
                 except Exception as exc:
                     # Continue with title/description instead of converting a
                     # missing audio transcript into a permanently failed job.
@@ -159,25 +160,18 @@ def run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langua
                         platform.value,
                         type(exc).__name__,
                     )
-                    transcript = None
             video_text = media.extra_text
-            if (
-                platform == Platform.tiktok
-                and not _has_sufficient_recipe_evidence(
-                    transcript,
-                    media.title,
-                    media.description,
-                    video_text,
-                )
-            ):
+            if platform == Platform.tiktok:
                 try:
                     video_frames = download_tiktok_video_frames(
                         url,
                         media_id=media.media_id,
                         duration_seconds=duration_seconds,
+                        play_urls=media.play_urls,
                     )
                     openai_called = True
-                    video_text = ocr_video_frames(video_frames.paths, on_attempt=record_ocr_attempt)
+                    overlay_text = ocr_video_frames(video_frames.paths, on_attempt=record_ocr_attempt)
+                    video_text = overlay_text or video_text
                 except ExtractError as exc:
                     # Caption/oEmbed text can still yield a recipe when the
                     # datacenter cannot download TikTok media.

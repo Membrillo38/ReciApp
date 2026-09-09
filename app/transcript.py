@@ -14,7 +14,7 @@ from youtube_transcript_api._errors import (
 )
 
 from app.config import settings
-from app.extract import ExtractError
+from app.extract import ExtractError, MAX_VIDEO_FRAMES
 from app.platforms import youtube_video_id
 from app.tiktok_slides import MAX_CAROUSEL_SLIDES, SlideInfo, download_image_b64
 
@@ -163,39 +163,93 @@ def ocr_slides(
     return merged
 
 
+def _usable_overlay_text(text: str) -> str | None:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return None
+    marker = cleaned.upper().replace("-", "_").replace(" ", "_").strip(".")
+    if marker in {"NO_RECIPE_TEXT", "NO_VISIBLE_TEXT", "NONE", "N_A"}:
+        return None
+    return cleaned
+
+
+def _ocr_overlay_batch(
+    client: OpenAI,
+    frame_paths: list[Path],
+    *,
+    start_index: int,
+) -> str:
+    content: list[dict] = [
+        {
+            "type": "text",
+            "text": (
+                f"Overlay frames {start_index}-{start_index + len(frame_paths) - 1} of one cooking video. "
+                "Ingredient cards often appear as short on-screen overlay text, one or two at a time. "
+                "Extract ALL distinct overlay recipe text in order: ingredients, quantities, units, steps, times, tips. "
+                "Copy measurements exactly (cups, grams, ounces, counts). Deduplicate identical overlays. "
+                "Do not drop an ingredient that appears in only one frame. "
+                "Skip watermarks, usernames, like/follow prompts, and frames with no recipe text. "
+                "Return concise plain text only."
+            ),
+        }
+    ]
+    for idx, path in enumerate(frame_paths, start=start_index):
+        raw = path.read_bytes()
+        if not raw or len(raw) > 2_000_000:
+            raise ExtractError(f"Video frame {idx} has an invalid size")
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{base64.b64encode(raw).decode('ascii')}"},
+            }
+        )
+    response = client.chat.completions.create(
+        model=settings.vision_model,
+        messages=[{"role": "user", "content": content}],
+        max_tokens=2000,
+    )
+    choices = getattr(response, "choices", None) or []
+    if not choices:
+        raise ExtractError("Overlay OCR returned no result")
+    choice = choices[0]
+    if getattr(choice, "finish_reason", None) == "length":
+        raise ExtractError("Overlay OCR output was truncated")
+    message = getattr(choice, "message", None)
+    chunk = (getattr(message, "content", None) or "").strip()
+    if not chunk:
+        raise ExtractError("Overlay OCR returned empty text")
+    return chunk
+
+
 def ocr_video_frames(
     frame_paths: list[Path],
     *,
     on_attempt: Callable[[], None] | None = None,
 ) -> str:
-    """OCR up to three sampled frames; this is a bounded fallback, not full coverage."""
+    """OCR bounded overlay frames. Empty frames are skipped, not fatal."""
     if not settings.openai_api_key:
         raise ExtractError("OPENAI_API_KEY is not configured")
-    if not frame_paths or len(frame_paths) > 3:
+    if not frame_paths or len(frame_paths) > MAX_VIDEO_FRAMES:
         raise ExtractError("TikTok video frame fallback returned an invalid frame set")
 
     client = OpenAI(api_key=settings.openai_api_key)
     parts: list[str] = []
-    for idx, path in enumerate(frame_paths, start=1):
+    batch_size = 8
+    for start in range(0, len(frame_paths), batch_size):
+        batch = frame_paths[start : start + batch_size]
+        if on_attempt:
+            for _ in batch:
+                on_attempt()
         try:
-            raw = path.read_bytes()
-            if not raw or len(raw) > 2_000_000:
-                raise ExtractError(f"Video frame {idx} has an invalid size")
-            parts.append(
-                _ocr_image(
-                    client,
-                    b64=base64.b64encode(raw).decode("ascii"),
-                    label=f"Sampled video frame {idx}",
-                    on_attempt=on_attempt,
-                )
-            )
+            chunk = _ocr_overlay_batch(client, batch, start_index=start + 1)
         except Exception as exc:
             logger.warning(
                 "extract stage=ocr_video_frame frame_index=%d error_type=%s",
-                idx,
+                start + 1,
                 type(exc).__name__,
             )
-            raise ExtractError(
-                f"TikTok video evidence incomplete: sampled frame {idx} could not be read"
-            ) from exc
+            continue
+        usable = _usable_overlay_text(chunk)
+        if usable:
+            parts.append(usable)
     return "\n\n".join(parts)
