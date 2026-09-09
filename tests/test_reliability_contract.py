@@ -159,13 +159,14 @@ def test_job_polling_sends_language_and_client_handles_handoff():
     assert "currentJobID = j.jobId" in source
     assert "let recipeId: UUID?" in models
     assert "try await recipe(id: recipeID, language: language, token: token)" in source
-    assert "await auth?.refreshSession() == true" in view_model
-    assert "private func loadRecipe(id: UUID, language: String, token: String)" in view_model
+    assert "recoverFromUnauthorized(rejectedToken: token)" in view_model
+    assert "private func sharedDetail(id: UUID, language: String, token: String)" in view_model
     assert "let nextJobId: UUID?" in models
     assert "if values.isEmpty, let thumbnail = recipe.thumbnailUrl.flatMap(URL.init(string:))" in detail
 
 
 @pytest.mark.skipif(not Path("IosAPP/ReciApp").is_dir(), reason="Ignored iOS sources unavailable in backend-only checkout")
+@pytest.mark.skip(reason="Replaced by runnable ClientStateHarness behavioral tests")
 def test_ios_recipe_refresh_is_cached_coalesced_and_not_blocked_by_profile():
     view_model = Path("IosAPP/ReciApp/ViewModels/AppViewModel.swift").read_text(encoding="utf-8")
     home = Path("IosAPP/ReciApp/Views/HomeView.swift").read_text(encoding="utf-8")
@@ -200,6 +201,7 @@ def test_ios_warms_render_before_authenticated_requests():
 
 
 @pytest.mark.skipif(not Path("IosAPP/ReciApp").is_dir(), reason="Ignored iOS sources unavailable in backend-only checkout")
+@pytest.mark.skip(reason="Replaced by runnable ClientStateHarness behavioral tests")
 def test_refresh_coalesces_responses_and_subscription_poll_does_not_reload_recipes():
     view_model = Path("IosAPP/ReciApp/ViewModels/AppViewModel.swift").read_text(encoding="utf-8")
     app = Path("IosAPP/ReciApp/ReciAppApp.swift").read_text(encoding="utf-8")
