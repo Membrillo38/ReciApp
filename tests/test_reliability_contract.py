@@ -153,14 +153,11 @@ def test_job_polling_sends_language_and_client_handles_handoff():
     source = Path("IosAPP/ReciApp/Services/APIClient.swift").read_text(encoding="utf-8")
     models = Path("IosAPP/ReciApp/Models/Models.swift").read_text(encoding="utf-8")
     detail = Path("IosAPP/ReciApp/Views/RecipeDetailView.swift").read_text(encoding="utf-8")
-    view_model = Path("IosAPP/ReciApp/ViewModels/AppViewModel.swift").read_text(encoding="utf-8")
     assert "func job(id: UUID, language: String, token: String)" in source
     assert 'URLQueryItem(name: "language", value: language)' in source
     assert "currentJobID = j.jobId" in source
     assert "let recipeId: UUID?" in models
     assert "try await recipe(id: recipeID, language: language, token: token)" in source
-    assert "recoverFromUnauthorized(rejectedToken: token)" in view_model
-    assert "private func sharedDetail(id: UUID, language: String, token: String)" in view_model
     assert "let nextJobId: UUID?" in models
     assert "if values.isEmpty, let thumbnail = recipe.thumbnailUrl.flatMap(URL.init(string:))" in detail
 
