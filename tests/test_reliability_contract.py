@@ -346,6 +346,13 @@ def test_database_advisor_hardening_indexes_foreign_keys_and_caches_rls_identity
     assert migration.count("(select auth.uid())") >= 6
 
 
+def test_reserve_api_spend_qualifies_ledger_reserved_cents():
+    migration = Path("supabase/migrations/014_qualify_spend_reserved_cents.sql").read_text(encoding="utf-8")
+    assert "then ledger.reserved_cents else ledger.actual_cents" in migration
+    assert migration.count("then ledger.reserved_cents else ledger.actual_cents") == 3
+    assert "then reserved_cents else actual_cents" not in migration
+
+
 def test_legacy_provider_errors_are_redacted_by_migration():
     migration = Path("supabase/migrations/013_redact_legacy_job_errors.sql").read_text(encoding="utf-8")
     assert "invalid_api_key" in migration
