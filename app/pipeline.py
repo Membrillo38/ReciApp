@@ -38,6 +38,7 @@ def _safe_job_error(error: ExtractError) -> str:
         "No usable recipe text found in source",
         "Incomplete TikTok carousel:",
         "TikTok video evidence incomplete:",
+        "Recipe source text exceeds supported bound",
         "OPENAI_API_KEY is not configured",
         "Recipe model refused",
         "Recipe model returned",

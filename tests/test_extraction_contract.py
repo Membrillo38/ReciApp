@@ -809,6 +809,11 @@ def test_provider_error_payload_is_not_saved_as_job_error():
     assert _safe_job_error(error) == "Extraction temporarily failed. Retry the import."
 
 
+def test_supported_source_bound_is_an_actionable_job_error():
+    error = extract.ExtractError("Recipe source text exceeds supported bound")
+    assert _safe_job_error(error) == "Recipe source text exceeds supported bound"
+
+
 def test_tiktok_metadata_fallback_is_available_when_ytdlp_json_is_invalid():
     original_run = extract._run_ytdlp
     original_oembed = extract._fetch_tiktok_oembed
