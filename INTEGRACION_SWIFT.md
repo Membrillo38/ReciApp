@@ -1,0 +1,138 @@
+# Integración de ReciApp en Swift
+
+Esta guía describe el contrato del servidor y cómo conectarlo a una app SwiftUI. El cliente de referencia completo está en [`docs/swift/ReciAppAPI.swift`](docs/swift/ReciAppAPI.swift). Se ha comprobado con el compilador en modo Swift 6; requiere iOS 16 o posterior. No depende del SDK de Supabase: recibe una función que obtiene o renueva el token.
+
+## 1. Configuración
+
+- API: `https://reciapp-4ih5.onrender.com`
+- Supabase: `https://nzimdcjxgklopythnpfi.supabase.co`
+- Autenticación de la API: `Authorization: Bearer <accessToken de Supabase>`.
+- Clave pública de Supabase: usa la publishable key o anon key del proyecto desde su Dashboard. No uses esa clave como Bearer de la API: el Bearer debe pertenecer a la sesión del usuario.
+- Nunca incluyas `service_role`, `API_KEY` administrativa, OpenAI ni secretos de webhooks en la app.
+
+Añade `https://github.com/supabase/supabase-swift` mediante Swift Package Manager y conserva `Package.resolved`. En la app existente, adapta `Services/AuthService.swift` y `Services/APIClient.swift`; no añadas modelos con nombres duplicados. La app iOS vive en `IosAPP/`, que este repositorio Git ignora.
+
+## 2. Autenticación y cliente
+
+Crea una única instancia de `SupabaseClient` para la sesión de la app. Inicializa el cliente de referencia así:
+
+```swift
+import Supabase
+
+let supabase = SupabaseClient(
+    supabaseURL: URL(string: "https://nzimdcjxgklopythnpfi.supabase.co")!,
+    supabaseKey: "TU_CLAVE_PUBLICA_SUPABASE"
+)
+let api = ReciAppAPI { refresh in
+    if refresh {
+        return try await supabase.auth.refreshSession().accessToken
+    }
+    return try await supabase.auth.session.accessToken
+}
+```
+
+Para Sign in with Apple, activa la capability y configura Apple como proveedor en Supabase. Genera un nonce aleatorio para cada intento; envía su SHA-256 a Apple y el nonce original a Supabase junto al ID token. No reutilices un nonce ni uses el authorization code como ID token.
+
+```swift
+// appleIDToken y rawNonce proceden del flujo Apple completado.
+let session = try await supabase.auth.signInWithIdToken(
+    credentials: OpenIDConnectCredentials(
+        provider: .apple,
+        idToken: appleIDToken,
+        nonce: rawNonce
+    )
+)
+```
+
+Consulta la [API oficial de autenticación nativa de Supabase Swift](https://supabase.com/docs/reference/swift/auth-signinwithidtoken). Escucha los cambios de sesión; al salir, cancela tareas de red y limpia cachés y jobs locales de ese usuario. No registres tokens, contraseñas ni cuerpos de respuestas privadas.
+
+El cliente renueva sesión y repite una sola vez ante HTTP 401. No repite automáticamente escrituras ante timeout o HTTP 5xx, porque podrían haberse ejecutado. La sesión predeterminada del cliente rechaza redirecciones para no reenviar credenciales fuera del endpoint esperado. Si inyectas otra URLSession, conserva esta protección.
+
+## 3. Biblioteca y detalle
+
+```swift
+let profile = try await api.me()
+let library = try await api.recipes(language: "es-ES")
+let detail = try await api.recipe(id: recipeID, language: "es-ES")
+```
+
+Carga perfil y biblioteca de forma independiente. Un error al obtener el plan no debe ocultar recetas ya guardadas. Al tocar una receta, presenta inmediatamente el detalle con skeleton y después sustituye sus datos. Publica cambios de interfaz en `@MainActor`.
+
+Los campos `ingredientSections`, `tips` y `carouselImageUrls` llegan como arrays, incluso vacíos. Conserva el orden de las imágenes. Si no hay carrusel, usa `thumbnailUrl`. Si no hay secciones, muestra `ingredients`. Ordena pasos por `order`; muestra consejos al final.
+
+`languageCode` indica el idioma realmente devuelto. Listado y detalle pueden devolver la versión original si la traducción aún no existe; no prometas que el parámetro `language` por sí solo la genera.
+
+## 4. Importación y recuperación
+
+Idiomas canónicos: `en-US`, `es-ES`, `fr-FR`, `de`, `it`, `pt-BR`. Los valores no admitidos se normalizan a `en-US`.
+
+```swift
+let started = try await api.extract(url: sourceURL, language: "es-ES")
+// Guarda started.jobId + idioma + userID ANTES de comenzar el polling.
+let recipe = try await api.waitForRecipe(
+    jobID: started.jobId,
+    language: "es-ES"
+) { state in
+    // Guarda state.nextJobId ?? state.jobId. Actualiza progreso en MainActor.
+}
+```
+
+El servidor acepta URLs públicas de TikTok, YouTube, Instagram y Facebook. Descargas privadas, contenido eliminado, restricciones de plataformas o falta de información culinaria pueden acabar en un job fallido.
+
+- `POST /v1/extract` devuelve `job_id`, `status`, `cache_hit`, `progress`.
+- También en cache hit, consulta el job para obtener la receta.
+- `GET /v1/jobs/{id}?language=es-ES` devuelve `pending`, `processing`, `completed` o `failed`.
+- Sigue siempre `next_job_id ?? job_id` de la respuesta: una extracción puede continuar con otro job de traducción.
+- Guarda el job y su idioma por usuario para reanudar al volver al foreground o reiniciar la app.
+- El cliente espera cada 2 segundos y termina tras aproximadamente 10 minutos más la petición en curso. Cancelar la tarea o agotar la espera no cancela el trabajo del servidor.
+- Ante error transitorio al consultar un job, ofrece reanudar ese ID. No vuelvas a crear una extracción automáticamente.
+- Una receta fallida puede aparecer en el payload de una traducción: comprueba primero `status`, después `recipe`.
+
+Render Free ejecuta las tareas con `BackgroundTasks` dentro del proceso web. Un reinicio puede interrumpirlas. El servidor expira jobs antiguos; no existe garantía de ejecución durable en este despliegue. `render.worker.yaml` está deliberadamente vacío y `WORKER_ENABLED=false` debe mantenerse mientras no exista un worker autorizado y operativo.
+
+## 5. Errores y suscripciones
+
+La propiedad JSON `detail` puede ser texto, un objeto con `code` y `message`, o una lista de errores de validación. El cliente de referencia acepta estas formas y conserva `X-Correlation-ID` y `Retry-After` en `ReciAPIError`.
+
+| Estado/código | Comportamiento en la app |
+| --- | --- |
+| 401 | Renovar sesión una vez; después solicitar login. |
+| 403 `FREE_WEEKLY_LIMIT` | Presentar paywall. |
+| 403 `PRO_FAIR_USE_LIMIT` | Mostrar límite temporal de uso. |
+| Otro 403 | Mostrar falta de acceso; no abrir paywall automáticamente. |
+| 404 | Job/receta inexistente o eliminada. |
+| 413 / 422 | Corregir entrada; no repetir sin cambios. |
+| 429 | Esperar; respetar `Retry-After` si está presente. |
+| 503 | Conservar datos y permitir reintento; puede indicar mantenimiento o dependencia temporalmente caída. |
+| Job `failed` con HTTP 200 | Mostrar `error`; el transporte funcionó pero la importación no. |
+
+En la implementación actual, un cache hit ya localizado no consulta cuota ni llama OpenAI, aunque registra `extract_hit`. Las nuevas extracciones y traducciones sí aplican cuota y reserva de gasto. `free_remaining` puede ser cero y aun así una receta ya cacheada estar disponible. No bloquees todas las importaciones desde la UI basándote solo en ese campo.
+
+Para Superwall, configura la clave pública del proyecto, identifica al usuario con su UUID de Supabase y asigna el atributo `supabase_user_id` con el mismo UUID. Tras compra o restauración, refresca `/v1/me` con espera acotada: el webhook puede llegar después que el callback de StoreKit. El servidor es quien confirma `is_pro`; no lo sobrescribas desde el cliente. La integración de pago real requiere probar compra sandbox y webhook firmado.
+
+## 6. Share Extension y eliminación
+
+Comparte URL e idioma mediante App Group `group.com.membri.reciapp`; habilítalo en ambos targets y sus perfiles de firma. Conserva enlaces recibidos sin sesión hasta terminar login. Deduplica entregas para no lanzar dos POST. La app principal debe crear el job y guardar su ID; la extensión no debe depender de ejecutar una extracción larga.
+
+`removeRecipe(id:)` elimina la asociación del usuario, no la caché global. `deleteAccount()` solicita eliminar la cuenta; después del éxito, cierra sesión y borra cachés locales. Presenta confirmación explícita en la UI para borrar la cuenta. Actualmente el servidor bloquea primero el perfil y puede devolver éxito aunque el proveedor Auth falle al eliminar su registro; la eliminación completa en ese caso requiere revisión operativa. No afirmes en la UI una eliminación física instantánea de todos los sistemas.
+
+## 7. Pruebas de aceptación de la app
+
+1. Login Apple y renovación tras 401; comprobar que ningún secreto del servidor aparece en el bundle.
+2. Perfil, biblioteca y detalle con una cuenta real; conservar biblioteca si falla perfil.
+3. Importar URL nueva y URL cacheada; comprobar gasto y cuota solo según respuesta del servidor.
+4. Seguir cambio de job a traducción y comprobar `languageCode` final.
+5. Cerrar y abrir la app durante polling; reanudar el job guardado.
+6. Share Sheet con app abierta, cerrada y sin sesión.
+7. Red desconectada, HTTP 429/503, entrada inválida y job fallido.
+8. Compra/restauración sandbox con webhook y actualización real de `/v1/me`.
+
+Para verificar el backend con una sesión de prueba existente, configura `RECIAPP_ACCESS_TOKEN` mediante un mecanismo local seguro y ejecuta:
+
+```bash
+export RECIAPP_EXPECTED_API_HOST=reciapp-4ih5.onrender.com
+python scripts/authenticated_readiness.py \
+  --base-url https://reciapp-4ih5.onrender.com --cycles 100
+```
+
+El script solo imprime métricas y estados; comprueba 100 ciclos de biblioteca/perfil y exige p95 inferior a 800 ms. `/health` y `/ready` son comprobaciones públicas: no prueban por sí mismas que login, extracción y facturación funcionen de extremo a extremo.

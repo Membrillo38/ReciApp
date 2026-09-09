@@ -192,10 +192,11 @@ def _ensure_translation_job(
         job_id = UUID(job["id"])
         reserve_spend(user_id=user.id, job_id=job_id)
     except Exception:
+        # Recovery reads/writes can fail too; release capacity before them.
+        if local_claimed:
+            release_job(user.id)
         if "job_id" in locals():
             update_job(job_id, status=JobStatus.failed.value, error="Usage protection unavailable")
-            if local_claimed:
-                release_job(user.id)
             raise
         active = get_active_job(
             source_url_norm=source_url_norm,
@@ -205,11 +206,7 @@ def _ensure_translation_job(
         )
         if active:
             _share_job_or_http(active, user)
-            if local_claimed:
-                release_job(user.id)
             return active
-        if local_claimed:
-            release_job(user.id)
         raise
     if not settings.worker_enabled:
         background.add_task(run_translation_job, job_id, user.id, recipe_id, language_code)
@@ -533,24 +530,21 @@ def extract_recipe(
         job_id = UUID(job["id"])
         reserve_spend(user_id=user.id, job_id=job_id)
     except Exception:
+        # Recovery reads/writes can fail too; release capacity before them.
+        if local_claimed:
+            release_job(user.id)
         if "job_id" in locals():
             update_job(job_id, status=JobStatus.failed.value, error="Usage protection unavailable")
-            if local_claimed:
-                release_job(user.id)
             raise
         active = get_active_job(source_url_norm=url_norm, job_kind="extract")
         if active and not _expire_stale_job(active):
             _share_job_or_http(active, user)
-            if local_claimed:
-                release_job(user.id)
             return ExtractJobResponse(
                 job_id=UUID(active["id"]),
                 status=JobStatus(active["status"]),
                 cache_hit=False,
                 progress=int(active.get("progress") or 0),
             )
-        if local_claimed:
-            release_job(user.id)
         raise
     if not settings.worker_enabled:
         background.add_task(run_extract_job, job_id, user.id, url, url_norm, language_code)
