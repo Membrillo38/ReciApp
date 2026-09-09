@@ -1,8 +1,9 @@
 """Optional durable worker for extract_jobs.
 
-Run this as a separate Render worker only after migration 011 is applied and
-WORKER_ENABLED=true is configured on the web service. One process claims one
-job at a time; Postgres leases make restarts and stale claims recoverable.
+Render worker activation is disabled by the no-paid-services constraint.
+This module remains available for separately authorized local recovery after
+migration 011. One process claims one job at a time; Postgres leases make
+restarts and stale claims recoverable.
 """
 
 from __future__ import annotations

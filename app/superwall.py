@@ -110,12 +110,18 @@ def _record_event(event_id: str, event_name: str, event_at: datetime, user_id: U
 
 
 def _mark_event(event_id: str, *, status: str, error: str | None = None) -> None:
-    response = get_supabase().table("subscription_events").update({
+    sb = get_supabase()
+    response = sb.table("subscription_events").update({
         "status": status,
         "error": error[:500] if error else None,
         "processed_at": datetime.now(timezone.utc).isoformat(),
-    }).eq("event_id", event_id).execute()
+    }).eq("event_id", event_id).in_("status", ["received", "failed"]).execute()
     if not response.data:
+        # Another delivery may have committed while this one was failing.
+        # Terminal receipts are immutable, including processed versus skipped.
+        current = sb.table("subscription_events").select("status").eq("event_id", event_id).limit(1).execute()
+        if current.data and current.data[0].get("status") in {"processed", "skipped"}:
+            return
         raise RuntimeError("Subscription event status was not persisted")
 
 

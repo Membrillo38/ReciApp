@@ -1,54 +1,6 @@
-# Deploy separately from render.yaml after migration 011 is live.
-# The web service must have WORKER_ENABLED=true at the same cutover so it does
-# not also schedule request-local BackgroundTasks.
-services:
-  - type: worker
-    name: reciapp-extract-worker
-    runtime: docker
-    plan: starter
-    region: frankfurt
-    dockerCommand: python -m app.worker
-    autoDeployTrigger: "off"
-    envVars:
-      - key: OPENAI_API_KEY
-        sync: false
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_EXPECTED_HOST
-        sync: false
-      - key: SUPABASE_TIMEOUT_SECONDS
-        value: "10"
-      - key: READINESS_TIMEOUT_SECONDS
-        value: "3"
-      - key: MAINTENANCE_MODE
-        value: "false"
-      - key: SUPABASE_SERVICE_ROLE_KEY
-        sync: false
-      - key: MAX_DURATION_SECONDS
-        value: "600"
-      - key: RECIPE_MODEL
-        value: gpt-4o-mini
-      - key: TRANSCRIBE_MODEL
-        value: gpt-4o-mini-transcribe
-      - key: VISION_MODEL
-        value: gpt-4o-mini
-      - key: BILLING_GUARD_ENABLED
-        value: "true"
-      - key: DAILY_API_BUDGET_CENTS
-        value: "1000"
-      - key: MONTHLY_API_BUDGET_CENTS
-        value: "5000"
-      - key: USER_MONTHLY_BUDGET_CENTS
-        value: "500"
-      - key: MAX_JOB_COST_CENTS
-        value: "100"
-      - key: MAX_CONCURRENT_JOBS
-        value: "8"
-      - key: MAX_CONCURRENT_JOBS_PER_USER
-        value: "2"
-      - key: WORKER_ENABLED
-        value: "true"
-      - key: WORKER_POLL_SECONDS
-        value: "5"
-      - key: WORKER_LEASE_SECONDS
-        value: "900"
+# Worker activation is excluded by this project's no-paid-services constraint.
+# This inert file deliberately defines no deployable Render worker service.
+# Keep WORKER_ENABLED=false on the free web service; it uses BackgroundTasks.
+# Durable worker code remains available for separately authorized local recovery.
+# Before reopening imports after maintenance, reconcile pending jobs/reservations.
+services: []

@@ -255,9 +255,11 @@ class Query:
     def __init__(self, db, table):
         self.db, self.table = db, table
         self.filters, self.operation, self.payload = [], "select", None
+        self.membership_filters = []
     def select(self, *args): return self
     def limit(self, *args): return self
     def eq(self, field, value): self.filters.append((field, value)); return self
+    def in_(self, field, values): self.membership_filters.append((field, values)); return self
     def is_(self, field, value): self.filters.append((field, None if value == "null" else value)); return self
     def insert(self, payload): self.operation, self.payload = "insert", payload; return self
     def update(self, payload): self.operation, self.payload = "update", payload; return self
@@ -275,9 +277,12 @@ class Query:
             self.db.fail_mark_once = False
             raise httpx.ReadError("SECRET_VALUE")
         rows = self.db.rows[self.table]
-        matched = [r for r in rows if all(r.get(k) == v for k, v in self.filters)]
+        matched = [r for r in rows if all(r.get(k) == v for k, v in self.filters) and all(r.get(k) in values for k, values in self.membership_filters)]
         if self.operation == "insert":
-            rows.append(copy.deepcopy(self.payload)); matched = [rows[-1]]
+            inserted = copy.deepcopy(self.payload)
+            if self.table in {"subscription_events", "apple_notification_events"}:
+                inserted.setdefault("status", "received")
+            rows.append(inserted); matched = [rows[-1]]
         if self.operation == "update":
             for row in matched: row.update(self.payload)
         return SimpleNamespace(data=copy.deepcopy(matched))
@@ -432,7 +437,7 @@ def test_apple_never_recreates_profile(monkeypatch, state):
     if state == "deleted": profile["deleted_at"] = "2026-09-08"
     fake = FakeDB(None if state == "missing" else profile)
     monkeypatch.setattr(apple, "get_supabase", lambda: fake)
-    monkeypatch.setattr(apple, "verify_jws", lambda value: {"notificationUUID": "apple-event", "notificationType": "SUBSCRIBED", "data": {"signedTransactionInfo": "transaction"}} if value == "notification" else {"appAccountToken": str(uid)})
+    monkeypatch.setattr(apple, "verify_jws", lambda value: {"notificationUUID": "apple-event", "notificationType": "SUBSCRIBED", "signedDate": int(datetime.now(timezone.utc).timestamp() * 1000), "data": {"signedTransactionInfo": "transaction"}} if value == "notification" else {"appAccountToken": str(uid)})
     result = apple.process_signed_notification("notification")
     assert result["updated"] is (state == "existing")
     assert ("profiles", "insert") not in fake.operations
@@ -537,3 +542,136 @@ def test_real_sdk_transport_failure_bound(method):
     finally:
         owner.close()
     assert len(calls) == (2 if method == "GET" else 1)
+
+
+@pytest.mark.parametrize("terminal", ["processed", "skipped"])
+@pytest.mark.parametrize("late_status", ["failed", "processed", "skipped"])
+def test_superwall_terminal_receipt_survives_concurrent_late_completion(monkeypatch, terminal, late_status):
+    fake = FakeDB()
+    fake.rows["subscription_events"] = [{"event_id": "concurrent", "status": "received"}]
+    use_superwall(monkeypatch, fake)
+    original = Query.execute
+    interleaved = []
+    def execute(query):
+        if query.table == "subscription_events" and query.operation == "update" and not interleaved:
+            interleaved.append(True)
+            superwall._mark_event("concurrent", status=terminal)
+        return original(query)
+    monkeypatch.setattr(Query, "execute", execute)
+    superwall._mark_event("concurrent", status=late_status, error="late_failure")
+    row = fake.rows["subscription_events"][0]
+    assert row["status"] == terminal
+    assert row["error"] is None
+
+
+def use_apple(monkeypatch, fake, uid, notifications):
+    monkeypatch.setattr(apple, "get_supabase", lambda: fake)
+    def verify(value):
+        if value == "transaction":
+            return {"appAccountToken": str(uid)}
+        return {"notificationUUID": value, "data": {"signedTransactionInfo": "transaction"}, **notifications[value]}
+    monkeypatch.setattr(apple, "verify_jws", verify)
+
+
+def test_apple_duplicate_and_older_delivery_do_not_reapply_subscription(monkeypatch):
+    uid = uuid4(); fake = FakeDB({"id": str(uid)})
+    use_apple(monkeypatch, fake, uid, {
+        "newer": {"notificationType": "EXPIRED", "signedDate": 1788868800000},
+        "older": {"notificationType": "SUBSCRIBED", "signedDate": 1788868700000},
+    })
+    assert apple.process_signed_notification("newer")["updated"] is True
+    assert apple.process_signed_notification("newer")["skipped"] == "duplicate"
+    assert apple.process_signed_notification("older")["skipped"] == "out_of_order"
+    assert fake.rows["profiles"][0]["is_pro"] is False
+    assert fake.operations.count(("profiles", "update")) == 1
+
+
+@pytest.mark.parametrize("other", ["same", "newer"])
+def test_apple_concurrent_delivery_compare_and_set(monkeypatch, other):
+    uid = uuid4(); fake = FakeDB({"id": str(uid)})
+    use_apple(monkeypatch, fake, uid, {
+        "first": {"notificationType": "SUBSCRIBED", "signedDate": 1788868700000},
+        "newer": {"notificationType": "EXPIRED", "signedDate": 1788868800000},
+    })
+    concurrent_results = []
+    def race(db):
+        db.profile_race = None
+        concurrent_results.append(apple.process_signed_notification("first" if other == "same" else "newer"))
+    fake.profile_race = race
+    result = apple.process_signed_notification("first")
+    assert concurrent_results[0]["updated"] is True
+    assert result["skipped"] == ("duplicate" if other == "same" else "out_of_order")
+    assert fake.rows["profiles"][0]["is_pro"] is (other == "same")
+    assert all(row["status"] in {"processed", "skipped"} for row in fake.rows["apple_notification_events"])
+    assert len(fake.rows["apple_notification_events"]) == (1 if other == "same" else 2)
+
+
+@pytest.mark.parametrize("provider", ["apple", "superwall"])
+def test_concurrent_success_followed_by_request_failure_keeps_processed(monkeypatch, provider):
+    uid = uuid4(); fake = FakeDB({"id": str(uid)})
+    if provider == "apple":
+        use_apple(monkeypatch, fake, uid, {"event": {"notificationType": "SUBSCRIBED", "signedDate": 1788868700000}})
+        process = lambda: apple.process_signed_notification("event")
+        table = "apple_notification_events"
+    else:
+        use_superwall(monkeypatch, fake)
+        payload = event(uid)
+        process = lambda: superwall.apply_superwall_event(payload)
+        table = "subscription_events"
+    def race(db):
+        db.profile_race = None
+        assert process()["updated"] is True
+        raise httpx.ReadError("late request failure")
+    fake.profile_race = race
+    with pytest.raises(HTTPException) as caught:
+        process()
+    assert caught.value.status_code == 503
+    assert fake.rows[table][0]["status"] == "processed"
+    assert process()["skipped"] == "duplicate"
+    assert fake.rows["profiles"][0]["is_pro"] is True
+
+
+@pytest.mark.parametrize("failure", ["profile", "receipt"])
+def test_apple_failed_processing_retry_is_not_a_successful_replay(monkeypatch, failure):
+    uid = uuid4(); fake = FakeDB({"id": str(uid)})
+    use_apple(monkeypatch, fake, uid, {"event": {"notificationType": "SUBSCRIBED", "signedDate": 1788868700000}})
+    if failure == "profile": fake.fail_profile_once = True
+    original = Query.execute
+    failed = []
+    def execute(query):
+        if failure == "receipt" and query.table == "apple_notification_events" and query.operation == "update" and query.payload["status"] == "processed" and not failed:
+            failed.append(True)
+            raise httpx.ReadError("SECRET_VALUE")
+        return original(query)
+    monkeypatch.setattr(Query, "execute", execute)
+    with pytest.raises(HTTPException) as caught:
+        apple.process_signed_notification("event")
+    assert caught.value.status_code == 503 and caught.value.headers["Retry-After"] == "1"
+    assert fake.rows["apple_notification_events"][0]["status"] == "failed"
+    result = apple.process_signed_notification("event")
+    assert result["updated"] or result["skipped"] == "duplicate"
+    assert fake.rows["apple_notification_events"][0]["status"] == "processed"
+    assert fake.rows["profiles"][0]["is_pro"] is True
+    assert "SECRET_VALUE" not in json.dumps(fake.rows)
+
+
+@pytest.mark.parametrize("status,expected", [("received", True), ("failed", True), ("processed", False), ("skipped", False)])
+def test_apple_concurrent_receipt_insert_is_not_processing_success(monkeypatch, status, expected):
+    from postgrest.exceptions import APIError
+    fake = FakeDB()
+    original = Query.execute
+    def execute(query):
+        if query.table == "apple_notification_events" and query.operation == "insert":
+            fake.rows[query.table].append({"event_id": "conflict", "status": status})
+            raise APIError({"code": "23505", "message": "duplicate key", "details": None, "hint": None})
+        return original(query)
+    monkeypatch.setattr(Query, "execute", execute)
+    assert apple._record_notification(fake, "conflict", {"event_id": "conflict"}) is expected
+
+
+@pytest.mark.parametrize("value", [None, True, -1, "1788868700000", float("nan"), float("inf")])
+def test_apple_requires_signed_event_time_before_database_work(monkeypatch, value):
+    monkeypatch.setattr(apple, "get_supabase", fail)
+    monkeypatch.setattr(apple, "verify_jws", lambda _: {"notificationUUID": "event", "signedDate": value})
+    with pytest.raises(ValueError):
+        apple.process_signed_notification("event")

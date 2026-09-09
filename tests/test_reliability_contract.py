@@ -326,7 +326,9 @@ def test_durable_worker_claim_is_atomic_and_web_defaults_to_background_tasks():
     assert "if not settings.worker_enabled" in main_source
     assert "local_claimed = not settings.worker_enabled" in main_source
     assert '"claim_next_extract_job"' in worker
-    assert "type: worker" in worker_blueprint
+    assert "services: []" in worker_blueprint
+    assert "plan: starter" not in worker_blueprint
+    assert "type: worker" not in worker_blueprint
     assert "WORKER_ENABLED" in worker_blueprint
 
 

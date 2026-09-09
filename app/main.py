@@ -372,6 +372,8 @@ async def apple_webhook(request: Request) -> JSONResponse:
         if not isinstance(signed_payload, str):
             raise ValueError("signedPayload required")
         result = process_signed_notification(signed_payload)
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid signed Apple notification") from exc
     except Exception as exc:
