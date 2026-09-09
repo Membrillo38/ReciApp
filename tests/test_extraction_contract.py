@@ -759,6 +759,132 @@ def test_tiktok_video_without_caption_uses_three_bounded_frames(monkeypatch, tmp
     assert not frame_dir.exists()
 
 
+def test_tiktok_caption_survives_when_frame_download_fails(monkeypatch):
+    from uuid import uuid4
+    import app.pipeline as pipeline
+    from app.models import Ingredient, IngredientSection, Recipe, Step
+
+    media = extract.MediaInfo(
+        title="Bakery chocolate chip cookies with butter and sugar",
+        description="Bakery chocolate chip cookies with butter and sugar",
+        author="baker",
+        thumbnail_url=None,
+        duration_seconds=60,
+        webpage_url="https://vm.tiktok.com/ZGdQ6Hwqc/",
+        subtitles_text=None,
+        audio_path=None,
+        media_id="1",
+    )
+    built = []
+    settled = []
+    recipe_id = uuid4()
+    monkeypatch.setattr(pipeline, "detect_platform", lambda url: Platform.tiktok)
+    monkeypatch.setattr(pipeline, "fetch_tiktok_slides", lambda url: None)
+    monkeypatch.setattr(pipeline, "fetch_media_info", lambda url: media)
+    monkeypatch.setattr(
+        pipeline,
+        "download_tiktok_video_frames",
+        lambda *args, **kwargs: (_ for _ in ()).throw(extract.ExtractError("login wall")),
+    )
+
+    def fake_build(**kwargs):
+        built.append(kwargs)
+        ingredient = Ingredient(name="butter")
+        return Recipe(
+            title="Cookies",
+            ingredients=[ingredient],
+            ingredient_sections=[IngredientSection(title="Ingredients", ingredients=[ingredient])],
+            steps=[Step(order=1, text="Bake")],
+            source_url=kwargs["source_url"],
+            platform=Platform.tiktok,
+        )
+
+    monkeypatch.setattr(pipeline, "build_recipe", fake_build)
+    monkeypatch.setattr(pipeline, "update_job", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pipeline, "upsert_recipe", lambda *args, **kwargs: {"id": str(recipe_id)})
+    monkeypatch.setattr(pipeline, "save_user_recipe", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pipeline, "record_usage", lambda **kwargs: None)
+    monkeypatch.setattr(pipeline, "settle_spend", lambda **kwargs: settled.append(kwargs))
+    monkeypatch.setattr(pipeline, "release_job", lambda *args: None)
+
+    pipeline.run_extract_job(uuid4(), uuid4(), media.webpage_url, "tiktok:vm:1", "en-US")
+
+    assert built[0]["title"].startswith("Bakery chocolate chip")
+    assert settled[-1]["status"] == "settled"
+
+
+def test_tiktok_short_link_oembed_is_not_skipped():
+    original_open = extract.safe_urlopen
+    seen = []
+
+    class FakeResponse:
+        def read(self, _n):
+            return json.dumps(
+                {"type": "video", "title": "Tiramisu from a vm link", "author_name": "baker"}
+            ).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def fake_open(request, timeout=20):
+        seen.append(request.full_url)
+        return FakeResponse()
+
+    extract.safe_urlopen = fake_open
+    try:
+        result = extract._fetch_tiktok_oembed("https://vm.tiktok.com/ZGdQ62tdt/")
+    finally:
+        extract.safe_urlopen = original_open
+    assert result is not None
+    assert result.title == "Tiramisu from a vm link"
+    assert result.description == "Tiramisu from a vm link"
+    assert seen and "vm.tiktok.com" in seen[0]
+
+
+def test_instagram_oembed_fallback_uses_canonical_reel_url():
+    original_run = extract._run_ytdlp
+    original_open = extract.safe_urlopen
+    seen = []
+
+    class FakeResponse:
+        def read(self, _n):
+            return json.dumps(
+                {"title": "Pollo crispy con salsa", "author_name": "connieiscooking"}
+            ).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def fake_open(request, timeout=20):
+        seen.append(request.full_url)
+        return FakeResponse()
+
+    original_validate = extract.validate_public_url
+    extract._run_ytdlp = lambda *args, **kwargs: SimpleNamespace(
+        returncode=1, stdout="", stderr="login required"
+    )
+    extract.validate_public_url = lambda *args, **kwargs: None
+    extract.safe_urlopen = fake_open
+    try:
+        result = extract.fetch_media_info(
+            "https://www.instagram.com/reel/Dcq5Bx9NB4-/?stkn=token"
+        )
+    finally:
+        extract._run_ytdlp = original_run
+        extract.validate_public_url = original_validate
+        extract.safe_urlopen = original_open
+    assert result.title.startswith("Pollo crispy")
+    assert "instagram.com/api/v1/oembed/" in seen[-1]
+    assert "Dcq5Bx9NB4-" in seen[-1]
+    assert "stkn" not in seen[-1]
+
+
 def test_tiktok_metadata_fallback_is_available_when_ytdlp_fails():
     original_run = extract._run_ytdlp
     original_oembed = extract._fetch_tiktok_oembed

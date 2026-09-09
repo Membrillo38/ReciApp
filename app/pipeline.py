@@ -170,13 +170,22 @@ def run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langua
                     video_text,
                 )
             ):
-                video_frames = download_tiktok_video_frames(
-                    url,
-                    media_id=media.media_id,
-                    duration_seconds=duration_seconds,
-                )
-                openai_called = True
-                video_text = ocr_video_frames(video_frames.paths, on_attempt=record_ocr_attempt)
+                try:
+                    video_frames = download_tiktok_video_frames(
+                        url,
+                        media_id=media.media_id,
+                        duration_seconds=duration_seconds,
+                    )
+                    openai_called = True
+                    video_text = ocr_video_frames(video_frames.paths, on_attempt=record_ocr_attempt)
+                except ExtractError as exc:
+                    # Caption/oEmbed text can still yield a recipe when the
+                    # datacenter cannot download TikTok media.
+                    logger.warning(
+                        "extract stage=frame_fallback job_id=%s error_type=%s",
+                        job_id,
+                        type(exc).__name__,
+                    )
             update_job(job_id, progress=60)
             if not transcript and not any(
                 text.strip() for text in (media.title, media.description, video_text or "")

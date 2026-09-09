@@ -102,13 +102,13 @@ def fetch_media_info(url: str) -> MediaInfo:
             timeout=90,
         )
     except ExtractError:
-        fallback = _fetch_tiktok_oembed(url)
+        fallback = _metadata_fallback(url)
         if fallback:
             return fallback
         raise
     if meta.returncode != 0:
         err = (meta.stderr or meta.stdout or "unknown yt-dlp error").strip()
-        fallback = _fetch_tiktok_oembed(url)
+        fallback = _metadata_fallback(url)
         if fallback:
             return fallback
         raise ExtractError(err[-500:])
@@ -116,7 +116,7 @@ def fetch_media_info(url: str) -> MediaInfo:
     try:
         data = _parse_json(meta.stdout)
     except ExtractError:
-        fallback = _fetch_tiktok_oembed(url)
+        fallback = _metadata_fallback(url)
         if fallback:
             return fallback
         raise
@@ -149,12 +149,16 @@ def fetch_media_info(url: str) -> MediaInfo:
     )
 
 
-def _fetch_tiktok_oembed(url: str) -> MediaInfo | None:
-    """Use TikTok's public metadata endpoint when yt-dlp cannot extract a video."""
+def _host_matches(url: str, *roots: str) -> bool:
     host = (urlparse(url).hostname or "").lower().rstrip(".")
-    if host not in {"tiktok.com", "www.tiktok.com"}:
-        return None
-    endpoint = f"https://www.tiktok.com/oembed?url={quote(url, safe='')}"
+    return any(host == root or host.endswith(f".{root}") for root in roots)
+
+
+def _metadata_fallback(url: str) -> MediaInfo | None:
+    return _fetch_tiktok_oembed(url) or _fetch_instagram_oembed(url) or _fetch_youtube_oembed(url)
+
+
+def _oembed_json(endpoint: str) -> dict | None:
     try:
         request = Request(endpoint, headers={"User-Agent": "Mozilla/5.0 recipe-extractor/1.0"})
         with safe_urlopen(request, timeout=20) as response:
@@ -164,14 +168,19 @@ def _fetch_tiktok_oembed(url: str) -> MediaInfo | None:
         data = json.loads(raw.decode("utf-8", "replace"))
     except Exception:
         return None
-    if not isinstance(data, dict) or data.get("type") != "video":
+    return data if isinstance(data, dict) else None
+
+
+def _media_from_oembed(url: str, data: dict | None) -> MediaInfo | None:
+    if not data:
         return None
     title = str(data.get("title") or "").strip()
     if not title:
         return None
+    caption = title[:12_000]
     return MediaInfo(
-        title=title[:12_000],
-        description="",
+        title=caption,
+        description=caption,
         author=str(data.get("author_name") or "").strip() or None,
         thumbnail_url=str(data.get("thumbnail_url") or "").strip() or None,
         duration_seconds=None,
@@ -179,6 +188,37 @@ def _fetch_tiktok_oembed(url: str) -> MediaInfo | None:
         subtitles_text=None,
         audio_path=None,
         media_id=None,
+    )
+
+
+def _canonical_instagram_url(url: str) -> str:
+    parts = [part for part in (urlparse(url).path or "").split("/") if part]
+    if len(parts) >= 2 and parts[0].lower() in {"reel", "p", "tv"}:
+        return f"https://www.instagram.com/{parts[0].lower()}/{parts[1]}/"
+    return url
+
+
+def _fetch_tiktok_oembed(url: str) -> MediaInfo | None:
+    """Use TikTok's public metadata endpoint when yt-dlp cannot extract a video."""
+    if not _host_matches(url, "tiktok.com"):
+        return None
+    return _media_from_oembed(url, _oembed_json(f"https://www.tiktok.com/oembed?url={quote(url, safe='')}"))
+
+
+def _fetch_instagram_oembed(url: str) -> MediaInfo | None:
+    """Use Instagram's public oEmbed caption when yt-dlp is login-walled."""
+    if not _host_matches(url, "instagram.com"):
+        return None
+    target = _canonical_instagram_url(url)
+    return _media_from_oembed(url, _oembed_json(f"https://www.instagram.com/api/v1/oembed/?url={quote(target, safe='')}"))
+
+
+def _fetch_youtube_oembed(url: str) -> MediaInfo | None:
+    if not _host_matches(url, "youtube.com", "youtu.be"):
+        return None
+    return _media_from_oembed(
+        url,
+        _oembed_json(f"https://www.youtube.com/oembed?url={quote(url, safe='')}&format=json"),
     )
 
 
