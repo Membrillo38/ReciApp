@@ -27,6 +27,45 @@ from reset_guard import (
 from reset_preflight import _inventory_sql, _snapshot_sql
 
 
+def _disposable_identity_sql() -> str:
+    return """
+SELECT json_build_object(
+  'database', current_database(),
+  'database_comment', (SELECT shobj_description(oid, 'pg_database') FROM pg_database WHERE datname = current_database()),
+  'user_relation_count', (
+    SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+      AND n.nspname !~ '^pg_toast' AND n.nspname !~ '^pg_temp'
+      AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
+  ),
+  'nondefault_extension_count', (SELECT count(*) FROM pg_extension WHERE extname <> 'plpgsql')
+)::text;
+"""
+
+
+def _validate_disposable_identity(
+    identity: dict,
+    *,
+    expected_database: str,
+    marker: str,
+    require_empty: bool,
+) -> None:
+    if identity.get("database") != expected_database:
+        raise ResetGuardError("Connected database does not match the explicit rehearsal database")
+    if identity.get("database_comment") != f"reciapp-reset-disposable:{marker}":
+        raise ResetGuardError("Rehearsal database lacks the exact disposable marker")
+    if require_empty and (
+        identity.get("user_relation_count") != 0
+        or identity.get("nondefault_extension_count") != 0
+    ):
+        raise ResetGuardError("Rehearsal database must be new and empty before restore")
+
+
+def _validate_rehearsal_host(*, source_host: str, rehearsal_host: str) -> None:
+    if rehearsal_host == source_host or os.environ.get("PGHOST") != rehearsal_host:
+        raise ResetGuardError("Rehearsal PGHOST must be explicit and different from production")
+
+
 def _checked(command: list[str], **kwargs) -> subprocess.CompletedProcess:
     result = subprocess.run(command, check=False, **kwargs)
     if result.returncode != 0:
@@ -48,7 +87,7 @@ def main() -> int:
     parser.add_argument("--source-ref", required=True)
     parser.add_argument("--source-host", required=True)
     parser.add_argument("--rehearsal-host", required=True)
-    parser.add_argument("--disposable-target", required=True)
+    parser.add_argument("--rehearsal-database", required=True)
     parser.add_argument("--encrypted-backup", required=True, type=Path)
     parser.add_argument("--backup-receipt", required=True, type=Path)
     parser.add_argument("--keychain-service", required=True)
@@ -57,10 +96,15 @@ def main() -> int:
     args = parser.parse_args()
 
     validate_target(args.source_ref, args.source_host)
-    if args.rehearsal_host == args.source_host or os.environ.get("PGHOST") != args.rehearsal_host:
-        raise ResetGuardError("Rehearsal PGHOST must be explicit and different from production")
+    _validate_rehearsal_host(
+        source_host=args.source_host,
+        rehearsal_host=args.rehearsal_host,
+    )
     if os.environ.get("PGSSLMODE") not in {"require", "verify-ca", "verify-full"}:
         raise ResetGuardError("PGSSLMODE must require TLS")
+    marker = os.environ.get("RECIAPP_DISPOSABLE_MARKER", "")
+    if len(marker) < 32 or len(marker) > 128 or not marker.isalnum():
+        raise ResetGuardError("RECIAPP_DISPOSABLE_MARKER must be 32-128 alphanumeric characters")
     validate_pg17()
     backup_receipt = load_json(args.backup_receipt)
     validate_receipt_integrity(backup_receipt)
@@ -69,6 +113,14 @@ def main() -> int:
         raise ResetGuardError("Encrypted backup digest does not match its receipt")
     if backup_receipt.get("source_target_ref") != args.source_ref:
         raise ResetGuardError("Backup receipt belongs to another source project")
+
+    initial_identity = run_psql_json(_disposable_identity_sql())
+    _validate_disposable_identity(
+        initial_identity,
+        expected_database=args.rehearsal_database,
+        marker=marker,
+        require_empty=True,
+    )
 
     key = _checked(
         ["security", "find-generic-password", "-w", "-s", args.keychain_service, "-a", args.keychain_account],
@@ -102,6 +154,13 @@ def main() -> int:
             "pg_restore", "--exit-on-error", "--clean", "--if-exists", "--no-owner",
             "--no-privileges", str(tempdir / "database.dump"),
         ])
+        restored_identity = run_psql_json(_disposable_identity_sql())
+        _validate_disposable_identity(
+            restored_identity,
+            expected_database=args.rehearsal_database,
+            marker=marker,
+            require_empty=False,
+        )
         inventory = run_psql_json(_inventory_sql())
         validate_table_inventory(inventory)
         restored = run_psql_json(_snapshot_sql(inventory))
@@ -124,7 +183,9 @@ def main() -> int:
         "kind": "reciapp-restoration-rehearsal",
         "source_target_ref": args.source_ref,
         "encrypted_backup_sha256": digest,
-        "disposable_target": args.disposable_target,
+        "preflight_receipt_sha256": backup_receipt["preflight_receipt_sha256"],
+        "disposable_target": f"{args.rehearsal_host}/{args.rehearsal_database}",
+        "disposable_marker_sha256": hashlib.sha256(marker.encode("utf-8")).hexdigest(),
         "decrypt_ok": True,
         "restore_exit_ok": True,
         **comparisons,

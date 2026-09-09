@@ -14,6 +14,14 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler()).open
+
+
 @dataclass(frozen=True)
 class Probe:
     path: str
@@ -22,7 +30,7 @@ class Probe:
     request_id: str | None
 
 
-def _request(base_url: str, path: str, *, token: str | None, opener=urllib.request.urlopen) -> Probe:
+def _request(base_url: str, path: str, *, token: str | None, opener=_NO_REDIRECT_OPENER) -> Probe:
     headers = {"User-Agent": "reciapp-readiness/1.0", "Accept": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -41,7 +49,14 @@ def _request(base_url: str, path: str, *, token: str | None, opener=urllib.reque
     return Probe(path, status, (time.perf_counter() - started) * 1000, request_id)
 
 
-def run_acceptance(base_url: str, token: str, cycles: int, *, opener=urllib.request.urlopen) -> dict:
+def run_acceptance(
+    base_url: str,
+    token: str,
+    cycles: int,
+    *,
+    expected_host: str,
+    opener=_NO_REDIRECT_OPENER,
+) -> dict:
     parsed = urlparse(base_url)
     if (
         parsed.scheme != "https"
@@ -51,8 +66,11 @@ def run_acceptance(base_url: str, token: str, cycles: int, *, opener=urllib.requ
         or parsed.path not in {"", "/"}
         or parsed.query
         or parsed.fragment
+        or parsed.port not in {None, 443}
     ):
         raise ValueError("API base URL must be a credential-free HTTPS root")
+    if not expected_host or parsed.hostname != expected_host.lower().rstrip("."):
+        raise ValueError("API base URL host does not match RECIAPP_EXPECTED_API_HOST")
     if not token or any(char.isspace() for char in token):
         raise ValueError("RECIAPP_ACCESS_TOKEN is missing or invalid")
     if cycles != 100:
@@ -96,7 +114,13 @@ def main() -> int:
     parser.add_argument("--cycles", type=int, default=100)
     args = parser.parse_args()
     token = os.environ.get("RECIAPP_ACCESS_TOKEN", "")
-    result = run_acceptance(args.base_url, token, args.cycles)
+    expected_host = os.environ.get("RECIAPP_EXPECTED_API_HOST", "")
+    result = run_acceptance(
+        args.base_url,
+        token,
+        args.cycles,
+        expected_host=expected_host,
+    )
     print(json.dumps(result, sort_keys=True))
     return 0
 

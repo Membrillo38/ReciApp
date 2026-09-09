@@ -88,14 +88,18 @@ The counts and dump are consistent only because the proven write freeze remains 
 
 ## 5. Full restoration rehearsal
 
-Provision a disposable PostgreSQL 17 target with no production network route and enough privileges for roles/extensions/schema restore. Point `PGHOST` and its remaining PostgreSQL environment variables to that disposable target. It must differ from production.
+Provision a new, empty PostgreSQL 17 database with no production network route and enough privileges for roles/extensions/schema restore. It must differ from production. Set a unique 32-128 character alphanumeric `RECIAPP_DISPOSABLE_MARKER`, then store the exact database comment `reciapp-reset-disposable:<marker>` on that database using the provisioning account. The script reads this marker from PostgreSQL; a command-line label is not accepted as identity. Point `PGHOST`, `PGDATABASE` and remaining PostgreSQL environment variables to that target.
 
 ```bash
+export PGHOST=disposable-db.internal
+export PGDATABASE=reciapp_reset_rehearsal
+export RECIAPP_DISPOSABLE_MARKER=<unique-32-or-more-alphanumeric-marker>
+
 python3 scripts/reset_rehearsal.py \
   --source-ref nzimdcjxgklopythnpfi \
   --source-host db.nzimdcjxgklopythnpfi.supabase.co \
   --rehearsal-host disposable-db.internal \
-  --disposable-target reciapp-reset-rehearsal-20260909 \
+  --rehearsal-database reciapp_reset_rehearsal \
   --encrypted-backup "$HOME/Documents/ReciApp Backups/reciapp-....tar.enc" \
   --backup-receipt "$HOME/Documents/ReciApp Backups/reciapp-....tar.enc.receipt.json" \
   --keychain-service ReciApp-Reset-Backup \
@@ -103,13 +107,13 @@ python3 scripts/reset_rehearsal.py \
   --output /secure/operator/rehearsal.json
 ```
 
-The rehearsal must decrypt, restore roles and database with successful exit status, then match public/Auth counts, `app_settings`, Auth configuration, schema and migration fingerprints. Listing files or checking the encrypted hash alone does not qualify. Its receipt remains unapproved. A reviewer must inspect the disposable target, then issue a separate approval tied to that target and receipt:
+Before running `roles.sql` or `pg_restore --clean`, the rehearsal checks exact `PGHOST`, database-reported `current_database()`, database marker, zero user relations and zero nondefault extensions. It rechecks database identity and marker after restore. It must then match public/Auth counts, `app_settings`, Auth configuration, schema and migration fingerprints. Listing files or checking the encrypted hash alone does not qualify. Its receipt remains unapproved. A reviewer must inspect the disposable target, then issue a separate approval tied to that target and receipt:
 
 ```bash
 python3 scripts/reset_approve_rehearsal.py \
   --receipt /secure/operator/rehearsal.json \
   --reviewed-by "operator name" \
-  --expected-disposable-target reciapp-reset-rehearsal-20260909 \
+  --expected-disposable-target disposable-db.internal/reciapp_reset_rehearsal \
   --output /secure/operator/rehearsal-approved.json
 ```
 
@@ -135,7 +139,7 @@ For a separately approved destructive run, add both `--execute` and the exact co
 --confirm RESET:nzimdcjxgklopythnpfi:<64-character-encrypted-backup-sha256>
 ```
 
-The executor rechecks receipt integrity and chain, target identity, current writer freeze, table inventory, zero jobs/leases, empty Storage and preserved fingerprints. It locks every deletion table, deletes exact allowlisted rows, proves every target table is empty and rechecks preserved settings/Auth config/migration fingerprints before commit. A database error aborts the transaction. Treat a lost client connection after commit begins as ambiguous: inspect counts and transaction outcome manually. Never retry reset automatically.
+The executor rechecks receipt integrity and chain, target identity, current writer freeze, table inventory, zero jobs/leases, empty Storage, approved public/Auth counts and preserved fingerprints. Inside the reset transaction it locks every deletion table, rechecks every count against the approved preflight before the first `DELETE`, deletes exact allowlisted rows, proves every target table is empty and rechecks preserved settings/Auth config/migration fingerprints before commit. Any post-backup row aborts reset. A database error aborts the transaction. Treat a lost client connection after commit begins as ambiguous: inspect counts and transaction outcome manually. Never retry reset automatically.
 
 ## 7. Post-reset validation
 
@@ -143,12 +147,13 @@ Keep all writers frozen. Verify exact target counts are zero and preserved finge
 
 ```bash
 read -rs RECIAPP_ACCESS_TOKEN && export RECIAPP_ACCESS_TOKEN
+export RECIAPP_EXPECTED_API_HOST=reciapp-4ih5.onrender.com
 python3 scripts/authenticated_readiness.py \
   --base-url https://reciapp-4ih5.onrender.com \
   --cycles 100
 ```
 
-Pass criteria: `/health` 200, `/ready` 200, all 100 library and 100 profile reads return 200, no missing request IDs, and each hot library/profile p95 at most 800 ms. The runner fails closed when any criterion is missed and never prints tokens or response bodies.
+Pass criteria: `/health` 200, `/ready` 200, all 100 library and 100 profile reads return 200, no missing request IDs, and each hot library/profile p95 at most 800 ms. Exact host must match `RECIAPP_EXPECTED_API_HOST`; redirects are disabled before authorization is attached. The runner fails closed when any criterion is missed and never prints tokens or response bodies.
 
 Existing JWTs may still pass signature verification until expiry. Backend `get_user` plus required profile existence must reject deleted users. Separately verify direct Supabase Data API/RLS access with an old token and confirm old Auth sessions cannot refresh. Do not describe signature rejection as proven.
 

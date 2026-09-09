@@ -26,6 +26,25 @@ from reset_guard import (
 from reset_preflight import _inventory_sql, _snapshot_sql
 
 
+def validate_receipt_chain(preflight: dict, backup: dict, rehearsal: dict) -> None:
+    preflight_sha = preflight.get("receipt_sha256")
+    if backup.get("preflight_receipt_sha256") != preflight_sha:
+        raise ResetGuardError("Backup was not produced from this preflight")
+    if rehearsal.get("preflight_receipt_sha256") != preflight_sha:
+        raise ResetGuardError("Approved rehearsal was not produced from this preflight")
+
+
+def validate_current_reset_snapshot(current: dict, baseline: dict) -> None:
+    if current.get("active_jobs") != 0 or current.get("storage_objects") != 0:
+        raise ResetGuardError("Reset requires zero active jobs/leases and empty Storage")
+    for field in ("app_settings_fingerprint", "schema_fingerprint", "migration_fingerprint", "auth_config_fingerprint"):
+        if current.get(field) != baseline.get(field):
+            raise ResetGuardError(f"Target changed after preflight: {field}")
+    for field in ("public_counts", "auth_counts"):
+        if current.get(field) != baseline.get(field):
+            raise ResetGuardError(f"Target row counts changed after approved backup: {field}")
+
+
 def build_reset_sql(
     *,
     public_tables: list[str],
@@ -33,12 +52,22 @@ def build_reset_sql(
     app_settings_fingerprint: str,
     migration_fingerprint: str,
     auth_config_fingerprint: str,
+    expected_public_counts: dict[str, int],
+    expected_auth_counts: dict[str, int],
 ) -> str:
     allowed_public = [table for table in PUBLIC_DELETE_TABLES if table in public_tables]
     allowed_auth = [table for table in AUTH_DELETE_TABLES if table in auth_tables]
     for digest in (app_settings_fingerprint, migration_fingerprint, auth_config_fingerprint):
         if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
             raise ResetGuardError("Reset receipt contains an invalid fingerprint")
+    for label, allowed, expected in (
+        ("public", allowed_public, expected_public_counts),
+        ("auth", allowed_auth, expected_auth_counts),
+    ):
+        if set(expected) != set(allowed):
+            raise ResetGuardError(f"Reset receipt has incomplete {label} counts")
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in expected.values()):
+            raise ResetGuardError(f"Reset receipt has invalid {label} counts")
     deletes = [*(f"DELETE FROM public.{table};" for table in allowed_public), *(f"DELETE FROM auth.{table};" for table in allowed_auth)]
     locks = [*(f"LOCK TABLE public.{table} IN ACCESS EXCLUSIVE MODE;" for table in allowed_public), *(f"LOCK TABLE auth.{table} IN ACCESS EXCLUSIVE MODE;" for table in allowed_auth)]
     config_parts = [
@@ -49,11 +78,22 @@ def build_reset_sql(
     zero_checks = " OR ".join(
         [*(f"EXISTS (SELECT 1 FROM public.{table})" for table in allowed_public), *(f"EXISTS (SELECT 1 FROM auth.{table})" for table in allowed_auth)]
     )
+    count_checks = "\n".join(
+        [
+            *(f"  IF (SELECT count(*) FROM public.{table}) <> {expected_public_counts[table]} THEN RAISE EXCEPTION 'public.{table} count changed after approved backup'; END IF;" for table in allowed_public),
+            *(f"  IF (SELECT count(*) FROM auth.{table}) <> {expected_auth_counts[table]} THEN RAISE EXCEPTION 'auth.{table} count changed after approved backup'; END IF;" for table in allowed_auth),
+        ]
+    )
     return f"""
 BEGIN;
 SET LOCAL statement_timeout = '5min';
 SET LOCAL lock_timeout = '10s';
 {chr(10).join(locks)}
+DO $pre_delete_guard$
+BEGIN
+{count_checks}
+END
+$pre_delete_guard$;
 {chr(10).join(deletes)}
 DO $reset_guard$
 DECLARE
@@ -115,20 +155,15 @@ def main() -> int:
     evidence_digest = hashlib.sha256(args.writer_evidence.read_bytes()).hexdigest()
     if evidence_digest != preflight.get("writer_evidence_sha256"):
         raise ResetGuardError("Continuous writer-freeze evidence changed after preflight")
-    if backup.get("preflight_receipt_sha256") != preflight.get("receipt_sha256"):
-        raise ResetGuardError("Backup was not produced from this preflight")
+    validate_receipt_chain(preflight, backup, rehearsal)
     backup_sha = str(backup.get("encrypted_backup_sha256") or "")
     validate_rehearsal_receipt(rehearsal, backup_sha256=backup_sha, target_ref=args.target_ref)
 
     inventory = run_psql_json(_inventory_sql())
     validate_table_inventory(inventory)
     current = run_psql_json(_snapshot_sql(inventory))
-    if current.get("active_jobs") != 0 or current.get("storage_objects") != 0:
-        raise ResetGuardError("Reset requires zero active jobs/leases and empty Storage")
     baseline = preflight["snapshot"]
-    for field in ("app_settings_fingerprint", "schema_fingerprint", "migration_fingerprint", "auth_config_fingerprint"):
-        if current.get(field) != baseline.get(field):
-            raise ResetGuardError(f"Target changed after preflight: {field}")
+    validate_current_reset_snapshot(current, baseline)
 
     sql = build_reset_sql(
         public_tables=inventory["public"],
@@ -136,6 +171,8 @@ def main() -> int:
         app_settings_fingerprint=baseline["app_settings_fingerprint"],
         migration_fingerprint=baseline["migration_fingerprint"],
         auth_config_fingerprint=baseline["auth_config_fingerprint"],
+        expected_public_counts=baseline["public_counts"],
+        expected_auth_counts=baseline["auth_counts"],
     )
     expected_confirmation = f"RESET:{args.target_ref}:{backup_sha}"
     if not args.execute:

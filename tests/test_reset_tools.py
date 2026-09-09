@@ -16,6 +16,7 @@ import reset_execute
 import reset_guard
 import reset_preflight
 import reset_approve_rehearsal
+import reset_rehearsal
 
 
 TARGET_REF = "nzimdcjxgklopythnpfi"
@@ -106,6 +107,7 @@ def test_receipts_are_integrity_checked_and_rehearsal_is_bound_to_backup(tmp_pat
         "version": 1,
         "source_target_ref": TARGET_REF,
         "encrypted_backup_sha256": "a" * 64,
+        "preflight_receipt_sha256": "b" * 64,
         "decrypt_ok": True,
         "restore_exit_ok": True,
         "counts_match": True,
@@ -138,6 +140,7 @@ def test_rehearsal_requires_separate_post_restore_human_approval(tmp_path):
         "kind": "reciapp-restoration-rehearsal",
         "source_target_ref": TARGET_REF,
         "encrypted_backup_sha256": "a" * 64,
+        "preflight_receipt_sha256": "b" * 64,
         "disposable_target": "throwaway-17",
         "decrypt_ok": True,
         "restore_exit_ok": True,
@@ -170,6 +173,45 @@ def test_rehearsal_requires_separate_post_restore_human_approval(tmp_path):
     )
 
 
+def test_rehearsal_requires_exact_host_database_marker_and_empty_target(monkeypatch):
+    monkeypatch.setenv("PGHOST", "disposable.internal")
+    reset_rehearsal._validate_rehearsal_host(
+        source_host=TARGET_HOST,
+        rehearsal_host="disposable.internal",
+    )
+    with pytest.raises(reset_guard.ResetGuardError, match="PGHOST"):
+        reset_rehearsal._validate_rehearsal_host(
+            source_host=TARGET_HOST,
+            rehearsal_host="other.internal",
+        )
+    marker = "A" * 32
+    identity = {
+        "database": "reciapp_rehearsal",
+        "database_comment": f"reciapp-reset-disposable:{marker}",
+        "user_relation_count": 0,
+        "nondefault_extension_count": 0,
+    }
+    reset_rehearsal._validate_disposable_identity(
+        identity,
+        expected_database="reciapp_rehearsal",
+        marker=marker,
+        require_empty=True,
+    )
+    for changed, message in (
+        ({**identity, "database": "postgres"}, "database"),
+        ({**identity, "database_comment": "wrong"}, "marker"),
+        ({**identity, "user_relation_count": 1}, "new and empty"),
+        ({**identity, "nondefault_extension_count": 1}, "new and empty"),
+    ):
+        with pytest.raises(reset_guard.ResetGuardError, match=message):
+            reset_rehearsal._validate_disposable_identity(
+                changed,
+                expected_database="reciapp_rehearsal",
+                marker=marker,
+                require_empty=True,
+            )
+
+
 def test_reset_sql_is_one_transaction_exact_and_preserves_configuration():
     sql = reset_execute.build_reset_sql(
         public_tables=list(reset_guard.PUBLIC_DELETE_TABLES) + list(reset_guard.PUBLIC_PRESERVE_TABLES),
@@ -177,6 +219,8 @@ def test_reset_sql_is_one_transaction_exact_and_preserves_configuration():
         app_settings_fingerprint="a" * 64,
         migration_fingerprint="b" * 64,
         auth_config_fingerprint="c" * 64,
+        expected_public_counts={table: 1 for table in reset_guard.PUBLIC_DELETE_TABLES},
+        expected_auth_counts={table: 1 for table in reset_guard.AUTH_DELETE_TABLES},
     )
     assert sql.startswith("BEGIN;") and sql.endswith("COMMIT;\n")
     assert "CASCADE" not in sql.upper()
@@ -185,8 +229,46 @@ def test_reset_sql_is_one_transaction_exact_and_preserves_configuration():
     assert "DELETE FROM auth.oauth_clients" not in sql
     assert "DELETE FROM auth.users;" in sql
     assert "LOCK TABLE auth.users IN ACCESS EXCLUSIVE MODE;" in sql
+    assert sql.index("count changed after approved backup") < sql.index("DELETE FROM public.api_request_logs;")
     for table in reset_guard.PUBLIC_DELETE_TABLES:
         assert sql.count(f"DELETE FROM public.{table};") == 1
+
+    with pytest.raises(reset_guard.ResetGuardError, match="incomplete public counts"):
+        reset_execute.build_reset_sql(
+            public_tables=list(reset_guard.PUBLIC_DELETE_TABLES) + list(reset_guard.PUBLIC_PRESERVE_TABLES),
+            auth_tables=list(reset_guard.AUTH_DELETE_TABLES) + list(reset_guard.AUTH_PRESERVE_TABLES),
+            app_settings_fingerprint="a" * 64,
+            migration_fingerprint="b" * 64,
+            auth_config_fingerprint="c" * 64,
+            expected_public_counts={},
+            expected_auth_counts={table: 1 for table in reset_guard.AUTH_DELETE_TABLES},
+        )
+
+
+def test_reset_rejects_count_drift_and_receipts_from_another_preflight():
+    baseline = {
+        "active_jobs": 0,
+        "storage_objects": 0,
+        "public_counts": {"profiles": 1},
+        "auth_counts": {"users": 1},
+        "app_settings_fingerprint": "a",
+        "schema_fingerprint": "b",
+        "migration_fingerprint": "c",
+        "auth_config_fingerprint": "d",
+    }
+    reset_execute.validate_current_reset_snapshot(dict(baseline), baseline)
+    changed = json.loads(json.dumps(baseline))
+    changed["auth_counts"]["users"] = 2
+    with pytest.raises(reset_guard.ResetGuardError, match="row counts changed"):
+        reset_execute.validate_current_reset_snapshot(changed, baseline)
+
+    preflight = {"receipt_sha256": "a" * 64}
+    backup = {"preflight_receipt_sha256": "a" * 64}
+    rehearsal = {"preflight_receipt_sha256": "a" * 64}
+    reset_execute.validate_receipt_chain(preflight, backup, rehearsal)
+    rehearsal["preflight_receipt_sha256"] = "b" * 64
+    with pytest.raises(reset_guard.ResetGuardError, match="Approved rehearsal"):
+        reset_execute.validate_receipt_chain(preflight, backup, rehearsal)
 
 
 def test_authenticated_runner_reports_only_aggregate_ids_and_latency(capsys):
@@ -216,6 +298,7 @@ def test_authenticated_runner_reports_only_aggregate_ids_and_latency(capsys):
         "https://api.example.com",
         secret,
         100,
+        expected_host="api.example.com",
         opener=opener,
     )
     assert result["requests"] == 202
@@ -235,7 +318,8 @@ def test_authenticated_runner_error_redacts_token_and_body():
 
     with pytest.raises(RuntimeError) as caught:
         authenticated_readiness.run_acceptance(
-            "https://api.example.com", secret, 100, opener=opener
+            "https://api.example.com", secret, 100,
+            expected_host="api.example.com", opener=opener
         )
     assert secret not in str(caught.value)
     assert "provider body" not in str(caught.value)
@@ -251,7 +335,10 @@ def test_authenticated_runner_fails_closed_on_missing_ids_and_slow_p95(monkeypat
 
     monkeypatch.setattr(authenticated_readiness, "_request", missing_id_request)
     with pytest.raises(RuntimeError, match="missing_request_id"):
-        authenticated_readiness.run_acceptance("https://api.example.com", "token", 100)
+        authenticated_readiness.run_acceptance(
+            "https://api.example.com", "token", 100,
+            expected_host="api.example.com",
+        )
 
     def slow_request(base_url, path, *, token, opener):
         latency = 900 if path == "/v1/me/recipes" else 1
@@ -259,4 +346,27 @@ def test_authenticated_runner_fails_closed_on_missing_ids_and_slow_p95(monkeypat
 
     monkeypatch.setattr(authenticated_readiness, "_request", slow_request)
     with pytest.raises(RuntimeError, match="hot_read_p95_exceeded"):
-        authenticated_readiness.run_acceptance("https://api.example.com", "token", 100)
+        authenticated_readiness.run_acceptance(
+            "https://api.example.com", "token", 100,
+            expected_host="api.example.com",
+        )
+
+
+def test_authenticated_runner_rejects_unexpected_hosts_and_all_redirects():
+    called = []
+
+    def opener(request, timeout):
+        called.append(request)
+        raise AssertionError("must reject before network")
+
+    with pytest.raises(ValueError, match="RECIAPP_EXPECTED_API_HOST"):
+        authenticated_readiness.run_acceptance(
+            "https://evil.example.com",
+            "token",
+            100,
+            expected_host="api.example.com",
+            opener=opener,
+        )
+    assert called == []
+    handler = authenticated_readiness._NoRedirectHandler()
+    assert handler.redirect_request(None, None, 302, "Found", {}, "https://evil.example.com") is None
