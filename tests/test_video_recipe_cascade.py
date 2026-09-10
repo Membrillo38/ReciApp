@@ -30,7 +30,13 @@ def _complete_recipe(**overrides) -> Recipe:
 def test_recipe_is_complete_rejects_blocking_gaps_and_bad_order():
     good = _complete_recipe()
     assert recipe_is_complete(good, is_complete=True, blocking_gaps=[])
-    assert not recipe_is_complete(good, is_complete=False, blocking_gaps=[])
+    # Soft model complaints (servings/times) or is_complete=false alone must not reject.
+    assert recipe_is_complete(good, is_complete=False, blocking_gaps=[])
+    assert recipe_is_complete(
+        good,
+        is_complete=False,
+        blocking_gaps=["Faltan los minutos de preparación y cocción.", "Falta el número de porciones."],
+    )
     assert not recipe_is_complete(good, is_complete=True, blocking_gaps=["missing sauce step"])
     bad_order = _complete_recipe(
         steps=[

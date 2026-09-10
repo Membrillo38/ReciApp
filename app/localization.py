@@ -108,6 +108,8 @@ def build_recipe_prompt(target_language: str, source_json: str) -> str:
         "Set is_complete true only when a cook can reproduce the full dish from this recipe alone: "
         "all used ingredients identified, available quantities preserved, steps ordered and coherent, "
         "no unexplained disappearing ingredients, and no missing necessary actions between steps. "
+        "Missing servings, prep_minutes, cook_minutes, or temperatures alone do NOT make the recipe "
+        "incomplete and must NOT appear in blocking_gaps. "
         "List every blocking gap in blocking_gaps when is_complete is false.\n"
         "If the source does not contain a real cooking recipe with ingredients and a method, return "
         "empty ingredient_sections, empty steps, confidence 0, is_complete false, and blocking_gaps "

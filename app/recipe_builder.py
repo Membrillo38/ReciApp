@@ -69,6 +69,16 @@ _SECTION_HEADING_RE = re.compile(
     r"(?:salsa|masa|adobo|cobertura|relleno|ali[nñ]o|cobertura|guarnici[oó]n|recheio).*"
     r")$"
 )
+# Model often flags missing servings/times as blocking — those are not cook-stoppers.
+_SOFT_BLOCKING_GAP_RE = re.compile(
+    r"(?i)\b("
+    r"servings?|porciones?|raciones?|"
+    r"prep(?:aration)?(?:\s+time)?|tiempo\s+de\s+preparaci[oó]n|"
+    r"cook(?:ing)?(?:\s+time)?|tiempo\s+de\s+cocci[oó]n|"
+    r"minutes?|minutos?|horas?|"
+    r"temperature|temperatura"
+    r")\b"
+)
 # Caption/spoken marketing that points off-video — abort before OCR/STT/vision spend.
 _LINK_IN_BIO_RE = re.compile(
     r"(?:"
@@ -280,6 +290,19 @@ def build_recipe(
     return recipe
 
 
+def material_blocking_gaps(gaps: list[str] | None) -> list[str]:
+    """Drop soft metadata complaints; keep gaps that block cooking."""
+    material: list[str] = []
+    for gap in gaps or []:
+        text = str(gap).strip()
+        if not text:
+            continue
+        if _SOFT_BLOCKING_GAP_RE.search(text):
+            continue
+        material.append(text)
+    return material
+
+
 def recipe_is_complete(
     recipe: Recipe,
     *,
@@ -287,9 +310,9 @@ def recipe_is_complete(
     blocking_gaps: list[str] | None = None,
 ) -> bool:
     """Deterministic completeness gate after structured model output."""
-    if not is_complete:
-        return False
-    if blocking_gaps:
+    gaps = material_blocking_gaps(blocking_gaps)
+    # Trust structure over the model's is_complete when gaps are only soft metadata.
+    if gaps:
         return False
     if recipe.confidence < _MIN_RECIPE_CONFIDENCE:
         return False
@@ -302,6 +325,9 @@ def recipe_is_complete(
         return False
     if any(not step.text.strip() for step in recipe.steps):
         return False
+    # Model said incomplete with no material gaps: still require structure above.
+    # is_complete=False alone is not enough to reject (LLM often flags servings/times).
+    _ = is_complete
     step_blob = " ".join(step.text.lower() for step in recipe.steps)
     step_tokens = set(_TOKEN_RE.findall(step_blob))
     identified = []
