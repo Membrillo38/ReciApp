@@ -13,6 +13,7 @@ from urllib.request import HTTPRedirectHandler, Request as URLRequest, build_ope
 
 from fastapi import HTTPException, Request
 
+from app.cache import redis_rate_allow
 from app.config import settings
 from app.db import execute
 
@@ -119,6 +120,9 @@ _rate_limiters_lock = threading.Lock()
 def allow_rate_limit(key: str, *, limit: int, window_seconds: int) -> bool:
     limit = max(1, limit)
     window_seconds = max(1, window_seconds)
+    cached = redis_rate_allow(key, limit=limit, window_seconds=window_seconds)
+    if cached is not None:
+        return cached
     cache_key = (limit, window_seconds)
     with _rate_limiters_lock:
         limiter = _rate_limiters.get(cache_key)

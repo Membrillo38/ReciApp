@@ -14,8 +14,10 @@ import jwt
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.middleware.gzip import GZipMiddleware
 
 from app.apple_auth import verify_apple_identity_token
+from app.cache import reset_cache
 from app.auth import AuthUser, current_user, require_api_key
 from app.auth_tokens import create_access_token, create_refresh_token, revoke_refresh_token, rotate_refresh_token
 from app.apple_notifications import process_signed_notification
@@ -85,11 +87,13 @@ async def lifespan(_app: FastAPI):
     try:
         yield
     finally:
+        reset_cache()
         reset_db()
 
 
 app = FastAPI(title="ReciApp API", version="1.3.0", lifespan=lifespan)
 logger = logging.getLogger(__name__)
+app.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=4)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,

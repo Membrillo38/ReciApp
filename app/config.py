@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     api_key: str = ""
 
     database_url: str = Field(default="", repr=False)
+    redis_url: str = Field(default="", repr=False)
     auth_jwt_secret: str = Field(default="", repr=False)
     auth_jwt_issuer: str = "reciapp-api"
     auth_jwt_audience: str = "reciapp-ios"

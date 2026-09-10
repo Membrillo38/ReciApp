@@ -44,6 +44,13 @@
         server: local
         container: reciapp-postgres
         showStats: true
+    - Redis ReciApp:
+        href: https://51-255-43-100.sslip.io/ready
+        description: Rate-limit cache
+        icon: mdi-memory
+        server: local
+        container: reciapp-redis
+        showStats: true
     - Postgres GUI:
         href: http://100.123.33.15:8081
         description: Tablas y datos (Tailscale)
