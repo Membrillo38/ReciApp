@@ -58,7 +58,7 @@ def test_fallback_recipe_copy_is_localized():
 def test_ios_catalog_covers_all_supported_locales_and_placeholders():
     catalog_path = Path(__file__).parents[1] / "IosAPP" / "ReciApp" / "Localizable.xcstrings"
     catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
-    assert len(catalog["strings"]) == 229
+    assert len(catalog["strings"]) == 238
 
     token_pattern = re.compile(r"%(?:\d+\$)?(?:lld|d|@|%)")
 
@@ -82,6 +82,10 @@ def test_ios_folder_move_supports_multiple_selection():
     assert "FolderSelectionBar" in home
     assert "Select" in catalog["strings"]
     assert "Select All" in catalog["strings"]
+    assert "Favorite" in catalog["strings"]
+    assert "Tags" in catalog["strings"]
+    assert "toggleFavorite(" in home
+    assert "RecipeCoverTags" in home
 
 
 @pytest.mark.skipif(not Path("IosAPP/ReciApp").is_dir(), reason="Ignored iOS sources unavailable in backend-only checkout")
