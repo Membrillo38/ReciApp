@@ -58,7 +58,7 @@ def test_fallback_recipe_copy_is_localized():
 def test_ios_catalog_covers_all_supported_locales_and_placeholders():
     catalog_path = Path(__file__).parents[1] / "IosAPP" / "ReciApp" / "Localizable.xcstrings"
     catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
-    assert len(catalog["strings"]) == 228
+    assert len(catalog["strings"]) == 238
 
     token_pattern = re.compile(r"%(?:\d+\$)?(?:lld|d|@|%)")
 
@@ -70,6 +70,22 @@ def test_ios_catalog_covers_all_supported_locales_and_placeholders():
             value = localizations[locale]["stringUnit"]["value"]
             localized_tokens = [re.sub(r"%(?:\d+\$)?", "%", token) for token in token_pattern.findall(value)]
             assert Counter(localized_tokens) == Counter(source_tokens), (locale, key, value)
+
+
+@pytest.mark.skipif(not Path("IosAPP/ReciApp").is_dir(), reason="Ignored iOS sources unavailable in backend-only checkout")
+def test_ios_folder_move_supports_multiple_selection():
+    root = Path(__file__).parents[1]
+    home = (root / "IosAPP" / "ReciApp" / "Views" / "HomeView.swift").read_text(encoding="utf-8")
+    catalog = json.loads((root / "IosAPP" / "ReciApp" / "Localizable.xcstrings").read_text(encoding="utf-8"))
+    assert "moveRecipes(withIDs:" in home
+    assert "selectedIDs" in home
+    assert "FolderSelectionBar" in home
+    assert "Select" in catalog["strings"]
+    assert "Select All" in catalog["strings"]
+    assert "Favorite" in catalog["strings"]
+    assert "Tags" in catalog["strings"]
+    assert "toggleFavorite(" in home
+    assert "RecipeCoverTags" in home
 
 
 @pytest.mark.skipif(not Path("IosAPP/ReciApp").is_dir(), reason="Ignored iOS sources unavailable in backend-only checkout")
