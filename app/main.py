@@ -102,6 +102,11 @@ app.include_router(dashboard_router)
 _STALE_JOB_ERROR = "Job expired before completion. Retry the import."
 
 
+def _as_uuid(value: object) -> UUID:
+    """psycopg may return UUID already; UUID(uuid) crashes on .replace."""
+    return value if isinstance(value, UUID) else UUID(str(value))
+
+
 def _bearer_user_id(request: Request) -> str | None:
     header = request.headers.get("authorization", "")
     scheme, _, token = header.partition(" ")
@@ -219,7 +224,7 @@ def _ensure_translation_job(
             cache_hit=False,
             recipe_id=recipe_id,
         )
-        job_id = UUID(job["id"])
+        job_id = _as_uuid(job["id"])
         reserve_spend(user_id=user.id, job_id=job_id)
     except Exception:
         # Recovery reads/writes can fail too; release capacity before them.
@@ -570,7 +575,7 @@ def extract_recipe(
 
     cached = get_recipe_by_norm(url_norm)
     if cached:
-        recipe_id = UUID(cached["id"])
+        recipe_id = _as_uuid(cached["id"])
         localized = localized_recipe_row(cached, language_code)
         if localized is not None:
             job = create_job(
@@ -599,14 +604,14 @@ def extract_recipe(
                     kind="extract_hit",
                     cost_cents=0,
                     recipe_id=recipe_id,
-                    job_id=UUID(job["id"]),
+                    job_id=_as_uuid(job["id"]),
                 )
             except Exception:
                 # A usage-log outage must not hide a recipe that is already
                 # cached and attached to the user.
                 pass
             return ExtractJobResponse(
-                job_id=UUID(job["id"]),
+                job_id=_as_uuid(job["id"]),
                 status=JobStatus.completed,
                 cache_hit=True,
                 progress=100,
@@ -624,7 +629,7 @@ def extract_recipe(
             background=background,
         )
         return ExtractJobResponse(
-            job_id=UUID(job["id"]),
+            job_id=_as_uuid(job["id"]),
             status=JobStatus(job["status"]),
             cache_hit=False,
             progress=int(job.get("progress") or 0),
@@ -635,7 +640,7 @@ def extract_recipe(
         if not _expire_stale_job(active):
             _share_job_or_http(active, user)
             return ExtractJobResponse(
-                job_id=UUID(active["id"]),
+                job_id=_as_uuid(active["id"]),
                 status=JobStatus(active["status"]),
                 cache_hit=False,
                 progress=int(active.get("progress") or 0),
@@ -671,7 +676,7 @@ def extract_recipe(
             status=JobStatus.pending.value,
             cache_hit=False,
         )
-        job_id = UUID(job["id"])
+        job_id = _as_uuid(job["id"])
         reserve_spend(user_id=user.id, job_id=job_id)
     except Exception:
         # Recovery reads/writes can fail too; release capacity before them.
@@ -684,7 +689,7 @@ def extract_recipe(
         if active and not _expire_stale_job(active):
             _share_job_or_http(active, user)
             return ExtractJobResponse(
-                job_id=UUID(active["id"]),
+                job_id=_as_uuid(active["id"]),
                 status=JobStatus(active["status"]),
                 cache_hit=False,
                 progress=int(active.get("progress") or 0),
@@ -758,10 +763,10 @@ def get_job_status(
     recipe = None
     next_job_id = None
     if row.get("recipe_id"):
-        r = get_recipe(UUID(row["recipe_id"]))
+        r = get_recipe(_as_uuid(row["recipe_id"]))
         if r:
             try:
-                save_user_recipe(user.id, UUID(row["recipe_id"]))
+                save_user_recipe(user.id, _as_uuid(row["recipe_id"]))
             except Exception as exc:
                 # A transient attachment failure must not hide a recipe that
                 # was already completed and can be returned to the client.
@@ -782,30 +787,30 @@ def get_job_status(
             ):
                 translation_job = _ensure_translation_job(
                     user=user,
-                    recipe_id=UUID(row["recipe_id"]),
+                    recipe_id=_as_uuid(row["recipe_id"]),
                     source_url_raw=row.get("source_url_raw") or r.get("source_url_raw") or "",
                     source_url_norm=row.get("source_url_norm") or r.get("source_url_norm") or "",
                     language_code=requested_language,
                     background=background,
                 )
-                next_job_id = UUID(translation_job["id"])
+                next_job_id = _as_uuid(translation_job["id"])
                 return JobResponse(
                     job_id=next_job_id,
                     status=JobStatus(translation_job["status"]),
                     cache_hit=False,
                     recipe=None,
-                    recipe_id=UUID(row["recipe_id"]),
+                    recipe_id=_as_uuid(row["recipe_id"]),
                     error=None,
                     progress=int(translation_job.get("progress") or 0),
                 )
             recipe = recipe_public_from_row(localized or r)
 
     return JobResponse(
-        job_id=UUID(row["id"]),
+        job_id=_as_uuid(row["id"]),
         status=JobStatus(row["status"]),
         cache_hit=bool(row.get("cache_hit")),
         recipe=recipe,
-        recipe_id=UUID(row["recipe_id"]) if row.get("recipe_id") else None,
+        recipe_id=_as_uuid(row["recipe_id"]) if row.get("recipe_id") else None,
         error=row.get("error"),
         progress=int(row.get("progress") or 0),
         next_job_id=next_job_id,

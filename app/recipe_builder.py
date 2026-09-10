@@ -17,9 +17,37 @@ logger = logging.getLogger(__name__)
 
 RECIPE_UNDETERMINED_ERROR = "Could not determine a recipe from this video."
 RECIPE_INCOMPLETE_ERROR = "Could not extract a complete recipe from this video."
+LINK_IN_BIO_ERROR = "Recipe link in bio. Open the creator profile bio for the full recipe."
 _MIN_RECIPE_CONFIDENCE = 0.7
 _BLANK_VALUES = {"", "null", "none", "n/a", "nil", "undefined", "-"}
 _TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
+# Caption/spoken marketing that points off-video — abort before OCR/STT/vision spend.
+_LINK_IN_BIO_RE = re.compile(
+    r"(?:"
+    r"(?:full\s+)?(?:recipe|receta|recetas|link|enlace|liga|url)"
+    r".{0,40}?"
+    r"(?:in|en)\s+(?:the\s+|la\s+|mi\s+|my\s+)?(?:bio|biograf[ií]a)"
+    r"|"
+    r"(?:in|en)\s+(?:the\s+|la\s+|mi\s+|my\s+)?(?:bio|biograf[ií]a)"
+    r".{0,40}?"
+    r"(?:full\s+)?(?:recipe|receta|recetas|link|enlace|liga|url)"
+    r"|"
+    r"(?:check|see|look|mira|ve[ea]?|revisa)\s+(?:my\s+|mi\s+|en\s+(?:la\s+|mi\s+)?)?(?:bio|biograf[ií]a)"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def text_points_to_link_in_bio(*parts: str | None) -> bool:
+    blob = " ".join(part for part in parts if part and str(part).strip())
+    if not blob:
+        return False
+    return bool(_LINK_IN_BIO_RE.search(blob))
+
+
+def reject_link_in_bio(*parts: str | None) -> None:
+    if text_points_to_link_in_bio(*parts):
+        raise ExtractError(LINK_IN_BIO_ERROR)
 
 
 RECIPE_SCHEMA = {

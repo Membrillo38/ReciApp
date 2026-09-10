@@ -27,9 +27,11 @@ from app.job_guard import release as release_job, try_claim as try_claim_job
 from app.localization import normalize_language
 from app.spend import settle_spend
 from app.recipe_builder import (
+    LINK_IN_BIO_ERROR,
     RECIPE_INCOMPLETE_ERROR,
     RECIPE_UNDETERMINED_ERROR,
     build_recipe,
+    reject_link_in_bio,
     translate_recipe,
 )
 from app.store import (
@@ -95,6 +97,7 @@ def _safe_job_error(error: ExtractError) -> str:
         "No usable recipe text found in source",
         RECIPE_UNDETERMINED_ERROR,
         RECIPE_INCOMPLETE_ERROR,
+        LINK_IN_BIO_ERROR,
         "Incomplete TikTok carousel:",
         "TikTok video evidence incomplete:",
         "Recipe source text exceeds supported bound",
@@ -150,12 +153,14 @@ def run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langua
             if slide_info and slide_info.image_urls:
                 if slide_info.incomplete_reason:
                     raise ExtractError(f"Incomplete TikTok carousel: {slide_info.incomplete_reason}")
+                reject_link_in_bio(slide_info.title, slide_info.description)
 
                 def record_slide_attempt() -> None:
                     nonlocal slide_count
                     slide_count += 1
 
                 slide_text = ocr_slides(slide_info, on_attempt=record_slide_attempt)
+                reject_link_in_bio(slide_info.title, slide_info.description, slide_text)
                 update_job(job_id, progress=60)
                 recipe = build_recipe(
                     platform=platform,
@@ -182,10 +187,13 @@ def run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langua
                     bool(media.subtitles_text),
                 )
                 update_job(job_id, progress=30)
+                # Abort before STT/vision when caption already says recipe lives in bio.
+                reject_link_in_bio(media.title, media.description, media.extra_text)
                 duration_seconds = media.duration_seconds
                 transcript = media.subtitles_text
                 if not transcript and platform == Platform.youtube:
                     transcript = youtube_transcript(url)
+                reject_link_in_bio(media.title, media.description, transcript)
                 video_text = media.extra_text or ""
 
                 def try_build(current_transcript: str | None, current_visual: str | None) -> Recipe | None:
@@ -267,6 +275,7 @@ def run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langua
 
                 # Stage 4: visual analysis last resort.
                 if recipe is None:
+                    reject_link_in_bio(media.title, media.description, transcript, video_text)
                     remaining_budget = max(
                         settings.max_job_cost_cents - meter.cents,
                         settings.cost_ocr_cents_per_slide,
@@ -314,7 +323,7 @@ def run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langua
             update_job(job_id, progress=85)
             cost = round(meter.cents, 4)
             row = upsert_recipe(recipe, source_url_norm=url_norm, language_code=language_code)
-            recipe_id = UUID(row["id"])
+            recipe_id = row["id"] if isinstance(row["id"], UUID) else UUID(str(row["id"]))
             logger.info(
                 "extract stage=persisted job_id=%s platform=%s recipe_id=%s slide_count=%d frames=%d cost_cents=%s",
                 job_id,

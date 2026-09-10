@@ -2,14 +2,81 @@
 {% block title %}Overview · ReciApp{% endblock %}
 {% block content %}
 <h1>Overview</h1>
+
+<h2>OpenAI spend</h2>
+<div class="grid">
+  <div class="card">
+    <div class="label">Último día</div>
+    <div class="value">${{ '%.4f'|format(o.cost_usd_day) }}</div>
+    <div class="muted">{{ o.cost_cents_day }}¢</div>
+  </div>
+  <div class="card">
+    <div class="label">7 días</div>
+    <div class="value">${{ '%.4f'|format(o.cost_usd_week) }}</div>
+    <div class="muted">{{ o.cost_cents_week }}¢</div>
+  </div>
+  <div class="card">
+    <div class="label">30 días</div>
+    <div class="value">${{ '%.4f'|format(o.cost_usd_month) }}</div>
+    <div class="muted">{{ o.cost_cents_month }}¢</div>
+  </div>
+  <div class="card">
+    <div class="label">Total</div>
+    <div class="value">${{ '%.4f'|format(o.cost_usd_total) }}</div>
+    <div class="muted">{{ o.cost_cents_total }}¢</div>
+  </div>
+</div>
+
+<h2>API calls</h2>
+<div class="grid">
+  <div class="card">
+    <div class="label">Calls 24h</div>
+    <div class="value">{{ o.api_day.total }}</div>
+    <div class="muted ok">200: {{ o.api_day.status_200 }}</div>
+    <div class="muted bad">503: {{ o.api_day.status_503 }} · 5xx: {{ o.api_day.err_5xx }} · 4xx: {{ o.api_day.err_4xx }}</div>
+  </div>
+  <div class="card">
+    <div class="label">Calls 7d</div>
+    <div class="value">{{ o.api_week.total }}</div>
+    <div class="muted ok">200: {{ o.api_week.status_200 }}</div>
+    <div class="muted bad">503: {{ o.api_week.status_503 }} · 5xx: {{ o.api_week.err_5xx }}</div>
+  </div>
+  <div class="card">
+    <div class="label">Calls 30d</div>
+    <div class="value">{{ o.api_month.total }}</div>
+    <div class="muted ok">200: {{ o.api_month.status_200 }}</div>
+    <div class="muted bad">503: {{ o.api_month.status_503 }} · 5xx: {{ o.api_month.err_5xx }}</div>
+  </div>
+  <div class="card">
+    <div class="label">Latency 24h</div>
+    <div class="value">{{ o.api_day.avg_ms }} ms</div>
+    <div class="muted">p50 {{ o.api_day.p50_ms }} · p95 {{ o.api_day.p95_ms }} · max {{ o.api_day.max_ms }}</div>
+  </div>
+</div>
+
+{% if o.api_day.by_status %}
+<div class="card" style="margin-bottom:1.75rem;">
+  <div class="label">Status codes (24h)</div>
+  <table>
+    <thead><tr><th>Code</th><th>Count</th></tr></thead>
+    <tbody>
+      {% for code, count in o.api_day.by_status.items() %}
+      <tr>
+        <td class="{% if code >= 500 %}bad{% elif code >= 400 %}bad{% else %}ok{% endif %}">{{ code }}</td>
+        <td>{{ count }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<h2>Producto</h2>
 <div class="grid">
   <div class="card"><div class="label">Users</div><div class="value">{{ o.users_total }}</div><div class="muted">{{ o.users_pro }} pro · {{ o.users_free }} free</div></div>
   <div class="card"><div class="label">Recipes cached</div><div class="value">{{ o.recipes_cached }}</div></div>
   <div class="card"><div class="label">Cola ahora</div><div class="value">{{ o.processing_now }}</div><div class="muted">{{ o.queued_now }} en espera</div></div>
   <div class="card"><div class="label">Jobs (7d)</div><div class="value">{{ o.jobs_week }}</div><div class="muted">{{ o.cache_hits_week }} hits · {{ o.cache_misses_week }} miss · {{ o.failed_week }} fail</div></div>
-  <div class="card"><div class="label">OpenAI cost (real, 7d)</div><div class="value">${{ '%.4f'|format(o.cost_usd_week) }}</div><div class="muted">{{ o.cost_cents_week }}¢</div></div>
-  <div class="card"><div class="label">OpenAI cost (real, 30d)</div><div class="value">${{ '%.4f'|format(o.cost_usd_month) }}</div><div class="muted">{{ o.cost_cents_month }}¢</div></div>
-  <div class="card"><div class="label">HTTP requests (7d)</div><div class="value">{{ o.requests_week }}</div></div>
 </div>
 
 <h2>Spend alerts</h2>

@@ -4,7 +4,7 @@
 <h1>Users</h1>
 <div class="card">
   <table>
-    <thead><tr><th>ID</th><th>Name</th><th>Plan</th><th>Pro ¢/mo</th><th>Free/wk</th><th>Expires</th><th>Created</th><th>Actions</th></tr></thead>
+    <thead><tr><th>ID</th><th>Name</th><th>Plan</th><th>Pro ¢/mo</th><th>Free/wk</th><th>Expires</th><th>Created</th></tr></thead>
     <tbody>
       {% for u in users %}
       <tr>
@@ -15,22 +15,9 @@
         <td class="muted">{{ u.free_weekly_limit or 'default' }}</td>
         <td class="muted">{{ u.pro_expires_at or '—' }}</td>
         <td class="muted">{{ u.created_at }}</td>
-        <td>
-          <div class="row">
-            <form method="post" action="/dashboard/users/{{ u.id }}/pro">
-              <input type="hidden" name="csrf" value="{{ csrf }}" />
-              <input type="hidden" name="is_pro" value="{% if u.is_pro %}0{% else %}1{% endif %}" />
-              <button type="submit" class="ghost">{% if u.is_pro %}Revoke Pro{% else %}Make Pro{% endif %}</button>
-            </form>
-            <form method="post" action="/dashboard/users/{{ u.id }}/delete" onsubmit="return confirm('Delete user?');">
-              <input type="hidden" name="csrf" value="{{ csrf }}" />
-              <button type="submit" class="danger">Delete</button>
-            </form>
-          </div>
-        </td>
       </tr>
       {% else %}
-      <tr><td colspan="8" class="muted">No users</td></tr>
+      <tr><td colspan="7" class="muted">No users</td></tr>
       {% endfor %}
     </tbody>
   </table>

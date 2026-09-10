@@ -13,7 +13,7 @@ layout:
     columns: 4
   API:
     style: row
-    columns: 1
+    columns: 4
   Infra:
     style: row
     columns: 3

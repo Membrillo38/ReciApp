@@ -298,6 +298,40 @@ def test_video_cover_keeps_source_thumbnail_when_selection_fails(monkeypatch):
     assert saved[0].thumbnail_url == "https://cdn.example/og.jpg"
 
 
+def test_link_in_bio_caption_fails_before_audio(monkeypatch):
+    import app.pipeline as pipeline
+    from app.extract import MediaInfo
+    from app.recipe_builder import LINK_IN_BIO_ERROR
+
+    media = MediaInfo(
+        title="Pasta night",
+        description="Full recipe link in bio enjoyyyyy",
+        author="cook",
+        thumbnail_url=None,
+        duration_seconds=15,
+        webpage_url="https://www.tiktok.com/@cook/video/9",
+        subtitles_text=None,
+        audio_path=None,
+        media_id="9",
+    )
+    jobs = []
+
+    monkeypatch.setattr(pipeline, "detect_platform", lambda url: Platform.tiktok)
+    monkeypatch.setattr(pipeline, "fetch_tiktok_slides", lambda url: None)
+    monkeypatch.setattr(pipeline, "fetch_media_info", lambda url: media)
+    monkeypatch.setattr(pipeline, "download_audio", lambda *a, **k: pytest.fail("no audio after bio gate"))
+    monkeypatch.setattr(pipeline, "update_job", lambda *a, **k: jobs.append(k))
+    monkeypatch.setattr(pipeline, "record_usage", lambda **k: None)
+    monkeypatch.setattr(pipeline, "settle_spend", lambda **k: None)
+    monkeypatch.setattr(pipeline, "release_job", lambda *a: None)
+    monkeypatch.setattr(pipeline, "_drain_next_extract_for_user", lambda *a, **k: None)
+
+    pipeline.run_extract_job(uuid4(), uuid4(), media.webpage_url, "tiktok:9", "en-US")
+
+    assert jobs[-1]["status"] == "failed"
+    assert jobs[-1]["error"] == LINK_IN_BIO_ERROR
+
+
 def test_incomplete_after_all_stages_errors_without_upsert(monkeypatch, tmp_path):
     import app.pipeline as pipeline
     from app.extract import MediaInfo, VideoFrames
@@ -310,7 +344,7 @@ def test_incomplete_after_all_stages_errors_without_upsert(monkeypatch, tmp_path
     frame.write_bytes(b"jpeg")
     media = MediaInfo(
         title="Marketing only",
-        description="link in bio enjoyyyyy",
+        description="follow for more tips",
         author="cook",
         thumbnail_url=None,
         duration_seconds=15,

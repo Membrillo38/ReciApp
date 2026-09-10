@@ -97,7 +97,7 @@ def _tips_from_row(row: dict) -> list[RecipeTip]:
 def recipe_from_row(row: dict) -> Recipe:
     ingredient_sections = _ingredient_sections_from_row(row)
     return Recipe(
-        id=UUID(row["id"]) if row.get("id") else None,
+        id=(row["id"] if isinstance(row["id"], UUID) else UUID(str(row["id"]))) if row.get("id") else None,
         title=row["title"],
         ingredients=_flatten_ingredient_sections(ingredient_sections),
         ingredient_sections=ingredient_sections,
