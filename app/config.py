@@ -74,11 +74,11 @@ class Settings(BaseSettings):
     apple_bundle_id: str = "com.membri.reciapp"
     apple_environment: str = "Production"
     trusted_proxy_ips: str = ""
-    rate_limit_per_ip_per_minute: int = 180
-    rate_limit_per_user_per_minute: int = 120
-    rate_limit_extract_per_ip_per_minute: int = 15
-    rate_limit_extract_per_user_per_minute: int = 10
-    rate_limit_extract_daily_per_user: int = 100
+    rate_limit_per_ip_per_minute: int = 90
+    rate_limit_per_user_per_minute: int = 60
+    rate_limit_extract_per_ip_per_minute: int = 7
+    rate_limit_extract_per_user_per_minute: int = 5
+    rate_limit_extract_daily_per_user: int = 50
 
     def validate_database(self) -> None:
         """Validate DATABASE_URL shape without logging credentials."""
