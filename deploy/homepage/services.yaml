@@ -1,108 +1,30 @@
-- Ops:
-    - Coolify:
-        href: https://coolify.51-255-43-100.sslip.io
-        description: Deploys y apps
-        icon: mdi-rocket-launch
-        server: local
-        container: coolify
-        showStats: true
-    - Uptime Kuma:
-        href: http://100.123.33.15:3001
-        description: Uptime y alertas
-        icon: mdi-heart-pulse
-        server: local
-        container: uptime-kuma
-        showStats: true
-    - Netdata:
-        href: http://100.123.33.15:19999
-        description: CPU RAM disco containers
-        icon: mdi-chart-line
-        server: local
-        container: netdata
-        showStats: true
-    - Homepage:
-        href: http://100.123.33.15:3080
-        description: Este panel
-        icon: mdi-view-dashboard
-        server: local
-        container: reciapp-homepage
-        showStats: true
-
-- API:
-    - ReciApp Dashboard:
+- ReciApp:
+    - Dashboard:
         href: https://51-255-43-100.sslip.io/dashboard
         description: Logs, costes y jobs
         icon: mdi-chart-box
         server: local
         container: m6kbwmrfcknunjrnxbbsllca-164736609156
         showStats: true
-    - Recipe Backend:
-        href: https://51-255-43-100.sslip.io/health
-        description: Coolify producción
+    - API:
+        href: https://51-255-43-100.sslip.io/ready
+        description: Salud producción
         icon: mdi-food
         server: local
         # name cambia en cada deploy — sync script lo actualiza
         container: m6kbwmrfcknunjrnxbbsllca-164736609156
         showStats: true
-    - Postgres ReciApp:
-        href: https://51-255-43-100.sslip.io/ready
-        description: Base privada
-        icon: mdi-database
-        server: local
-        container: reciapp-postgres
-        showStats: true
-    - Redis ReciApp:
-        href: https://51-255-43-100.sslip.io/ready
-        description: Rate-limit cache
-        icon: mdi-memory
-        server: local
-        container: reciapp-redis
-        showStats: true
-    - Postgres GUI:
-        href: http://100.123.33.15:8081
-        description: Tablas y datos (Tailscale)
-        icon: mdi-table-eye
-        server: local
-        container: reciapp-pgweb
-        showStats: true
-
-- Infra:
-    - Traefik:
-        href: https://coolify.51-255-43-100.sslip.io
-        description: Proxy HTTPS
-        icon: mdi-router-network
-        server: local
-        container: coolify-proxy
-        showStats: true
-    - Coolify DB:
+    - Coolify:
         href: http://100.123.33.15:8000
-        description: Solo Coolify
-        icon: mdi-database
-        server: local
-        container: coolify-db
-        showStats: true
-    - Coolify Redis:
-        href: http://100.123.33.15:8000
-        description: Solo Coolify
-        icon: mdi-memory
-        server: local
-        container: coolify-redis
-        showStats: true
-    - Coolify Realtime:
-        href: http://100.123.33.15:8000
-        description: Websocket Coolify
-        icon: mdi-lan
-        server: local
-        container: coolify-realtime
-        showStats: true
-    - Coolify (Tailscale):
-        href: http://100.123.33.15:8000
-        description: Panel por mesh
-        icon: mdi-server
+        description: Deploys
+        icon: mdi-rocket-launch
         server: local
         container: coolify
         showStats: true
-    - VPS SSH hint:
-        href: https://51-255-43-100.sslip.io/health
-        description: ubuntu@51.255.43.100
-        icon: mdi-console
+    - Netdata:
+        href: http://100.123.33.15:19999
+        description: CPU RAM disco
+        icon: mdi-chart-line
+        server: local
+        container: netdata
+        showStats: true

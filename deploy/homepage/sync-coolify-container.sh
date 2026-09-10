@@ -14,7 +14,7 @@ fi
 tmp="$(mktemp)"
 awk -v cid="$cid" '
   BEGIN { in_rb=0 }
-  /^    - Recipe Backend:/ || /^    - ReciApp Dashboard:/ { in_rb=1; print; next }
+  /^    - Dashboard:/ || /^    - API:/ { in_rb=1; print; next }
   in_rb && /^        container:/ {
     print "        container: " cid
     in_rb=0

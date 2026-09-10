@@ -8,12 +8,6 @@ target: _blank
 language: es
 showStats: true
 layout:
-  Ops:
+  ReciApp:
     style: row
     columns: 4
-  API:
-    style: row
-    columns: 4
-  Infra:
-    style: row
-    columns: 3
