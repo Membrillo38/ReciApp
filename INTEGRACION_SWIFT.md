@@ -51,7 +51,7 @@ Los campos `ingredientSections`, `tips` y `carouselImageUrls` llegan como arrays
 
 ## 4. Importación y recuperación
 
-Idiomas canónicos: `en-US`, `es-ES`, `fr-FR`, `de`, `it`, `pt-BR`. Los valores no admitidos se normalizan a `en-US`.
+Idiomas canónicos: los 50 identificadores de App Store (`ar`, `bn`, `ca`, `zh-Hans`, `zh-Hant`, `hr`, `cs`, `da`, `nl`, `en-AU`, `en-CA`, `en-GB`, `en-US`, `fi`, `fr-FR`, `fr-CA`, `de`, `el`, `gu`, `he`, `hi`, `hu`, `id`, `it`, `ja`, `kn`, `ko`, `ms`, `ml`, `mr`, `nb`, `or`, `pl`, `pt-BR`, `pt-PT`, `pa`, `ro`, `ru`, `sk`, `sl`, `es-MX`, `es-ES`, `sv`, `ta`, `te`, `th`, `tr`, `uk`, `ur`, `vi`). Alias de dispositivo (`ar-SA`, `de-DE`, `zh-TW`, `no`, …) se normalizan al canónico; valores desconocidos caen a `en-US`.
 
 ```swift
 let started = try await api.extract(url: sourceURL, language: "es-ES")

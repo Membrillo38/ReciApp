@@ -176,7 +176,13 @@ create table public.apple_notification_events (
 
 create table public.recipe_translations (
   recipe_id uuid not null references public.recipes (id) on delete cascade,
-  language_code text not null check (language_code in ('en-US', 'es-ES', 'fr-FR', 'de', 'it', 'pt-BR')),
+  language_code text not null check (language_code in (
+    'ar', 'bn', 'ca', 'zh-Hans', 'zh-Hant', 'hr', 'cs', 'da', 'nl',
+    'en-AU', 'en-CA', 'en-GB', 'en-US', 'fi', 'fr-FR', 'fr-CA', 'de', 'el',
+    'gu', 'he', 'hi', 'hu', 'id', 'it', 'ja', 'kn', 'ko', 'ms', 'ml', 'mr',
+    'nb', 'or', 'pl', 'pt-BR', 'pt-PT', 'pa', 'ro', 'ru', 'sk', 'sl',
+    'es-MX', 'es-ES', 'sv', 'ta', 'te', 'th', 'tr', 'uk', 'ur', 'vi'
+  )),
   payload jsonb not null default '{}'::jsonb,
   source_fingerprint text not null,
   created_at timestamptz not null default now(),

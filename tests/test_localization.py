@@ -18,10 +18,16 @@ from app.models import ExtractRequest
 from app.localization import build_recipe_prompt
 
 
-def test_allowlist_has_six_canonical_latin_locales():
-    expected = {"en-US", "es-ES", "fr-FR", "de", "it", "pt-BR"}
-    assert len(SUPPORTED_LANGUAGE_CODES) == 6
-    assert len(set(SUPPORTED_LANGUAGE_CODES)) == 6
+def test_allowlist_has_fifty_app_store_locales():
+    expected = {
+        "ar", "bn", "ca", "zh-Hans", "zh-Hant", "hr", "cs", "da", "nl",
+        "en-AU", "en-CA", "en-GB", "en-US", "fi", "fr-FR", "fr-CA", "de", "el",
+        "gu", "he", "hi", "hu", "id", "it", "ja", "kn", "ko", "ms", "ml", "mr",
+        "nb", "or", "pl", "pt-BR", "pt-PT", "pa", "ro", "ru", "sk", "sl",
+        "es-MX", "es-ES", "sv", "ta", "te", "th", "tr", "uk", "ur", "vi",
+    }
+    assert len(SUPPORTED_LANGUAGE_CODES) == 50
+    assert len(set(SUPPORTED_LANGUAGE_CODES)) == 50
     assert set(SUPPORTED_LANGUAGE_CODES) == expected
     assert set(LANGUAGE_NAMES) == expected
 
@@ -29,8 +35,11 @@ def test_allowlist_has_six_canonical_latin_locales():
 def test_language_normalization_handles_regions_and_unknown_values():
     assert normalize_language("es-ES") == "es-ES"
     assert normalize_language("pt_br") == "pt-BR"
-    assert normalize_language("pt-PT") == "pt-BR"
-    assert normalize_language("zh-Hant-TW") == "en-US"
+    assert normalize_language("pt-PT") == "pt-PT"
+    assert normalize_language("zh-Hant-TW") == "zh-Hant"
+    assert normalize_language("ar-SA") == "ar"
+    assert normalize_language("de-DE") == "de"
+    assert normalize_language("no") == "nb"
     assert normalize_language("en") == "en-US"
     assert normalize_language("not-a-language") == "en-US"
     assert language_name("es") == "Spanish"
@@ -48,10 +57,13 @@ def test_recipe_prompt_requires_target_language():
 
 
 def test_fallback_recipe_copy_is_localized():
-    assert untitled_recipe_name("ja") == "Untitled recipe"
+    from app.localization import OPTIONAL_SECTION_NAMES
+
+    assert untitled_recipe_name("ja") == "無題のレシピ"
     assert ingredient_section_name("fr-FR") == "Ingrédients"
     assert set(SUPPORTED_LANGUAGE_CODES) == set(UNTITLED_RECIPE_NAMES)
     assert set(SUPPORTED_LANGUAGE_CODES) == set(INGREDIENT_SECTION_NAMES)
+    assert set(SUPPORTED_LANGUAGE_CODES) == set(OPTIONAL_SECTION_NAMES)
 
 
 @pytest.mark.skipif(not Path("IosAPP/ReciApp").is_dir(), reason="Ignored iOS sources unavailable in backend-only checkout")
