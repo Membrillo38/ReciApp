@@ -8,7 +8,7 @@ Esta guía describe el contrato del servidor y cómo conectarlo a una app SwiftU
 - Autenticación de la API: `Authorization: Bearer <access_token del backend>`.
 - Nunca incluyas `service_role`, `API_KEY` administrativa, OpenAI ni secretos de webhooks en la app.
 
-En la app existente, adapta `Services/AuthService.swift` y `Services/APIClient.swift`; no añadas modelos con nombres duplicados. La app iOS vive en `IosAPP/`, que este repositorio Git ignora.
+En la app existente, adapta `Services/AuthService.swift` y `Services/APIClient.swift`; no añadas modelos con nombres duplicados. La app iOS vive fuera de este repo: `/Users/andrescasillas/Desktop/ReciApp-iOS`.
 
 ## 2. Autenticación y cliente
 

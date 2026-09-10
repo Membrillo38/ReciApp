@@ -8,12 +8,12 @@ target: _blank
 language: es
 showStats: true
 layout:
-  Mis apps:
-    style: row
-    columns: 3
-  Paneles:
+  Ops:
     style: row
     columns: 4
-  Plataforma:
+  API:
     style: row
     columns: 2
+  Infra:
+    style: row
+    columns: 3

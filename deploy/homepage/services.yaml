@@ -1,27 +1,4 @@
-- Mis apps:
-    - Recipe Backend:
-        href: https://51-255-43-100.sslip.io/health
-        description: API de recetas (producción)
-        icon: mdi-food
-        server: local
-        container: recipe-backend
-        showStats: true
-    - Recipe Backend (Coolify):
-        href: https://51-255-43-100.sslip.io/ready
-        description: Deploy Coolify actual
-        icon: mdi-docker
-        server: local
-        container: m6kbwmrfcknunjrnxbbsllca-164255039898
-        showStats: true
-    - Postgres ReciApp:
-        href: https://51-255-43-100.sslip.io/ready
-        description: Base de datos (privada)
-        icon: mdi-database
-        server: local
-        container: reciapp-postgres
-        showStats: true
-
-- Paneles:
+- Ops:
     - Coolify:
         href: https://coolify.51-255-43-100.sslip.io
         description: Deploys y apps
@@ -38,12 +15,12 @@
         showStats: true
     - Netdata:
         href: http://100.123.33.15:19999
-        description: Detalle CPU/RAM/disco/containers
+        description: CPU RAM disco containers
         icon: mdi-chart-line
         server: local
         container: netdata
         showStats: true
-    - Ops Homepage:
+    - Homepage:
         href: http://100.123.33.15:3080
         description: Este panel
         icon: mdi-view-dashboard
@@ -51,18 +28,67 @@
         container: reciapp-homepage
         showStats: true
 
-- Plataforma:
-    - Traefik (proxy HTTPS):
+- API:
+    - Recipe Backend:
+        href: https://51-255-43-100.sslip.io/health
+        description: Coolify producción
+        icon: mdi-food
+        server: local
+        # name cambia en cada deploy — sync script lo actualiza
+        container: m6kbwmrfcknunjrnxbbsllca-164736609156
+        showStats: true
+    - Postgres ReciApp:
+        href: https://51-255-43-100.sslip.io/ready
+        description: Base privada
+        icon: mdi-database
+        server: local
+        container: reciapp-postgres
+        showStats: true
+    - Postgres GUI:
+        href: http://100.123.33.15:8081
+        description: Tablas y datos (Tailscale)
+        icon: mdi-table-eye
+        server: local
+        container: reciapp-pgweb
+        showStats: true
+
+- Infra:
+    - Traefik:
         href: https://coolify.51-255-43-100.sslip.io
-        description: Entrada 80/443
+        description: Proxy HTTPS
         icon: mdi-router-network
         server: local
         container: coolify-proxy
         showStats: true
     - Coolify DB:
-        href: https://coolify.51-255-43-100.sslip.io
-        description: Solo Coolify (no ReciApp)
+        href: http://100.123.33.15:8000
+        description: Solo Coolify
         icon: mdi-database
         server: local
         container: coolify-db
         showStats: true
+    - Coolify Redis:
+        href: http://100.123.33.15:8000
+        description: Solo Coolify
+        icon: mdi-memory
+        server: local
+        container: coolify-redis
+        showStats: true
+    - Coolify Realtime:
+        href: http://100.123.33.15:8000
+        description: Websocket Coolify
+        icon: mdi-lan
+        server: local
+        container: coolify-realtime
+        showStats: true
+    - Coolify (Tailscale):
+        href: http://100.123.33.15:8000
+        description: Panel por mesh
+        icon: mdi-server
+        server: local
+        container: coolify
+        showStats: true
+    - VPS SSH hint:
+        href: https://51-255-43-100.sslip.io/health
+        description: ubuntu@51.255.43.100
+        icon: mdi-console
