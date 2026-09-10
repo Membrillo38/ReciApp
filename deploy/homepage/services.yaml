@@ -29,6 +29,13 @@
         showStats: true
 
 - API:
+    - ReciApp Dashboard:
+        href: https://51-255-43-100.sslip.io/dashboard
+        description: Logs, costes y jobs
+        icon: mdi-chart-box
+        server: local
+        container: m6kbwmrfcknunjrnxbbsllca-164736609156
+        showStats: true
     - Recipe Backend:
         href: https://51-255-43-100.sslip.io/health
         description: Coolify producción
