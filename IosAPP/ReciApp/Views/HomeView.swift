@@ -1756,6 +1756,97 @@ private struct CategoryRecipesView: View {
     }
 }
 
+private enum FolderScreenSheet: Identifiable {
+    case editor(FolderEditorState)
+    case delete(String)
+
+    var id: String {
+        switch self {
+        case .editor(let state): "editor-\(state.id)"
+        case .delete(let name): "delete-\(name)"
+        }
+    }
+}
+
+private struct RecipeFolderDropTarget<Content: View>: View {
+    @EnvironmentObject private var app: AppViewModel
+    let destination: String
+    let tint: Color
+    @ViewBuilder let content: () -> Content
+    @State private var isTargeted = false
+
+    var body: some View {
+        content()
+            .padding(isTargeted ? 6 : 0)
+            .background(
+                isTargeted ? tint.opacity(0.18) : .clear,
+                in: RoundedRectangle(cornerRadius: 24, style: .continuous)
+            )
+            .scaleEffect(isTargeted ? 1.02 : 1)
+            .animation(.easeOut(duration: 0.16), value: isTargeted)
+            .dropDestination(for: String.self) { items, _ in
+                guard let raw = items.first,
+                      let id = UUID(uuidString: raw),
+                      app.recipes.contains(where: { $0.id == id }),
+                      app.category(for: id) != destination else { return false }
+                app.setCategory(destination, for: id)
+                ReciHaptics.success()
+                return true
+            } isTargeted: { isTargeted = $0 }
+            .accessibilityHint("Drop a recipe here to move it")
+    }
+}
+
+private struct RecipeListRow: View {
+    let recipe: RecipeSummary
+    let tint: Color
+    var isSelecting = false
+    var isSelected = false
+    var isFavorite = false
+    var tags: [String] = []
+
+    var body: some View {
+        HStack(spacing: 13) {
+            RecipeArtwork(recipe: recipe, tint: tint, compact: true, showsFallbackText: false)
+                .frame(width: 68, height: 68)
+                .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
+                .overlay(alignment: .topTrailing) {
+                    if isSelecting {
+                        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(.white, isSelected ? ReciTheme.green : .white.opacity(0.5))
+                            .padding(5)
+                    }
+                }
+            VStack(alignment: .leading, spacing: 5) {
+                Text(recipe.title)
+                    .font(.headline)
+                    .foregroundStyle(ReciTheme.ink)
+                    .lineLimit(2)
+                HStack(spacing: 6) {
+                    Text(recipe.platform)
+                    if isFavorite { Image(systemName: "heart.fill").foregroundStyle(ReciTheme.orange) }
+                    if !tags.isEmpty { Text(tags.prefix(2).joined(separator: " · ")) }
+                }
+                .font(.caption.weight(.medium))
+                .foregroundStyle(ReciTheme.muted)
+                .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(ReciTheme.muted.opacity(0.65))
+        }
+        .padding(10)
+        .background(
+            isSelecting && isSelected ? ReciTheme.orangeSoft : ReciTheme.surface,
+            in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+        )
+        .contentShape(Rectangle())
+        .opacity(isSelecting && !isSelected ? 0.72 : 1)
+    }
+}
+
 private struct FolderSelectionBar: View {
     let canSelectAll: Bool
     let canMove: Bool
