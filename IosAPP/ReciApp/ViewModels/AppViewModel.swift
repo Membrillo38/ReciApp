@@ -14,6 +14,7 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var folderColumns = 2
     @Published private(set) var folderLayoutRawValue = CollectionLayout.grid.rawValue
     @Published private(set) var recipeLayoutRawValue = CollectionLayout.grid.rawValue
+    @Published private(set) var recipeColumns = 2
     @Published var isLoading = false
     @Published var isImporting = false
     @Published var importProgress = 0
@@ -73,6 +74,7 @@ final class AppViewModel: ObservableObject {
         let folderColumns: Int?
         let folderLayoutRawValue: String?
         let recipeLayoutRawValue: String?
+        let recipeColumns: Int?
 
         init(
             recipeCategories: [String: String],
@@ -84,7 +86,8 @@ final class AppViewModel: ObservableObject {
             folderSortRawValue: String? = nil,
             folderColumns: Int? = nil,
             folderLayoutRawValue: String? = nil,
-            recipeLayoutRawValue: String? = nil
+            recipeLayoutRawValue: String? = nil,
+            recipeColumns: Int? = nil
         ) {
             self.recipeCategories = recipeCategories
             self.customCategories = customCategories
@@ -96,6 +99,7 @@ final class AppViewModel: ObservableObject {
             self.folderColumns = folderColumns
             self.folderLayoutRawValue = folderLayoutRawValue
             self.recipeLayoutRawValue = recipeLayoutRawValue
+            self.recipeColumns = recipeColumns
         }
 
         init(from decoder: Decoder) throws {
@@ -110,6 +114,7 @@ final class AppViewModel: ObservableObject {
             folderColumns = try container.decodeIfPresent(Int.self, forKey: .folderColumns)
             folderLayoutRawValue = try container.decodeIfPresent(String.self, forKey: .folderLayoutRawValue)
             recipeLayoutRawValue = try container.decodeIfPresent(String.self, forKey: .recipeLayoutRawValue)
+            recipeColumns = try container.decodeIfPresent(Int.self, forKey: .recipeColumns)
         }
     }
 
@@ -1269,12 +1274,14 @@ final class AppViewModel: ObservableObject {
         sort: FolderSort? = nil,
         columns: Int? = nil,
         folderLayout: CollectionLayout? = nil,
-        recipeLayout: CollectionLayout? = nil
+        recipeLayout: CollectionLayout? = nil,
+        recipeColumns: Int? = nil
     ) {
         if let sort { folderSortRawValue = sort.rawValue }
         if let columns { folderColumns = min(max(columns, 1), 3) }
         if let folderLayout { folderLayoutRawValue = folderLayout.rawValue }
         if let recipeLayout { recipeLayoutRawValue = recipeLayout.rawValue }
+        if let recipeColumns { self.recipeColumns = min(max(recipeColumns, 1), 3) }
         persistFolderCache()
     }
 
@@ -1283,6 +1290,7 @@ final class AppViewModel: ObservableObject {
         folderColumns = 2
         folderLayoutRawValue = CollectionLayout.grid.rawValue
         recipeLayoutRawValue = CollectionLayout.grid.rawValue
+        recipeColumns = 2
         persistFolderCache()
     }
 
@@ -1649,6 +1657,7 @@ final class AppViewModel: ObservableObject {
         folderColumns = 2
         folderLayoutRawValue = CollectionLayout.grid.rawValue
         recipeLayoutRawValue = CollectionLayout.grid.rawValue
+        recipeColumns = 2
         favoriteIDs = []
         recipeTags = [:]
         selectedRecipe = nil
@@ -1715,6 +1724,7 @@ final class AppViewModel: ObservableObject {
         folderColumns = 2
         folderLayoutRawValue = CollectionLayout.grid.rawValue
         recipeLayoutRawValue = CollectionLayout.grid.rawValue
+        recipeColumns = 2
         favoriteIDs = []
         recipeTags = [:]
         selectedRecipe = nil
@@ -1776,7 +1786,8 @@ final class AppViewModel: ObservableObject {
             folderSortRawValue: folderSortRawValue,
             folderColumns: folderColumns,
             folderLayoutRawValue: folderLayoutRawValue,
-            recipeLayoutRawValue: recipeLayoutRawValue
+            recipeLayoutRawValue: recipeLayoutRawValue,
+            recipeColumns: recipeColumns
         )
         if let data = try? JSONEncoder().encode(snapshot) {
             UserDefaults.standard.set(data, forKey: folderCacheKey(for: activeUserID))
@@ -1806,6 +1817,7 @@ final class AppViewModel: ObservableObject {
         folderColumns = min(max(snapshot.folderColumns ?? 2, 1), 3)
         folderLayoutRawValue = CollectionLayout(rawValue: snapshot.folderLayoutRawValue ?? "")?.rawValue ?? CollectionLayout.grid.rawValue
         recipeLayoutRawValue = CollectionLayout(rawValue: snapshot.recipeLayoutRawValue ?? "")?.rawValue ?? CollectionLayout.grid.rawValue
+        recipeColumns = min(max(snapshot.recipeColumns ?? 2, 1), 3)
     }
 
     private func removeLegacyCachesOnce() {

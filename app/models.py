@@ -160,6 +160,36 @@ class RecipeListResponse(BaseModel):
     items: list[RecipeSummary]
 
 
+class AuthAppleRequest(BaseModel):
+    identity_token: str
+    nonce: str | None = None
+    full_name: str | None = None
+
+
+class AuthRefreshRequest(BaseModel):
+    refresh_token: str
+
+
+class AuthLogoutRequest(BaseModel):
+    refresh_token: str
+
+
+class AuthUserResponse(BaseModel):
+    id: UUID
+    email: str | None = None
+    display_name: str | None = None
+    is_pro: bool = False
+    pro_expires_at: str | None = None
+
+
+class AuthTokenResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    user: AuthUserResponse | None = None
+
+
 class AdminUserCreate(BaseModel):
     email: str
     display_name: str | None = None

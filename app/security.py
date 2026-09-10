@@ -14,14 +14,48 @@ from urllib.request import HTTPRedirectHandler, Request as URLRequest, build_ope
 from fastapi import HTTPException, Request
 
 from app.config import settings
-from app.db import get_supabase
+from app.db import execute
+
+
+_BLOCKED_HOSTS = {"localhost", "metadata.google.internal"}
+_ALLOWED_URL_SCHEMES = {"http": 80, "https": 443}
+_MAX_REDIRECTS = 5
+_DEFAULT_MAX_BYTES = 25 * 1024 * 1024
+_BAN_WINDOW_SECONDS = 5 * 60
+_BAN_THRESHOLD = 3
+_BAN_DURATIONS_SECONDS = (5 * 60, 60 * 60, 24 * 60 * 60)
+
+
+def _trusted_proxy_networks() -> list[ipaddress._BaseNetwork]:
+    networks: list[ipaddress._BaseNetwork] = []
+    for raw in settings.trusted_proxy_ips.split(","):
+        item = raw.strip()
+        if not item or item == "---":
+            continue
+        try:
+            networks.append(ipaddress.ip_network(item, strict=False))
+        except ValueError:
+            continue
+    return networks
+
+
+def _is_trusted_proxy(value: str | None) -> bool:
+    if not value:
+        return False
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return any(address in network for network in _trusted_proxy_networks())
 
 
 def request_ip(request: Request) -> str:
-    """Return the edge-provided client IP without logging proxy chains."""
+    """Return client IP, trusting XFF only from configured proxy IPs."""
+    client_host = request.client.host if request.client else ""
     forwarded = request.headers.get("x-forwarded-for", "")
-    candidate = forwarded.split(",", 1)[0].strip() if forwarded else ""
-    candidate = candidate or (request.client.host if request.client else "unknown")
+    candidate = client_host
+    if forwarded and _is_trusted_proxy(client_host):
+        candidate = forwarded.split(",", 1)[0].strip()
     try:
         return str(ipaddress.ip_address(candidate))
     except ValueError:
@@ -47,14 +81,13 @@ def audit_security_event(
     if settings.maintenance_mode:
         return
     try:
-        get_supabase().table("security_events").insert(
-            {
-                "event": event[:80],
-                "user_id": user_id,
-                "ip": pseudonymous_ip(request_ip(request)) if request else None,
-                "metadata": metadata or {},
-            }
-        ).execute()
+        execute(
+            """
+            insert into security_events (event, user_id, ip, metadata)
+            values (%s, %s, %s, %s)
+            """,
+            (event[:80], user_id, pseudonymous_ip(request_ip(request)) if request else None, metadata or {}),
+        )
     except Exception:
         pass
 
@@ -95,6 +128,70 @@ def allow_rate_limit(key: str, *, limit: int, window_seconds: int) -> bool:
     return limiter.allow(key)
 
 
+class _BanState:
+    def __init__(self) -> None:
+        self.violations: deque[float] = deque()
+        self.banned_until = 0.0
+        self.level = 0
+
+
+_ban_lock = threading.Lock()
+_ban_states: dict[str, _BanState] = defaultdict(_BanState)
+
+
+def _ban_key(key: str) -> str:
+    for marker, prefix in (("-ip:", "ip:"), ("ip:", "ip:"), ("-user:", "user:"), ("user:", "user:")):
+        if marker in key:
+            return prefix + key.split(marker, 1)[1]
+    return f"key:{key}"
+
+
+def _ban_retry_after(state: _BanState, now: float | None = None) -> int:
+    current = time.monotonic() if now is None else now
+    return max(1, int(state.banned_until - current))
+
+
+def raise_if_banned(key: str) -> None:
+    ban_key = _ban_key(key)
+    now = time.monotonic()
+    with _ban_lock:
+        state = _ban_states.get(ban_key)
+        if not state or state.banned_until <= now:
+            return
+        retry_after = _ban_retry_after(state, now)
+    raise HTTPException(
+        status_code=429,
+        detail="Temporarily banned for repeated rate-limit violations",
+        headers={"Retry-After": str(retry_after)},
+    )
+
+
+def record_rate_limit_violation(key: str) -> int | None:
+    ban_key = _ban_key(key)
+    now = time.monotonic()
+    with _ban_lock:
+        state = _ban_states[ban_key]
+        if state.banned_until > now:
+            return _ban_retry_after(state, now)
+        cutoff = now - _BAN_WINDOW_SECONDS
+        while state.violations and state.violations[0] <= cutoff:
+            state.violations.popleft()
+        state.violations.append(now)
+        if len(state.violations) < _BAN_THRESHOLD:
+            return None
+        duration = _BAN_DURATIONS_SECONDS[min(state.level, len(_BAN_DURATIONS_SECONDS) - 1)]
+        state.level += 1
+        state.violations.clear()
+        state.banned_until = now + duration
+        return duration
+
+
+def check_not_banned(request: Request, *, user_id: str | None = None) -> None:
+    raise_if_banned(f"ip:{request_ip(request)}")
+    if user_id:
+        raise_if_banned(f"user:{user_id}")
+
+
 def require_rate_limit(
     request: Request,
     *,
@@ -104,63 +201,95 @@ def require_rate_limit(
     event: str,
     retry_after_seconds: int = 60,
 ) -> None:
+    raise_if_banned(key)
     if allow_rate_limit(key, limit=limit, window_seconds=window_seconds):
         return
+    ban_retry_after = record_rate_limit_violation(key)
     audit_security_event(event=event, request=request)
     raise HTTPException(
         status_code=429,
-        detail="Too many requests",
-        headers={"Retry-After": str(max(1, retry_after_seconds))},
+        detail="Temporarily banned for repeated rate-limit violations" if ban_retry_after else "Too many requests",
+        headers={"Retry-After": str(max(1, ban_retry_after or retry_after_seconds))},
     )
 
 
+def _validate_public_address(raw_address: str) -> None:
+    try:
+        address = ipaddress.ip_address(raw_address)
+    except ValueError as exc:
+        raise ValueError("Invalid URL address") from exc
+    if (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_multicast
+        or address.is_unspecified
+    ):
+        raise ValueError("Private or metadata addresses are not accepted")
+
+
 def validate_public_url(url: str, *, allowed_hosts: set[str] | None = None) -> None:
-    """Reject non-HTTPS, ambiguous, local and metadata URLs before fetching."""
+    """Reject ambiguous, local and metadata URLs before fetching."""
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower().rstrip(".")
-    if parsed.scheme.lower() != "https" or not host or parsed.username or parsed.password:
-        raise ValueError("Only public HTTPS URLs are accepted")
+    scheme = parsed.scheme.lower()
+    if scheme not in _ALLOWED_URL_SCHEMES or not host or parsed.username or parsed.password:
+        raise ValueError("Only public HTTP(S) URLs are accepted")
+    if host in _BLOCKED_HOSTS:
+        raise ValueError("Private or metadata addresses are not accepted")
     try:
         port = parsed.port
     except ValueError as exc:
         raise ValueError("Invalid URL port") from exc
-    if port not in (None, 443):
+    expected_port = _ALLOWED_URL_SCHEMES[scheme]
+    if port not in (None, expected_port):
         raise ValueError("Non-standard ports are not accepted")
     if allowed_hosts and not any(host == item or host.endswith(f".{item}") for item in allowed_hosts):
         raise ValueError("Unsupported source host")
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        _validate_public_address(str(literal))
     addresses: list[str]
     try:
-        addresses = [item[4][0] for item in socket.getaddrinfo(host, port or 443, type=socket.SOCK_STREAM)]
+        addresses = [item[4][0] for item in socket.getaddrinfo(host, port or expected_port, type=socket.SOCK_STREAM)]
     except socket.gaierror as exc:
         raise ValueError("URL host could not be resolved") from exc
     for raw_address in set(addresses):
-        try:
-            address = ipaddress.ip_address(raw_address)
-        except ValueError as exc:
-            raise ValueError("Invalid URL address") from exc
-        if (
-            address.is_private
-            or address.is_loopback
-            or address.is_link_local
-            or address.is_reserved
-            or address.is_multicast
-            or address.is_unspecified
-        ):
-            raise ValueError("Private or metadata addresses are not accepted")
+        _validate_public_address(raw_address)
 
 
 class _SafeRedirectHandler(HTTPRedirectHandler):
+    def __init__(self) -> None:
+        self.redirect_count = 0
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        self.redirect_count += 1
+        if self.redirect_count > _MAX_REDIRECTS:
+            raise ValueError("Too many redirects")
         validate_public_url(newurl)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-_SAFE_OPENER = build_opener(_SafeRedirectHandler())
+def _safe_opener():
+    return build_opener(_SafeRedirectHandler())
 
 
 def safe_urlopen(request: URLRequest, *, timeout: int):
     validate_public_url(request.full_url)
-    return _SAFE_OPENER.open(request, timeout=timeout)
+    return _safe_opener().open(request, timeout=timeout)
+
+
+def safe_urlopen_limited(request: URLRequest, *, timeout: int, max_bytes: int = _DEFAULT_MAX_BYTES) -> bytes:
+    limit = max(1, int(max_bytes))
+    with safe_urlopen(request, timeout=timeout) as response:
+        data = response.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError("Download exceeded the size bound")
+    return data
 
 
 def safe_compare(left: str | None, right: str | None) -> bool:

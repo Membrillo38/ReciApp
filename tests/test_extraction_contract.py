@@ -380,11 +380,9 @@ def test_carousel_cost_accounts_for_all_bounded_ocr_slides():
 
 
 def test_video_frame_cost_is_bounded_to_overlay_attempts():
-    from app.extract import MAX_VIDEO_FRAMES
-
     expected = round(
         settings.cost_text_cents_per_extract
-        + MAX_VIDEO_FRAMES * settings.cost_ocr_cents_per_slide,
+        + 80 * settings.cost_ocr_cents_per_slide,
         4,
     )
     assert estimate_miss_cost_cents(frame_count=80) == expected
@@ -538,7 +536,7 @@ def test_video_frame_ocr_preserves_order_and_counts_attempts(tmp_path):
         transcript.OpenAI = original_client
         transcript.settings.openai_api_key = original_key
 
-    assert result == "Overlay frames 1-3 of one cooking video"
+    assert result == "Visual frames 1-3 of one cooking video"
     assert len(attempts) == 3
 
 
@@ -560,9 +558,12 @@ def test_video_frame_sampler_bounds_tools_and_removes_download(tmp_path):
             calls.append((command, kwargs))
             return SimpleNamespace(returncode=0, stdout="20.0\n", stderr="")
         output = Path(command[-1])
-        if "%03d" in output.name:
-            for index in range(1, 8):
-                Path(str(output).replace("%03d", f"{index:03d}")).write_bytes(b"j" * 600)
+        if output.name == "thumbs.raw":
+            # Distinct 9x8 greyscale frames so dHash keeps several timestamps.
+            blob = bytearray()
+            for index in range(10):
+                blob.extend(bytes(((index * 17 + col) % 256) for col in range(72)))
+            output.write_bytes(blob)
         else:
             output.write_bytes(b"j" * 600)
         calls.append((command, kwargs))
@@ -578,7 +579,7 @@ def test_video_frame_sampler_bounds_tools_and_removes_download(tmp_path):
             media_id="../../unsafe",
             duration_seconds=20,
         )
-        assert 1 <= len(result.paths) <= extract.MAX_VIDEO_FRAMES
+        assert 1 <= len(result.paths) <= extract.MAX_UNIQUE_VISION_FRAMES
         assert all(path.is_file() for path in result.paths)
         assert not calls[0][2].exists()
         assert calls[0][1] == extract.VIDEO_DOWNLOAD_TIMEOUT_SECONDS
@@ -624,6 +625,83 @@ def test_video_frame_sampler_cleans_temporary_media_on_failure():
     assert directory is not None and not directory.exists()
 
 
+def test_upload_cover_jpeg_returns_public_url(monkeypatch, tmp_path):
+    from app import store
+
+    monkeypatch.setenv("COVER_STORAGE_DIR", str(tmp_path))
+    monkeypatch.setattr(store.settings, "cover_public_base_url", "https://cdn.example/covers")
+    url = store.upload_cover_jpeg(b"jpeg-bytes", key="abcd.jpg")
+    assert url == "https://cdn.example/covers/abcd.jpg"
+    assert (tmp_path / "abcd.jpg").read_bytes() == b"jpeg-bytes"
+
+
+def test_cover_sample_times_are_eight_frames_in_first_two_seconds():
+    times = extract.cover_sample_times(20)
+    assert times == [0.125, 0.375, 0.625, 0.875, 1.125, 1.375, 1.625, 1.875]
+    short = extract.cover_sample_times(1)
+    assert len(short) == 8
+    assert short[0] >= 0
+    assert short[-1] < 1.0
+
+
+def test_select_best_cover_prefers_high_variance_frame(tmp_path):
+    flat = bytes([128] * (extract.COVER_GRAY_SIZE ** 2))
+    varied = bytes((index * 17) % 256 for index in range(extract.COVER_GRAY_SIZE ** 2))
+    (tmp_path / "cover.raw").write_bytes(flat + varied)
+    dull = tmp_path / "cover-01.jpg"
+    sharp = tmp_path / "cover-02.jpg"
+    dull.write_bytes(b"dull")
+    sharp.write_bytes(b"sharp")
+    assert extract.select_best_cover_path([dull, sharp], tmp_path) == sharp
+
+
+def test_cover_frame_sampler_uses_two_second_section(tmp_path):
+    original_ytdlp = extract._run_ytdlp
+    original_run = extract.subprocess.run
+    original_which = extract.shutil.which
+    original_validate = extract.validate_public_url
+    calls = []
+
+    def fake_ytdlp(args, timeout):
+        output = Path(args[args.index("-o") + 1])
+        output.write_bytes(b"v" * 1_000)
+        calls.append(args)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    def fake_run(command, **kwargs):
+        if command[0].endswith("ffprobe"):
+            return SimpleNamespace(returncode=0, stdout="12.0\n", stderr="")
+        dest = Path(command[-1])
+        if dest.name == "cover.raw":
+            dest.write_bytes(bytes(range(256)) * ((extract.COVER_GRAY_SIZE ** 2) * 8 // 256))
+        elif "%02d" in dest.name:
+            for index in range(1, 9):
+                (dest.parent / f"cover-{index:02d}.jpg").write_bytes(b"j" * 400)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    extract._run_ytdlp = fake_ytdlp
+    extract.subprocess.run = fake_run
+    extract.shutil.which = lambda name: f"/usr/local/bin/{name}"
+    extract.validate_public_url = lambda *args, **kwargs: None
+    try:
+        result = extract.download_cover_frames(
+            "https://www.tiktok.com/@cook/video/1",
+            media_id="1",
+            duration_seconds=20,
+        )
+        assert len(result.paths) == 8
+        assert all(path.is_file() for path in result.paths)
+        assert extract.COVER_DOWNLOAD_SECTION in calls[0]
+        assert extract.select_best_cover_path(result.paths, result.directory) in result.paths
+    finally:
+        extract._run_ytdlp = original_ytdlp
+        extract.subprocess.run = original_run
+        extract.shutil.which = original_which
+        extract.validate_public_url = original_validate
+        if "result" in locals():
+            extract.shutil.rmtree(result.directory, ignore_errors=True)
+
+
 def test_bounded_recipe_source_never_slices_ordered_ocr_json():
     final_marker = "FINAL-SLIDE-12"
     payload = {
@@ -643,6 +721,7 @@ def test_bounded_recipe_source_never_slices_ordered_ocr_json():
 def test_failed_carousel_ocr_settles_every_attempted_visual_cost(monkeypatch):
     from uuid import uuid4
     import app.pipeline as pipeline
+    from app.costing import get_cost_meter
 
     settled = []
     jobs = []
@@ -652,18 +731,23 @@ def test_failed_carousel_ocr_settles_every_attempted_visual_cost(monkeypatch):
 
     def fail_ocr(info, *, on_attempt):
         on_attempt()
+        meter = get_cost_meter()
+        if meter is not None:
+            meter.add_fallback(settings.cost_ocr_cents_per_slide, kind="ocr")
         raise extract.ExtractError("Incomplete TikTok carousel: unreadable slides 1")
 
     monkeypatch.setattr(pipeline, "ocr_slides", fail_ocr)
     monkeypatch.setattr(pipeline, "update_job", lambda *args, **kwargs: jobs.append(kwargs))
     monkeypatch.setattr(pipeline, "settle_spend", lambda **kwargs: settled.append(kwargs))
+    monkeypatch.setattr(pipeline, "record_usage", lambda **kwargs: None)
     monkeypatch.setattr(pipeline, "release_job", lambda *args: None)
+    monkeypatch.setattr(pipeline, "_drain_next_extract_for_user", lambda *a, **k: None)
 
     pipeline.run_extract_job(uuid4(), uuid4(), "https://www.tiktok.com/@cook/photo/1", "tiktok:1", "en-US")
 
     assert jobs[-1]["status"] == "failed"
     assert jobs[-1]["error"].startswith("Incomplete TikTok carousel:")
-    assert settled[-1]["actual_cents"] == estimate_miss_cost_cents(slide_count=1)
+    assert settled[-1]["actual_cents"] == settings.cost_ocr_cents_per_slide
 
 
 def test_photo_without_complete_slide_hydration_never_falls_back_to_video_metadata(monkeypatch):
@@ -682,6 +766,7 @@ def test_photo_without_complete_slide_hydration_never_falls_back_to_video_metada
     monkeypatch.setattr(pipeline, "update_job", lambda *args, **kwargs: jobs.append(kwargs))
     monkeypatch.setattr(pipeline, "settle_spend", lambda **kwargs: settled.append(kwargs))
     monkeypatch.setattr(pipeline, "release_job", lambda *args: None)
+    monkeypatch.setattr(pipeline, "_drain_next_extract_for_user", lambda *a, **k: None)
 
     pipeline.run_extract_job(
         uuid4(),
@@ -699,6 +784,7 @@ def test_photo_without_complete_slide_hydration_never_falls_back_to_video_metada
 def test_tiktok_video_without_caption_uses_three_bounded_frames(monkeypatch, tmp_path):
     from uuid import uuid4
     import app.pipeline as pipeline
+    from app.costing import get_cost_meter
     from app.models import Ingredient, IngredientSection, Recipe, Step
 
     frame_dir = tmp_path / "frames"
@@ -725,42 +811,53 @@ def test_tiktok_video_without_caption_uses_three_bounded_frames(monkeypatch, tmp
     monkeypatch.setattr(pipeline, "detect_platform", lambda url: Platform.tiktok)
     monkeypatch.setattr(pipeline, "fetch_tiktok_slides", lambda url: None)
     monkeypatch.setattr(pipeline, "fetch_media_info", lambda url: media)
+    monkeypatch.setattr(pipeline, "download_audio", lambda *a, **k: None)
+    monkeypatch.setattr(pipeline, "local_transcript", lambda *a, **k: None)
     monkeypatch.setattr(
         pipeline,
-        "download_tiktok_video_frames",
+        "download_video_frames",
         lambda *args, **kwargs: extract.VideoFrames(paths, frame_dir),
     )
 
     def fake_ocr(frame_paths, *, on_attempt):
         for _ in frame_paths:
             on_attempt()
+            meter = get_cost_meter()
+            if meter is not None:
+                meter.add_fallback(settings.cost_ocr_cents_per_slide, kind="ocr")
         return "Frame 1 ingredients\n\nFrame 2 method\n\nFrame 3 serving"
 
     def fake_build(**kwargs):
         built.append(kwargs)
+        slide = kwargs.get("slide_text") or ""
+        if "Frame 3 serving" not in slide:
+            return None
         ingredient = Ingredient(name="egg")
         return Recipe(
             title="Eggs",
             ingredients=[ingredient],
             ingredient_sections=[IngredientSection(title="Ingredients", ingredients=[ingredient])],
-            steps=[Step(order=1, text="Cook")],
+            steps=[Step(order=1, text="Cook egg")],
+            confidence=0.9,
             source_url=kwargs["source_url"],
             platform=Platform.tiktok,
         )
 
     monkeypatch.setattr(pipeline, "ocr_video_frames", fake_ocr)
     monkeypatch.setattr(pipeline, "build_recipe", fake_build)
+    monkeypatch.setattr(pipeline, "choose_video_cover_url", lambda *a, **k: None)
     monkeypatch.setattr(pipeline, "update_job", lambda *args, **kwargs: None)
     monkeypatch.setattr(pipeline, "upsert_recipe", lambda *args, **kwargs: {"id": str(recipe_id)})
     monkeypatch.setattr(pipeline, "save_user_recipe", lambda *args, **kwargs: None)
     monkeypatch.setattr(pipeline, "record_usage", lambda **kwargs: None)
     monkeypatch.setattr(pipeline, "settle_spend", lambda **kwargs: settled.append(kwargs))
     monkeypatch.setattr(pipeline, "release_job", lambda *args: None)
+    monkeypatch.setattr(pipeline, "_drain_next_extract_for_user", lambda *a, **k: None)
 
     pipeline.run_extract_job(uuid4(), uuid4(), media.webpage_url, "tiktok:video:1", "en-US")
 
-    assert built[0]["slide_text"].endswith("Frame 3 serving")
-    assert settled[-1]["actual_cents"] == estimate_miss_cost_cents(frame_count=3)
+    assert any((b.get("slide_text") or "").endswith("Frame 3 serving") for b in built)
+    assert settled[-1]["actual_cents"] == round(3 * settings.cost_ocr_cents_per_slide, 4)
     assert not frame_dir.exists()
 
 
@@ -771,12 +868,12 @@ def test_tiktok_caption_survives_when_frame_download_fails(monkeypatch):
 
     media = extract.MediaInfo(
         title="Bakery chocolate chip cookies with butter and sugar",
-        description="Bakery chocolate chip cookies with butter and sugar",
+        description="Bakery chocolate chip cookies with butter and sugar. Mix butter and sugar, add flour, bake.",
         author="baker",
         thumbnail_url=None,
         duration_seconds=60,
         webpage_url="https://vm.tiktok.com/ZGdQ6Hwqc/",
-        subtitles_text=None,
+        subtitles_text="Cream butter and sugar. Add flour. Bake cookies.",
         audio_path=None,
         media_id="1",
     )
@@ -788,7 +885,7 @@ def test_tiktok_caption_survives_when_frame_download_fails(monkeypatch):
     monkeypatch.setattr(pipeline, "fetch_media_info", lambda url: media)
     monkeypatch.setattr(
         pipeline,
-        "download_tiktok_video_frames",
+        "download_video_frames",
         lambda *args, **kwargs: (_ for _ in ()).throw(extract.ExtractError("login wall")),
     )
 
@@ -799,18 +896,21 @@ def test_tiktok_caption_survives_when_frame_download_fails(monkeypatch):
             title="Cookies",
             ingredients=[ingredient],
             ingredient_sections=[IngredientSection(title="Ingredients", ingredients=[ingredient])],
-            steps=[Step(order=1, text="Bake")],
+            steps=[Step(order=1, text="Bake butter cookies")],
+            confidence=0.9,
             source_url=kwargs["source_url"],
             platform=Platform.tiktok,
         )
 
     monkeypatch.setattr(pipeline, "build_recipe", fake_build)
+    monkeypatch.setattr(pipeline, "choose_video_cover_url", lambda *a, **k: None)
     monkeypatch.setattr(pipeline, "update_job", lambda *args, **kwargs: None)
     monkeypatch.setattr(pipeline, "upsert_recipe", lambda *args, **kwargs: {"id": str(recipe_id)})
     monkeypatch.setattr(pipeline, "save_user_recipe", lambda *args, **kwargs: None)
     monkeypatch.setattr(pipeline, "record_usage", lambda **kwargs: None)
     monkeypatch.setattr(pipeline, "settle_spend", lambda **kwargs: settled.append(kwargs))
     monkeypatch.setattr(pipeline, "release_job", lambda *args: None)
+    monkeypatch.setattr(pipeline, "_drain_next_extract_for_user", lambda *a, **k: None)
 
     pipeline.run_extract_job(uuid4(), uuid4(), media.webpage_url, "tiktok:vm:1", "en-US")
 
@@ -1019,7 +1119,8 @@ def test_recipe_builder_preserves_ordered_carousel_metadata():
                                 '"ingredients":[{"name":"pasta","quantity":"250","unit":"g"}]}],'
                                 '"tips":[],"steps":[{"order":1,"text":"Boil","duration_minutes":10}],'
                                 '"servings":2,"prep_minutes":5,"cook_minutes":10,"tags":[],'
-                                '"confidence":0.9,"missing_fields":[]}'
+                                '"confidence":0.9,"missing_fields":[],'
+                                '"is_complete":true,"blocking_gaps":[]}'
                             ),
                             refusal=None,
                         ),
@@ -1077,6 +1178,8 @@ def _recipe_model_payload(**overrides) -> str:
         "tags": [],
         "confidence": 0.9,
         "missing_fields": [],
+        "is_complete": True,
+        "blocking_gaps": [],
     }
     data.update(overrides)
     return json.dumps(data)
@@ -1137,10 +1240,10 @@ def test_recipe_builder_rejects_empty_or_unknown_output():
         {"steps": [], "confidence": 0.9},
         {"steps": [{"order": 1, "text": "null", "duration_minutes": None}], "confidence": 0.9},
         {"confidence": 0.2},
+        {"is_complete": False, "blocking_gaps": ["missing method"]},
     ]
     for overrides in cases:
-        with pytest.raises(extract.ExtractError, match="Could not determine a recipe from this video"):
-            _build_recipe_from_model_payload(_recipe_model_payload(**overrides))
+        assert _build_recipe_from_model_payload(_recipe_model_payload(**overrides)) is None
 
 
 def test_recipe_builder_keeps_named_ingredient_with_null_quantity():
@@ -1151,9 +1254,11 @@ def test_recipe_builder_keeps_named_ingredient_with_null_quantity():
                     "title": "Ingredients",
                     "ingredients": [{"name": "pasta", "quantity": None, "unit": None}],
                 }
-            ]
+            ],
+            steps=[{"order": 1, "text": "Boil the pasta until al dente", "duration_minutes": 10}],
         )
     )
+    assert recipe is not None
     assert [(item.name, item.quantity) for item in recipe.ingredients] == [("pasta", None)]
 
 
@@ -1286,6 +1391,8 @@ def test_tiktok_spoken_caption_still_ocrs_on_screen_overlays(monkeypatch, tmp_pa
     monkeypatch.setattr(pipeline, "detect_platform", lambda url: Platform.tiktok)
     monkeypatch.setattr(pipeline, "fetch_tiktok_slides", lambda url: None)
     monkeypatch.setattr(pipeline, "fetch_media_info", lambda url: media)
+    monkeypatch.setattr(pipeline, "download_audio", lambda *a, **k: None)
+    monkeypatch.setattr(pipeline, "local_transcript", lambda *a, **k: None)
 
     def fake_download(*args, **kwargs):
         downloads.append(kwargs)
@@ -1298,31 +1405,37 @@ def test_tiktok_spoken_caption_still_ocrs_on_screen_overlays(monkeypatch, tmp_pa
 
     def fake_build(**kwargs):
         built.append(kwargs)
+        slide = kwargs.get("slide_text") or ""
+        if "1/3 cup (67g) granulated sugar" not in slide:
+            return None
         ingredient = Ingredient(name="egg", quantity="4", unit="large")
         return Recipe(
             title="Tiramisu",
             ingredients=[ingredient],
             ingredient_sections=[IngredientSection(title="Ingredients", ingredients=[ingredient])],
-            steps=[Step(order=1, text="Mix")],
+            steps=[Step(order=1, text="Mix eggs with sugar")],
+            confidence=0.9,
             source_url=kwargs["source_url"],
             platform=Platform.tiktok,
         )
 
-    monkeypatch.setattr(pipeline, "download_tiktok_video_frames", fake_download)
+    monkeypatch.setattr(pipeline, "download_video_frames", fake_download)
     monkeypatch.setattr(pipeline, "ocr_video_frames", fake_ocr)
     monkeypatch.setattr(pipeline, "build_recipe", fake_build)
+    monkeypatch.setattr(pipeline, "choose_video_cover_url", lambda *a, **k: None)
     monkeypatch.setattr(pipeline, "update_job", lambda *args, **kwargs: None)
     monkeypatch.setattr(pipeline, "upsert_recipe", lambda *args, **kwargs: {"id": str(recipe_id)})
     monkeypatch.setattr(pipeline, "save_user_recipe", lambda *args, **kwargs: None)
     monkeypatch.setattr(pipeline, "record_usage", lambda **kwargs: None)
     monkeypatch.setattr(pipeline, "settle_spend", lambda **kwargs: None)
     monkeypatch.setattr(pipeline, "release_job", lambda *args: None)
+    monkeypatch.setattr(pipeline, "_drain_next_extract_for_user", lambda *a, **k: None)
 
     pipeline.run_extract_job(uuid4(), uuid4(), media.webpage_url, "tiktok:tiramisu:1", "en-US")
 
     assert downloads
     assert built[0]["transcript"].startswith("spoken")
-    assert "1/3 cup (67g) granulated sugar" in built[0]["slide_text"]
+    assert any("1/3 cup (67g) granulated sugar" in (b.get("slide_text") or "") for b in built)
 
 
 def test_tiktok_play_url_is_used_when_ytdlp_download_fails(tmp_path):

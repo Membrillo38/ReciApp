@@ -24,7 +24,7 @@ final class SubscriptionService {
         let value = userID.uuidString
         guard identifiedUserID != value else { return }
         Superwall.shared.identify(userId: value)
-        Superwall.shared.setUserAttributes(["supabase_user_id": value])
+        Superwall.shared.setUserAttributes(["user_id": value])
         identifiedUserID = value
     }
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import shutil
 import logging
 from pathlib import Path
@@ -7,15 +8,30 @@ from urllib.parse import urlparse
 from uuid import UUID
 
 from app.config import settings
-from app.costing import estimate_miss_cost_cents
-from app.extract import ExtractError, VideoFrames, download_tiktok_video_frames, fetch_media_info
+from app.costing import JobCostMeter, cost_meter_scope
+from app.extract import (
+    ExtractError,
+    VideoFrames,
+    download_audio,
+    MediaInfo,
+    download_cover_frames,
+    download_video_frames,
+    fetch_media_info,
+    select_best_cover_path,
+    select_spread_frame_indexes,
+)
 from app.models import JobStatus, Platform, Recipe
 from app.platforms import detect_platform
 from app.quota import record_usage
 from app.job_guard import release as release_job, try_claim as try_claim_job
 from app.localization import normalize_language
-from app.spend import conservative_failure_cost, settle_spend
-from app.recipe_builder import RECIPE_UNDETERMINED_ERROR, build_recipe, translate_recipe
+from app.spend import settle_spend
+from app.recipe_builder import (
+    RECIPE_INCOMPLETE_ERROR,
+    RECIPE_UNDETERMINED_ERROR,
+    build_recipe,
+    translate_recipe,
+)
 from app.store import (
     claim_next_pending_extract,
     claim_next_pending_extract_for_user,
@@ -24,6 +40,7 @@ from app.store import (
     save_user_recipe,
     update_job,
     upsert_recipe,
+    upload_cover_jpeg,
 )
 from app.translation_cache import (
     recipe_translation_payload,
@@ -31,10 +48,42 @@ from app.translation_cache import (
     upsert_recipe_translation,
 )
 from app.tiktok_slides import SlideInfo, fetch_tiktok_slides
-from app.transcript import ocr_slides, ocr_video_frames, whisper_transcript, youtube_transcript
+from app.transcript import (
+    local_transcript,
+    ocr_slides,
+    ocr_video_frames,
+    whisper_transcript,
+    youtube_transcript,
+)
 
 logger = logging.getLogger(__name__)
 _RETRYABLE_EXTRACTION_ERROR = "Extraction temporarily failed. Retry the import."
+_FIRST_VISION_PASS = 12
+_VISION_BATCH = 8
+_COVER_BUCKET_KEY_LEN = 40
+
+
+def choose_video_cover_url(media: MediaInfo) -> str | None:
+    """Best of eight frames from the first two seconds; keep source thumb on failure."""
+    frames: VideoFrames | None = None
+    try:
+        frames = download_cover_frames(
+            media.webpage_url,
+            media_id=media.media_id,
+            duration_seconds=media.duration_seconds,
+            play_urls=media.play_urls,
+        )
+        best = select_best_cover_path(frames.paths, frames.directory)
+        if best is None:
+            return None
+        key = hashlib.sha256(media.webpage_url.encode("utf-8")).hexdigest()[:_COVER_BUCKET_KEY_LEN] + ".jpg"
+        return upload_cover_jpeg(best.read_bytes(), key=key)
+    except Exception as exc:
+        logger.warning("extract stage=cover_frame skipped error_type=%s", type(exc).__name__)
+        return None
+    finally:
+        if frames is not None:
+            shutil.rmtree(frames.directory, ignore_errors=True)
 
 
 def _safe_job_error(error: ExtractError) -> str:
@@ -45,6 +94,7 @@ def _safe_job_error(error: ExtractError) -> str:
         "Video too long (",
         "No usable recipe text found in source",
         RECIPE_UNDETERMINED_ERROR,
+        RECIPE_INCOMPLETE_ERROR,
         "Incomplete TikTok carousel:",
         "TikTok video evidence incomplete:",
         "Recipe source text exceeds supported bound",
@@ -68,218 +118,351 @@ def run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langua
         return
     language_code = normalize_language(language_code)
     audio_path: Path | None = None
-    used_transcribe = False
+    video_frames: VideoFrames | None = None
     slide_count = 0
     frame_count = 0
-    duration_seconds: int | None = None
-    openai_called = False
-    estimated_cost = 0.0
-    video_frames: VideoFrames | None = None
 
-    def record_ocr_attempt() -> None:
-        nonlocal frame_count, slide_count, estimated_cost, openai_called
-        openai_called = True
-        if slide_info is not None:
-            slide_count += 1
-        else:
-            frame_count += 1
-        estimated_cost = estimate_miss_cost_cents(
-            duration_seconds=duration_seconds,
-            slide_count=slide_count,
-            frame_count=frame_count,
-            used_transcribe=used_transcribe,
-        )
-
-    try:
-        update_job(job_id, status=JobStatus.processing.value, progress=5)
-        platform = detect_platform(url)
-        logger.info("extract stage=platform job_id=%s platform=%s", job_id, platform.value)
-        update_job(job_id, progress=15)
-        if platform == Platform.unknown:
-            raise ExtractError("Unsupported URL. Use TikTok, YouTube, Instagram or Facebook.")
-
-        slide_info: SlideInfo | None = None
-        if platform == Platform.tiktok:
-            slide_info = fetch_tiktok_slides(url)
-            logger.info(
-                "extract stage=slides job_id=%s platform=%s slide_count=%d",
-                job_id,
-                platform.value,
-                len(slide_info.image_urls) if slide_info else 0,
-            )
-            update_job(job_id, progress=30)
-            if slide_info is None and "/photo/" in (urlparse(url).path or "").lower():
-                raise ExtractError(
-                    "Incomplete TikTok carousel: complete slide hydration was unavailable"
-                )
-
-        recipe: Recipe
-        if slide_info and slide_info.image_urls:
-            if slide_info.incomplete_reason:
-                raise ExtractError(f"Incomplete TikTok carousel: {slide_info.incomplete_reason}")
-            slide_text = ocr_slides(slide_info, on_attempt=record_ocr_attempt)
-            update_job(job_id, progress=60)
-            openai_called = True
-            estimated_cost = estimate_miss_cost_cents(slide_count=slide_count)
-            recipe = build_recipe(
-                platform=platform,
-                source_url=url,
-                title=slide_info.title,
-                description=slide_info.description,
-                author=slide_info.author,
-                thumbnail_url=slide_info.image_urls[0],
-                carousel_image_urls=slide_info.image_urls,
-                transcript=None,
-                slide_text=slide_text,
-                language_code=language_code,
-            )
-        else:
-            media = fetch_media_info(url)
-            logger.info(
-                "extract stage=media job_id=%s platform=%s duration_seconds=%s subtitles=%s audio=%s",
-                job_id,
-                platform.value,
-                media.duration_seconds,
-                bool(media.subtitles_text),
-                bool(media.audio_path),
-            )
-            update_job(job_id, progress=30)
-            audio_path = media.audio_path
-            duration_seconds = media.duration_seconds
-
-            transcript = media.subtitles_text
-            if not transcript and platform == Platform.youtube:
-                transcript = youtube_transcript(url)
-            if audio_path and not _has_sufficient_recipe_evidence(transcript):
-                openai_called = True
-                used_transcribe = True
-                estimated_cost = estimate_miss_cost_cents(
-                    duration_seconds=duration_seconds,
-                    used_transcribe=True,
-                )
-                try:
-                    spoken = whisper_transcript(audio_path)
-                    transcript = spoken if not transcript else f"{transcript}\n\n{spoken}"
-                except Exception as exc:
-                    # Continue with title/description instead of converting a
-                    # missing audio transcript into a permanently failed job.
-                    logger.warning(
-                        "extract stage=whisper_fallback job_id=%s platform=%s error_type=%s",
-                        job_id,
-                        platform.value,
-                        type(exc).__name__,
-                    )
-            video_text = media.extra_text
-            if platform == Platform.tiktok:
-                try:
-                    video_frames = download_tiktok_video_frames(
-                        url,
-                        media_id=media.media_id,
-                        duration_seconds=duration_seconds,
-                        play_urls=media.play_urls,
-                    )
-                    openai_called = True
-                    overlay_text = ocr_video_frames(video_frames.paths, on_attempt=record_ocr_attempt)
-                    video_text = overlay_text or video_text
-                except ExtractError as exc:
-                    # Caption/oEmbed text can still yield a recipe when the
-                    # datacenter cannot download TikTok media.
-                    logger.warning(
-                        "extract stage=frame_fallback job_id=%s error_type=%s",
-                        job_id,
-                        type(exc).__name__,
-                    )
-            update_job(job_id, progress=60)
-            if not transcript and not any(
-                text.strip() for text in (media.title, media.description, video_text or "")
-            ):
-                raise ExtractError(RECIPE_UNDETERMINED_ERROR)
-
-            openai_called = True
-            recipe = build_recipe(
-                platform=platform,
-                source_url=media.webpage_url,
-                title=media.title,
-                description=media.description,
-                author=media.author,
-                thumbnail_url=media.thumbnail_url,
-                transcript=transcript,
-                slide_text=video_text,
-                language_code=language_code,
-            )
-        update_job(job_id, progress=85)
-
-        row = upsert_recipe(recipe, source_url_norm=url_norm, language_code=language_code)
-        recipe_id = UUID(row["id"])
-        logger.info(
-            "extract stage=persisted job_id=%s platform=%s recipe_id=%s slide_count=%d transcribed=%s",
-            job_id,
-            platform.value,
-            recipe_id,
-            slide_count,
-            used_transcribe,
-        )
-        cost = estimate_miss_cost_cents(
-            duration_seconds=duration_seconds,
-            slide_count=slide_count,
-            frame_count=frame_count,
-            used_transcribe=used_transcribe,
-        )
-        estimated_cost = cost
-        save_user_recipe(user_id, recipe_id)
-        update_job(
-            job_id,
-            status=JobStatus.completed.value,
-            progress=100,
-            lease_until=None,
-            recipe_id=recipe_id,
-            cost_cents=cost,
-            cache_hit=False,
-        )
-        # Recipe/job completion is the user-visible critical path. A temporary
-        # usage-event failure must not turn a saved recipe into a failed job.
+    with cost_meter_scope() as meter:
         try:
-            record_usage(
-                user_id=user_id,
-                kind="extract_miss",
-                cost_cents=cost,
-                recipe_id=recipe_id,
-                job_id=job_id,
+            update_job(job_id, status=JobStatus.processing.value, progress=5)
+            platform = detect_platform(url)
+            logger.info("extract stage=platform job_id=%s platform=%s", job_id, platform.value)
+            update_job(job_id, progress=15)
+            if platform == Platform.unknown:
+                raise ExtractError("Unsupported URL. Use TikTok, YouTube, Instagram or Facebook.")
+
+            slide_info: SlideInfo | None = None
+            if platform == Platform.tiktok:
+                slide_info = fetch_tiktok_slides(url)
+                logger.info(
+                    "extract stage=slides job_id=%s platform=%s slide_count=%d",
+                    job_id,
+                    platform.value,
+                    len(slide_info.image_urls) if slide_info else 0,
+                )
+                update_job(job_id, progress=30)
+                if slide_info is None and "/photo/" in (urlparse(url).path or "").lower():
+                    raise ExtractError(
+                        "Incomplete TikTok carousel: complete slide hydration was unavailable"
+                    )
+
+            recipe: Recipe | None
+            if slide_info and slide_info.image_urls:
+                if slide_info.incomplete_reason:
+                    raise ExtractError(f"Incomplete TikTok carousel: {slide_info.incomplete_reason}")
+
+                def record_slide_attempt() -> None:
+                    nonlocal slide_count
+                    slide_count += 1
+
+                slide_text = ocr_slides(slide_info, on_attempt=record_slide_attempt)
+                update_job(job_id, progress=60)
+                recipe = build_recipe(
+                    platform=platform,
+                    source_url=url,
+                    title=slide_info.title,
+                    description=slide_info.description,
+                    author=slide_info.author,
+                    thumbnail_url=slide_info.image_urls[0],
+                    carousel_image_urls=slide_info.image_urls,
+                    transcript=None,
+                    slide_text=slide_text,
+                    language_code=language_code,
+                    require_complete=True,
+                )
+                if recipe is None:
+                    raise ExtractError(RECIPE_INCOMPLETE_ERROR)
+            else:
+                media = fetch_media_info(url)
+                logger.info(
+                    "extract stage=media job_id=%s platform=%s duration_seconds=%s subtitles=%s",
+                    job_id,
+                    platform.value,
+                    media.duration_seconds,
+                    bool(media.subtitles_text),
+                )
+                update_job(job_id, progress=30)
+                duration_seconds = media.duration_seconds
+                transcript = media.subtitles_text
+                if not transcript and platform == Platform.youtube:
+                    transcript = youtube_transcript(url)
+                video_text = media.extra_text or ""
+
+                def try_build(current_transcript: str | None, current_visual: str | None) -> Recipe | None:
+                    if not any(
+                        text and text.strip()
+                        for text in (
+                            current_transcript,
+                            media.title,
+                            media.description,
+                            current_visual or "",
+                        )
+                    ):
+                        return None
+                    return build_recipe(
+                        platform=platform,
+                        source_url=media.webpage_url,
+                        title=media.title,
+                        description=media.description,
+                        author=media.author,
+                        thumbnail_url=media.thumbnail_url,
+                        transcript=current_transcript,
+                        slide_text=current_visual or None,
+                        language_code=language_code,
+                        require_complete=True,
+                    )
+
+                # Stage 1: description / metadata / captions only.
+                recipe = try_build(transcript, video_text)
+                update_job(job_id, progress=45)
+
+                # Stage 2–3: local STT then OpenAI STT, only if incomplete.
+                if recipe is None:
+                    try:
+                        audio_path = download_audio(media.webpage_url, media.media_id)
+                    except ExtractError as exc:
+                        logger.warning(
+                            "extract stage=audio_fallback job_id=%s error_type=%s",
+                            job_id,
+                            type(exc).__name__,
+                        )
+                        audio_path = None
+
+                    spoken_local: str | None = None
+                    if audio_path is not None:
+                        spoken_local = local_transcript(audio_path)
+                        if spoken_local:
+                            transcript = _merge_evidence(transcript, spoken_local)
+                            recipe = try_build(transcript, video_text)
+                            logger.info(
+                                "extract stage=local_transcribe job_id=%s chars=%d",
+                                job_id,
+                                len(spoken_local),
+                            )
+
+                    if recipe is None and audio_path is not None:
+                        try:
+                            spoken = whisper_transcript(
+                                audio_path,
+                                duration_seconds=float(duration_seconds)
+                                if duration_seconds
+                                else None,
+                            )
+                            transcript = _merge_evidence(transcript, spoken)
+                            recipe = try_build(transcript, video_text)
+                            logger.info(
+                                "extract stage=openai_transcribe job_id=%s chars=%d",
+                                job_id,
+                                len(spoken),
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "extract stage=whisper_fallback job_id=%s platform=%s error_type=%s",
+                                job_id,
+                                platform.value,
+                                type(exc).__name__,
+                            )
+
+                update_job(job_id, progress=60)
+
+                # Stage 4: visual analysis last resort.
+                if recipe is None:
+                    remaining_budget = max(
+                        settings.max_job_cost_cents - meter.cents,
+                        settings.cost_ocr_cents_per_slide,
+                    )
+                    max_frames = max(
+                        1,
+                        min(
+                            int(remaining_budget // max(settings.cost_ocr_cents_per_slide, 0.01)),
+                            48,
+                        ),
+                    )
+                    try:
+                        video_frames = download_video_frames(
+                            media.webpage_url,
+                            media_id=media.media_id,
+                            duration_seconds=duration_seconds,
+                            play_urls=media.play_urls,
+                            max_unique_frames=max_frames,
+                        )
+                        recipe, frame_count, video_text = _vision_incremental_build(
+                            frame_paths=video_frames.paths,
+                            try_build=try_build,
+                            transcript=transcript,
+                            video_text=video_text,
+                            meter=meter,
+                        )
+                    except ExtractError as exc:
+                        logger.warning(
+                            "extract stage=frame_fallback job_id=%s error_type=%s",
+                            job_id,
+                            type(exc).__name__,
+                        )
+
+                if recipe is None:
+                    if not transcript and not any(
+                        text.strip() for text in (media.title, media.description, video_text or "")
+                    ):
+                        raise ExtractError(RECIPE_UNDETERMINED_ERROR)
+                    raise ExtractError(RECIPE_INCOMPLETE_ERROR)
+
+                cover_url = choose_video_cover_url(media)
+                if cover_url:
+                    recipe.thumbnail_url = cover_url
+
+            update_job(job_id, progress=85)
+            cost = round(meter.cents, 4)
+            row = upsert_recipe(recipe, source_url_norm=url_norm, language_code=language_code)
+            recipe_id = UUID(row["id"])
+            logger.info(
+                "extract stage=persisted job_id=%s platform=%s recipe_id=%s slide_count=%d frames=%d cost_cents=%s",
+                job_id,
+                platform.value,
+                recipe_id,
+                slide_count,
+                frame_count,
+                cost,
             )
-        except Exception:
-            pass
-        settle_spend(job_id=job_id, actual_cents=cost, status="settled")
-    except ExtractError as exc:
-        logger.warning(
-            "extract failed job_id=%s error_type=%s",
-            job_id,
-            type(exc).__name__,
-        )
-        _mark_job_failed(job_id, _safe_job_error(exc))
-        settle_spend(
-            job_id=job_id,
-            actual_cents=conservative_failure_cost(openai_called=openai_called, estimated_cents=estimated_cost),
-            status="failed",
-        )
-    except Exception as exc:
-        logger.error(
-            "extract failed job_id=%s error_type=%s",
-            job_id,
-            type(exc).__name__,
-        )
-        _mark_job_failed(job_id, _RETRYABLE_EXTRACTION_ERROR)
-        settle_spend(
-            job_id=job_id,
-            actual_cents=conservative_failure_cost(openai_called=openai_called, estimated_cents=estimated_cost),
-            status="failed",
-        )
-    finally:
-        release_job(user_id)
-        if audio_path:
-            shutil.rmtree(audio_path.parent, ignore_errors=True)
-        if video_frames:
-            shutil.rmtree(video_frames.directory, ignore_errors=True)
-        _drain_next_extract_for_user(user_id)
+            save_user_recipe(user_id, recipe_id)
+            update_job(
+                job_id,
+                status=JobStatus.completed.value,
+                progress=100,
+                lease_until=None,
+                recipe_id=recipe_id,
+                cost_cents=cost,
+                cache_hit=False,
+            )
+            try:
+                record_usage(
+                    user_id=user_id,
+                    kind="extract_miss",
+                    cost_cents=cost,
+                    recipe_id=recipe_id,
+                    job_id=job_id,
+                )
+            except Exception:
+                pass
+            settle_spend(job_id=job_id, actual_cents=cost, status="settled")
+        except ExtractError as exc:
+            logger.warning(
+                "extract failed job_id=%s error_type=%s",
+                job_id,
+                type(exc).__name__,
+            )
+            cost = round(meter.cents, 4) if meter.openai_called else 0.0
+            _mark_job_failed(job_id, _safe_job_error(exc), cost_cents=cost)
+            if meter.openai_called and cost > 0:
+                try:
+                    record_usage(
+                        user_id=user_id,
+                        kind="extract_miss",
+                        cost_cents=cost,
+                        recipe_id=None,
+                        job_id=job_id,
+                    )
+                except Exception:
+                    pass
+            settle_spend(job_id=job_id, actual_cents=cost, status="failed")
+        except Exception as exc:
+            logger.error(
+                "extract failed job_id=%s error_type=%s",
+                job_id,
+                type(exc).__name__,
+            )
+            cost = round(meter.cents, 4) if meter.openai_called else 0.0
+            _mark_job_failed(job_id, _RETRYABLE_EXTRACTION_ERROR, cost_cents=cost)
+            if meter.openai_called and cost > 0:
+                try:
+                    record_usage(
+                        user_id=user_id,
+                        kind="extract_miss",
+                        cost_cents=cost,
+                        recipe_id=None,
+                        job_id=job_id,
+                    )
+                except Exception:
+                    pass
+            settle_spend(job_id=job_id, actual_cents=cost, status="failed")
+        finally:
+            release_job(user_id)
+            if audio_path:
+                shutil.rmtree(audio_path.parent, ignore_errors=True)
+            if video_frames:
+                shutil.rmtree(video_frames.directory, ignore_errors=True)
+            _drain_next_extract_for_user(user_id)
+
+
+def _vision_incremental_build(
+    *,
+    frame_paths: list[Path],
+    try_build,
+    transcript: str | None,
+    video_text: str,
+    meter: JobCostMeter,
+) -> tuple[Recipe | None, int, str]:
+    """Analyze spread frames first, then chronological leftovers until complete."""
+    if not frame_paths:
+        return None, 0, video_text
+
+    analyzed = 0
+    notes: list[str] = []
+    remaining_budget = max(settings.max_job_cost_cents - meter.cents, 0.0)
+    max_affordable = max(
+        1,
+        int(remaining_budget // max(settings.cost_ocr_cents_per_slide, 0.01)),
+    )
+    paths = frame_paths[:max_affordable]
+    first_indexes = select_spread_frame_indexes(len(paths), min(_FIRST_VISION_PASS, len(paths)))
+    first_paths = [paths[i] for i in first_indexes]
+    analyzed_set = set(first_indexes)
+
+    def run_batch(batch: list[Path]) -> None:
+        nonlocal analyzed, video_text
+        if not batch:
+            return
+        if meter.cents + len(batch) * settings.cost_ocr_cents_per_slide > settings.max_job_cost_cents:
+            return
+
+        def on_attempt() -> None:
+            nonlocal analyzed
+            analyzed += 1
+
+        chunk = ocr_video_frames(batch, on_attempt=on_attempt)
+        if chunk:
+            notes.append(chunk)
+            video_text = _merge_evidence(video_text, chunk) or ""
+
+    run_batch(first_paths)
+    recipe = try_build(transcript, video_text or None)
+    if recipe is not None:
+        return recipe, analyzed, video_text
+
+    leftover = [paths[i] for i in range(len(paths)) if i not in analyzed_set]
+    for start in range(0, len(leftover), _VISION_BATCH):
+        batch = leftover[start : start + _VISION_BATCH]
+        run_batch(batch)
+        recipe = try_build(transcript, video_text or None)
+        if recipe is not None:
+            return recipe, analyzed, video_text
+    return None, analyzed, video_text
+
+
+def _merge_evidence(*parts: str | None) -> str | None:
+    cleaned = [part.strip() for part in parts if part and part.strip()]
+    if not cleaned:
+        return None
+    # Prefer later evidence last so the model sees newest additions.
+    merged: list[str] = []
+    seen: set[str] = set()
+    for part in cleaned:
+        key = part.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(part)
+    return "\n\n".join(merged)
 
 
 def _drain_next_extract_for_user(user_id: UUID) -> None:
@@ -319,13 +502,7 @@ def _run_claimed_pending(row: dict, user_id: UUID) -> None:
         )
 
 
-def _has_sufficient_recipe_evidence(*parts: str | None) -> bool:
-    """Use frames when all available transcript/caption evidence is too sparse."""
-    words = " ".join(part.strip() for part in parts if part and part.strip()).split()
-    return len(words) >= 80
-
-
-def _mark_job_failed(job_id: UUID, error: str) -> None:
+def _mark_job_failed(job_id: UUID, error: str, *, cost_cents: float = 0.0) -> None:
     try:
         update_job(
             job_id,
@@ -333,6 +510,7 @@ def _mark_job_failed(job_id: UUID, error: str) -> None:
             progress=0,
             lease_until=None,
             error=error[:1000],
+            cost_cents=cost_cents,
         )
     except Exception:
         # Preserve original extraction failure; the job may be recovered by TTL.
@@ -346,78 +524,70 @@ def run_translation_job(job_id: UUID, user_id: UUID, recipe_id: UUID, language_c
         release_job(user_id)
         return
     language_code = normalize_language(language_code)
-    openai_called = False
-    estimated_cost = 0.0
-    try:
-        update_job(job_id, status=JobStatus.processing.value, progress=10)
-        row = get_recipe(recipe_id)
-        if not row:
-            raise ExtractError("Recipe not found for translation")
-        base_recipe = recipe_from_row(row)
-        source_fingerprint = source_recipe_fingerprint(row)
-        if normalize_language(row.get("language_code")) == language_code:
-            payload = recipe_translation_payload(base_recipe)
-        else:
-            openai_called = True
-            translated = translate_recipe(base_recipe, language_code)
-            payload = recipe_translation_payload(translated)
-        estimated_cost = estimate_miss_cost_cents()
-        update_job(job_id, progress=75)
-        upsert_recipe_translation(
-            recipe_id,
-            language_code,
-            payload,
-            source_fingerprint=source_fingerprint,
-        )
-        save_user_recipe(user_id, recipe_id)
-        update_job(
-            job_id,
-            status=JobStatus.completed.value,
-            progress=100,
-            lease_until=None,
-            recipe_id=recipe_id,
-            cost_cents=estimated_cost if openai_called else 0,
-            cache_hit=not openai_called,
-        )
-        if openai_called:
-            try:
-                record_usage(
-                    user_id=user_id,
-                    kind="extract_miss",
-                    cost_cents=estimated_cost,
-                    recipe_id=recipe_id,
-                    job_id=job_id,
-                )
-            except Exception:
-                pass
-        settle_spend(
-            job_id=job_id,
-            actual_cents=estimated_cost if openai_called else 0,
-            status="settled",
-        )
-    except ExtractError as exc:
-        logger.warning(
-            "translation failed job_id=%s error_type=%s",
-            job_id,
-            type(exc).__name__,
-        )
-        _mark_job_failed(job_id, _safe_job_error(exc))
-        settle_spend(
-            job_id=job_id,
-            actual_cents=conservative_failure_cost(openai_called=openai_called, estimated_cents=estimated_cost),
-            status="failed",
-        )
-    except Exception as exc:
-        logger.error(
-            "translation failed job_id=%s error_type=%s",
-            job_id,
-            type(exc).__name__,
-        )
-        _mark_job_failed(job_id, _RETRYABLE_EXTRACTION_ERROR)
-        settle_spend(
-            job_id=job_id,
-            actual_cents=conservative_failure_cost(openai_called=openai_called, estimated_cents=estimated_cost),
-            status="failed",
-        )
-    finally:
-        release_job(user_id)
+    with cost_meter_scope() as meter:
+        try:
+            update_job(job_id, status=JobStatus.processing.value, progress=10)
+            row = get_recipe(recipe_id)
+            if not row:
+                raise ExtractError("Recipe not found for translation")
+            base_recipe = recipe_from_row(row)
+            source_fingerprint = source_recipe_fingerprint(row)
+            if normalize_language(row.get("language_code")) == language_code:
+                payload = recipe_translation_payload(base_recipe)
+            else:
+                translated = translate_recipe(base_recipe, language_code)
+                payload = recipe_translation_payload(translated)
+            cost = round(meter.cents, 4)
+            update_job(job_id, progress=75)
+            upsert_recipe_translation(
+                recipe_id,
+                language_code,
+                payload,
+                source_fingerprint=source_fingerprint,
+            )
+            save_user_recipe(user_id, recipe_id)
+            update_job(
+                job_id,
+                status=JobStatus.completed.value,
+                progress=100,
+                lease_until=None,
+                recipe_id=recipe_id,
+                cost_cents=cost if meter.openai_called else 0,
+                cache_hit=not meter.openai_called,
+            )
+            if meter.openai_called:
+                try:
+                    record_usage(
+                        user_id=user_id,
+                        kind="extract_miss",
+                        cost_cents=cost,
+                        recipe_id=recipe_id,
+                        job_id=job_id,
+                    )
+                except Exception:
+                    pass
+            settle_spend(
+                job_id=job_id,
+                actual_cents=cost if meter.openai_called else 0,
+                status="settled",
+            )
+        except ExtractError as exc:
+            logger.warning(
+                "translation failed job_id=%s error_type=%s",
+                job_id,
+                type(exc).__name__,
+            )
+            cost = round(meter.cents, 4) if meter.openai_called else 0.0
+            _mark_job_failed(job_id, _safe_job_error(exc), cost_cents=cost)
+            settle_spend(job_id=job_id, actual_cents=cost, status="failed")
+        except Exception as exc:
+            logger.error(
+                "translation failed job_id=%s error_type=%s",
+                job_id,
+                type(exc).__name__,
+            )
+            cost = round(meter.cents, 4) if meter.openai_called else 0.0
+            _mark_job_failed(job_id, _RETRYABLE_EXTRACTION_ERROR, cost_cents=cost)
+            settle_spend(job_id=job_id, actual_cents=cost, status="failed")
+        finally:
+            release_job(user_id)

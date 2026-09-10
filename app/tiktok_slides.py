@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 
 from app.extract import ExtractError
-from app.security import safe_urlopen, validate_public_url
+from app.security import safe_urlopen_limited, validate_public_url
 
 UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -190,10 +190,7 @@ def _fetch_html(url: str, *, user_agent: str = UA) -> str | None:
     for _ in range(2):
         req = urllib.request.Request(url, headers={"User-Agent": user_agent})
         try:
-            with safe_urlopen(req, timeout=25) as response:
-                raw = response.read(5_000_001)
-            if len(raw) > 5_000_000:
-                return None
+            raw = safe_urlopen_limited(req, timeout=25, max_bytes=5_000_000)
             return raw.decode("utf-8", "replace")
         except Exception:
             continue
@@ -361,11 +358,13 @@ def download_image_b64(url: str) -> str | None:
             headers={"User-Agent": UA, "Referer": "https://www.tiktok.com/"},
         )
         try:
-            with safe_urlopen(req, timeout=30) as response:
-                content = response.read(10_000_001)
-            if len(content) > 10_000_000:
-                raise ExtractError("Slide image is too large")
+            content = safe_urlopen_limited(req, timeout=30, max_bytes=10_000_000)
             break
+        except ValueError as exc:
+            if "size bound" in str(exc):
+                raise ExtractError("Slide image is too large") from exc
+            last_error = exc
+            content = None
         except ExtractError:
             raise
         except Exception as exc:

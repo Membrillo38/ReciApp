@@ -4,7 +4,7 @@ import hashlib
 import json
 from uuid import UUID
 
-from app.db import get_supabase
+from app.db import execute_returning, fetch_all, fetch_one
 from app.localization import ingredient_section_name, normalize_language
 from app.models import Recipe
 
@@ -16,19 +16,16 @@ def get_recipe_translation(
     source_fingerprint: str | None = None,
 ) -> dict | None:
     code = normalize_language(language_code)
-    result = (
-        get_supabase()
-        .table("recipe_translations")
-        .select("*")
-        .eq("recipe_id", str(recipe_id))
-        .eq("language_code", code)
-        .limit(1)
-        .execute()
+    row = fetch_one(
+        """
+        select * from recipe_translations
+         where recipe_id = %s and language_code = %s
+         limit 1
+        """,
+        (recipe_id, code),
     )
-    rows = result.data or []
-    if not rows:
+    if not row:
         return None
-    row = rows[0]
     if source_fingerprint and row.get("source_fingerprint") != source_fingerprint:
         return None
     return row
@@ -38,15 +35,15 @@ def get_recipe_translations(recipe_ids: list[UUID], language_code: str) -> dict[
     if not recipe_ids:
         return {}
     code = normalize_language(language_code)
-    result = (
-        get_supabase()
-        .table("recipe_translations")
-        .select("recipe_id,payload,source_fingerprint")
-        .in_("recipe_id", [str(recipe_id) for recipe_id in recipe_ids])
-        .eq("language_code", code)
-        .execute()
+    rows = fetch_all(
+        """
+        select recipe_id, payload, source_fingerprint
+          from recipe_translations
+         where recipe_id = any(%s) and language_code = %s
+        """,
+        (recipe_ids, code),
     )
-    return {str(row["recipe_id"]): row for row in (result.data or []) if row.get("recipe_id")}
+    return {str(row["recipe_id"]): row for row in rows if row.get("recipe_id")}
 
 
 def upsert_recipe_translation(
@@ -63,8 +60,17 @@ def upsert_recipe_translation(
         "payload": payload,
         "source_fingerprint": source_fingerprint or translation_fingerprint(payload),
     }
-    result = get_supabase().table("recipe_translations").upsert(data).execute()
-    return result.data[0]
+    return execute_returning(
+        """
+        insert into recipe_translations (recipe_id, language_code, payload, source_fingerprint)
+        values (%s, %s, %s, %s)
+        on conflict (recipe_id, language_code) do update
+           set payload = excluded.payload,
+               source_fingerprint = excluded.source_fingerprint
+        returning *
+        """,
+        (data["recipe_id"], data["language_code"], data["payload"], data["source_fingerprint"]),
+    ) or data
 
 
 def translation_fingerprint(payload: dict) -> str:

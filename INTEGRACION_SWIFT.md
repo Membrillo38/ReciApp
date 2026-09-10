@@ -1,50 +1,37 @@
 # Integración de ReciApp en Swift
 
-Esta guía describe el contrato del servidor y cómo conectarlo a una app SwiftUI. El cliente de referencia completo está en [`docs/swift/ReciAppAPI.swift`](docs/swift/ReciAppAPI.swift). Se ha comprobado con el compilador en modo Swift 6; requiere iOS 16 o posterior. No depende del SDK de Supabase: recibe una función que obtiene o renueva el token.
+Esta guía describe el contrato del servidor y cómo conectarlo a una app SwiftUI. El cliente de referencia completo está en [`docs/swift/ReciAppAPI.swift`](docs/swift/ReciAppAPI.swift). Se ha comprobado con el compilador en modo Swift 6; requiere iOS 16 o posterior. La app usa JWT propios del backend: recibe una función que obtiene o renueva el token.
 
 ## 1. Configuración
 
 - API: `https://reciapp-4ih5.onrender.com`
-- Supabase: `https://nzimdcjxgklopythnpfi.supabase.co`
-- Autenticación de la API: `Authorization: Bearer <accessToken de Supabase>`.
-- Clave pública de Supabase: usa la publishable key o anon key del proyecto desde su Dashboard. No uses esa clave como Bearer de la API: el Bearer debe pertenecer a la sesión del usuario.
+- Autenticación de la API: `Authorization: Bearer <access_token del backend>`.
 - Nunca incluyas `service_role`, `API_KEY` administrativa, OpenAI ni secretos de webhooks en la app.
 
-Añade `https://github.com/supabase/supabase-swift` mediante Swift Package Manager y conserva `Package.resolved`. En la app existente, adapta `Services/AuthService.swift` y `Services/APIClient.swift`; no añadas modelos con nombres duplicados. La app iOS vive en `IosAPP/`, que este repositorio Git ignora.
+En la app existente, adapta `Services/AuthService.swift` y `Services/APIClient.swift`; no añadas modelos con nombres duplicados. La app iOS vive en `IosAPP/`, que este repositorio Git ignora.
 
 ## 2. Autenticación y cliente
 
-Crea una única instancia de `SupabaseClient` para la sesión de la app. Inicializa el cliente de referencia así:
+Crea una única sesión local con `access_token`, `refresh_token`, expiración y usuario. Guarda tokens en Keychain. Inicializa el cliente de referencia así:
 
 ```swift
-import Supabase
-
-let supabase = SupabaseClient(
-    supabaseURL: URL(string: "https://nzimdcjxgklopythnpfi.supabase.co")!,
-    supabaseKey: "TU_CLAVE_PUBLICA_SUPABASE"
-)
 let api = ReciAppAPI { refresh in
     if refresh {
-        return try await supabase.auth.refreshSession().accessToken
+        return try await authService.bearerToken(refresh: true)
     }
-    return try await supabase.auth.session.accessToken
+    return try await authService.bearerToken(refresh: false)
 }
 ```
 
-Para Sign in with Apple, activa la capability y configura Apple como proveedor en Supabase. Genera un nonce aleatorio para cada intento; envía su SHA-256 a Apple y el nonce original a Supabase junto al ID token. No reutilices un nonce ni uses el authorization code como ID token.
+Para Sign in with Apple, activa la capability. Genera un nonce aleatorio para cada intento; envía su SHA-256 a Apple y el nonce original al backend junto al ID token. No reutilices un nonce ni uses el authorization code como ID token.
 
 ```swift
 // appleIDToken y rawNonce proceden del flujo Apple completado.
-let session = try await supabase.auth.signInWithIdToken(
-    credentials: OpenIDConnectCredentials(
-        provider: .apple,
-        idToken: appleIDToken,
-        nonce: rawNonce
-    )
-)
+let body = ["identity_token": appleIDToken, "nonce": rawNonce, "full_name": fullName]
+// Envía body a POST /v1/auth/apple y guarda la sesión devuelta en Keychain.
 ```
 
-Consulta la [API oficial de autenticación nativa de Supabase Swift](https://supabase.com/docs/reference/swift/auth-signinwithidtoken). Escucha los cambios de sesión; al salir, cancela tareas de red y limpia cachés y jobs locales de ese usuario. No registres tokens, contraseñas ni cuerpos de respuestas privadas.
+`POST /v1/auth/apple` devuelve `access_token`, `refresh_token`, `token_type`, `expires_in` y `user`. Renueva con `POST /v1/auth/refresh`; cierra con `POST /v1/auth/logout` de forma best-effort y borra Keychain siempre. No registres tokens, contraseñas ni cuerpos de respuestas privadas.
 
 El cliente renueva sesión y repite una sola vez ante HTTP 401. No repite automáticamente escrituras ante timeout o HTTP 5xx, porque podrían haberse ejecutado. La sesión predeterminada del cliente rechaza redirecciones para no reenviar credenciales fuera del endpoint esperado. Si inyectas otra URLSession, conserva esta protección.
 
@@ -113,7 +100,7 @@ La propiedad JSON `detail` puede ser texto, un objeto con `code` y `message`, o 
 
 En la implementación actual, un cache hit ya localizado no consulta cuota ni llama OpenAI, aunque registra `extract_hit`. Las nuevas extracciones y traducciones sí aplican cuota y reserva de gasto. `free_remaining` puede ser cero y aun así una receta ya cacheada estar disponible. No bloquees todas las importaciones desde la UI basándote solo en ese campo.
 
-Para Superwall, configura la clave pública del proyecto, identifica al usuario con su UUID de Supabase y asigna el atributo `supabase_user_id` con el mismo UUID. Tras compra o restauración, refresca `/v1/me` con espera acotada: el webhook puede llegar después que el callback de StoreKit. El servidor es quien confirma `is_pro`; no lo sobrescribas desde el cliente. La integración de pago real requiere probar compra sandbox y webhook firmado.
+Para Superwall, configura la clave pública del proyecto, identifica al usuario con su UUID del backend y asigna el atributo `user_id` con el mismo UUID. Tras compra o restauración, refresca `/v1/me` con espera acotada: el webhook puede llegar después que el callback de StoreKit. El servidor es quien confirma `is_pro`; no lo sobrescribas desde el cliente. La integración de pago real requiere probar compra sandbox y webhook firmado.
 
 ## 6. Share Extension y eliminación
 

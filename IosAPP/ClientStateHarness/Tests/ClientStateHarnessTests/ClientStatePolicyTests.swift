@@ -80,6 +80,18 @@ final class LockedRecorder: @unchecked Sendable {
     #expect(!FolderHierarchyPolicy.containsDuplicate("Dinner", folders: ["Dinner"], excluding: "Dinner"))
 }
 
+@Test func recipeDragPayloadCombinesEveryNativeDragItem() {
+    let first = UUID()
+    let second = UUID()
+
+    #expect(
+        RecipeDragPayloadPolicy.recipeIDs(
+            from: [first.uuidString, "invalid", second.uuidString, first.uuidString]
+        ) == Set([first, second])
+    )
+    #expect(RecipeDragPayloadPolicy.recipeIDs(from: []).isEmpty)
+}
+
 @Test func folderHierarchyPromotesChildrenWhenParentIsDeleted() {
     let parents = ["Dinner": "Plans", "Plans": "Archive", "Dessert": "Plans"]
     let promoted = FolderHierarchyPolicy.promotingChildren(of: "Plans", parents: parents)

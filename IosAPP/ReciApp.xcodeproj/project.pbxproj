@@ -20,7 +20,6 @@
 		B1000000000000000000000C /* ProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000C /* ProfileView.swift */; };
 		B1000000000000000000000D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000D /* Assets.xcassets */; };
 		B10000000000000000000018 /* ICON.icon in Resources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000018 /* ICON.icon */; };
-		B1000000000000000000000E /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = P100000000000000000000001 /* Supabase */; };
 		B1000000000000000000000F /* URLNormalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000010 /* URLNormalizer.swift */; };
 		B10000000000000000000010 /* UserPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000012 /* UserPreferences.swift */; };
 		B10000000000000000000011 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000013 /* OnboardingView.swift */; };
@@ -29,6 +28,10 @@
 		B10000000000000000000016 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000016 /* Localizable.xcstrings */; };
 		B10000000000000000000017 /* RecipeCarouselView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000017 /* RecipeCarouselView.swift */; };
 		B1000000000000000000001A /* SplashView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000001A /* SplashView.swift */; };
+		B1000000000000000000001B /* MeasurementConversion.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000001B /* MeasurementConversion.swift */; };
+		B1000000000000000000001C /* ShoppingListStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000001C /* ShoppingListStore.swift */; };
+		B1000000000000000000001D /* RestStepClassifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000001D /* RestStepClassifier.swift */; };
+		B1000000000000000000001E /* ShoppingListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000001E /* ShoppingListView.swift */; };
 		B20000000000000000000001 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000001 /* ShareViewController.swift */; };
 		B20000000000000000000002 /* URLNormalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000010 /* URLNormalizer.swift */; };
 		B20000000000000000000003 /* ReciAppShare.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = F20000000000000000000003 /* ReciAppShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -91,6 +94,10 @@
 		F10000000000000000000016 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
 		F10000000000000000000017 /* RecipeCarouselView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecipeCarouselView.swift; sourceTree = "<group>"; };
 		F1000000000000000000001A /* SplashView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SplashView.swift; sourceTree = "<group>"; };
+		F1000000000000000000001B /* MeasurementConversion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeasurementConversion.swift; sourceTree = "<group>"; };
+		F1000000000000000000001C /* ShoppingListStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShoppingListStore.swift; sourceTree = "<group>"; };
+		F1000000000000000000001D /* RestStepClassifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RestStepClassifier.swift; sourceTree = "<group>"; };
+		F1000000000000000000001E /* ShoppingListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShoppingListView.swift; sourceTree = "<group>"; };
 		F20000000000000000000001 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
 		F20000000000000000000002 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		F20000000000000000000003 /* ReciAppShare.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ReciAppShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -104,7 +111,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				B1000000000000000000000E /* Supabase in Frameworks */,
 				B30000000000000000000001 /* SuperwallKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -182,6 +188,9 @@
 				F10000000000000000000010 /* URLNormalizer.swift */,
 				F40000000000000000000001 /* ClientStatePolicy.swift */,
 				F10000000000000000000019 /* ShareInbox.swift */,
+				F1000000000000000000001B /* MeasurementConversion.swift */,
+				F1000000000000000000001C /* ShoppingListStore.swift */,
+				F1000000000000000000001D /* RestStepClassifier.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -205,6 +214,7 @@
 				F10000000000000000000013 /* OnboardingView.swift */,
 				F10000000000000000000017 /* RecipeCarouselView.swift */,
 				F1000000000000000000001A /* SplashView.swift */,
+				F1000000000000000000001E /* ShoppingListView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -238,7 +248,6 @@
 			);
 			name = ReciApp;
 			packageProductDependencies = (
-				P100000000000000000000001 /* Supabase */,
 				P300000000000000000000002 /* SuperwallKit */,
 			);
 			productName = ReciApp;
@@ -296,7 +305,6 @@
 			);
 			mainGroup = G10000000000000000000006;
 			packageReferences = (
-				R1000000000000000000000F0 /* XCRemoteSwiftPackageReference "supabase-swift" */,
 				R1000000000000000000000F1 /* XCRemoteSwiftPackageReference "Superwall-iOS" */,
 			);
 			productRefGroup = G10000000000000000000007 /* Products */;
@@ -355,6 +363,10 @@
 				B10000000000000000000015 /* Localization.swift in Sources */,
 				B10000000000000000000017 /* RecipeCarouselView.swift in Sources */,
 				B1000000000000000000001A /* SplashView.swift in Sources */,
+				B1000000000000000000001B /* MeasurementConversion.swift in Sources */,
+				B1000000000000000000001C /* ShoppingListStore.swift in Sources */,
+				B1000000000000000000001D /* RestStepClassifier.swift in Sources */,
+				B1000000000000000000001E /* ShoppingListView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -544,14 +556,6 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		R1000000000000000000000F0 /* XCRemoteSwiftPackageReference "supabase-swift" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/supabase/supabase-swift";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.0.0;
-			};
-		};
 		R1000000000000000000000F1 /* XCRemoteSwiftPackageReference "Superwall-iOS" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/superwall/Superwall-iOS";
@@ -563,11 +567,6 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		P100000000000000000000001 /* Supabase */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = R1000000000000000000000F0 /* XCRemoteSwiftPackageReference "supabase-swift" */;
-			productName = Supabase;
-		};
 		P300000000000000000000002 /* SuperwallKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = R1000000000000000000000F1 /* XCRemoteSwiftPackageReference "Superwall-iOS" */;

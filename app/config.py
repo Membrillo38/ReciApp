@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import base64
-import json
-import re
 from urllib.parse import urlsplit
 
 from pydantic import Field
@@ -15,15 +12,16 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     api_key: str = ""
 
-    supabase_url: str = ""
-    supabase_service_role_key: str = Field(default="", repr=False)
-    supabase_expected_host: str = ""
-    supabase_timeout_seconds: float = Field(default=10.0, ge=0.1, le=30)
+    database_url: str = Field(default="", repr=False)
+    auth_jwt_secret: str = Field(default="", repr=False)
+    auth_jwt_issuer: str = "reciapp-api"
+    auth_jwt_audience: str = "reciapp-ios"
+    auth_access_token_ttl_seconds: int = 3600
+    auth_refresh_token_ttl_seconds: int = 60 * 60 * 24 * 60
+    cover_public_base_url: str = ""
     readiness_timeout_seconds: float = Field(default=3.0, ge=0.1, le=10)
     maintenance_mode: bool = False
     environment: str = "production"
-    supabase_allow_local: bool = False
-    supabase_jwt_secret: str = ""
 
     max_duration_seconds: int = 600
     transcribe_model: str = "gpt-4o-mini-transcribe"
@@ -34,6 +32,15 @@ class Settings(BaseSettings):
     cost_transcribe_cents_per_min: float = 0.3
     cost_text_cents_per_extract: float = 0.1
     cost_ocr_cents_per_slide: float = 0.25
+    # List prices used for real dashboard cost (USD per 1M tokens / per minute).
+    openai_chat_input_usd_per_mtok: float = 0.15
+    openai_chat_output_usd_per_mtok: float = 0.60
+    openai_chat_cached_input_usd_per_mtok: float = 0.075
+    openai_transcribe_input_usd_per_mtok: float = 1.25
+    openai_transcribe_output_usd_per_mtok: float = 5.0
+    openai_transcribe_usd_per_min: float = 0.003
+    local_whisper_model: str = "tiny"
+    local_whisper_timeout_seconds: float = 120.0
 
     superwall_webhook_secret: str = ""
     superwall_application_id: int = 54783
@@ -65,46 +72,22 @@ class Settings(BaseSettings):
     apple_root_ca_pem: str = ""
     apple_bundle_id: str = "com.membri.reciapp"
     apple_environment: str = "Production"
-    rate_limit_per_ip_per_minute: int = 60
-    rate_limit_per_user_per_minute: int = 30
+    trusted_proxy_ips: str = ""
+    rate_limit_per_ip_per_minute: int = 180
+    rate_limit_per_user_per_minute: int = 120
+    rate_limit_extract_per_ip_per_minute: int = 15
+    rate_limit_extract_per_user_per_minute: int = 10
+    rate_limit_extract_daily_per_user: int = 100
 
-    def validate_supabase(self) -> None:
-        """Validate configuration only; JWT claims here are not authentication."""
+    def validate_database(self) -> None:
+        """Validate DATABASE_URL shape without logging credentials."""
         try:
-            raw = self.supabase_url
+            raw = self.database_url
             parsed = urlsplit(raw)
-            host = parsed.hostname or ""
-            local = host in {"localhost", "127.0.0.1", "::1"}
-            allowed_local = local and self.supabase_allow_local and self.environment == "development"
-            if (
-                not raw or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in raw)
-                or parsed.username is not None or parsed.password is not None
-                or parsed.query or parsed.fragment or "?" in raw or "#" in raw
-                or parsed.path not in {"", "/"}
-                or not host or host != self.supabase_expected_host
-                or (local and not allowed_local)
-                or (parsed.scheme != "https" and not (allowed_local and parsed.scheme == "http"))
-                or (not allowed_local and parsed.port not in {None, 443})
-                or (not local and not re.fullmatch(r"[a-z0-9]+(?:[.-][a-z0-9]+)*", host))
-            ):
+            if not raw or parsed.scheme != "postgresql" or not parsed.hostname:
                 raise ValueError()
         except (ValueError, TypeError):
-            raise RuntimeError("Invalid Supabase URL or expected host configuration") from None
-        key = self.supabase_service_role_key
-        if not key or any(c.isspace() for c in key):
-            raise RuntimeError("Supabase service key is required and must not contain whitespace")
-        if re.fullmatch(r"sb_secret_[A-Za-z0-9_-]+", key):
-            return
-        try:
-            header, payload, signature = key.split(".")
-            if not header or not signature:
-                raise ValueError()
-            claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
-            expected_ref = "local" if allowed_local else host.split(".")[0]
-            if claims.get("role") != "service_role" or claims.get("ref") != expected_ref:
-                raise ValueError()
-        except Exception:
-            raise RuntimeError("Invalid Supabase service key role or project reference") from None
+            raise RuntimeError("DATABASE_URL is required and must start with postgresql://") from None
 
     @property
     def cors_origin_list(self) -> list[str]:

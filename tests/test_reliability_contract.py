@@ -10,7 +10,6 @@ from starlette.requests import Request
 
 import app.main as main
 from app.auth import AuthUser
-from app.db import create_service_client
 from app.main import _job_is_stale
 from app.models import JobStatus
 from app.store import recipe_public_from_row
@@ -97,6 +96,7 @@ def test_legacy_recipe_keeps_thumbnail_as_separate_fallback():
     assert recipe.thumbnail_url == "https://cdn.example/cover.jpg"
 
 
+@pytest.mark.skip(reason="Legacy Supabase SDK contract; backend now uses psycopg/Postgres.")
 def test_supabase_auth_and_postgrest_preserve_sdk_request_configuration(monkeypatch):
     monkeypatch.setattr(main.settings, "supabase_url", "https://example.supabase.co")
     monkeypatch.setattr(main.settings, "supabase_expected_host", "example.supabase.co")
@@ -105,7 +105,7 @@ def test_supabase_auth_and_postgrest_preserve_sdk_request_configuration(monkeypa
     def record(request):
         seen.append(request)
         return httpx.Response(200, json=[])
-    client, owner = create_service_client(transport=httpx.MockTransport(record))
+    client, owner = None, None
     try:
         client.table("profiles").select("id").execute()
     finally:
@@ -130,17 +130,17 @@ def test_upstream_disconnect_is_a_retryable_503():
         }
     )
     reset_calls = 0
-    original_reset = main.reset_supabase
+    original_reset = main.reset_db
 
     def record_reset():
         nonlocal reset_calls
         reset_calls += 1
 
-    main.reset_supabase = record_reset
+    main.reset_db = record_reset
     try:
         response = asyncio.run(main.upstream_request_error(request, httpx.RequestError("disconnect")))
     finally:
-        main.reset_supabase = original_reset
+        main.reset_db = original_reset
 
     assert reset_calls == 0
     assert response.status_code == 503
@@ -283,10 +283,11 @@ def test_translation_jobs_have_language_scoped_concurrency_index():
     assert "job_kind = 'translation'" in migration
 
 
-def test_recipe_write_has_schema_cache_compatibility_for_carousel_rollout():
+def test_recipe_write_uses_postgres_unique_conflict_and_jsonb_columns():
     source = Path("app/store.py").read_text(encoding="utf-8")
-    assert "PostgREST's recipes schema cache" in source
-    assert 'legacy_payload.pop("carousel_image_urls", None)' in source
+    assert "UniqueViolation" in source
+    assert '"carousel_image_urls"' in source
+    assert "Jsonb(payload[column])" in source
 
 
 def test_carousel_migration_enforces_server_side_bound():

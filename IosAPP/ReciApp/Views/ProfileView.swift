@@ -13,8 +13,6 @@ struct ProfileView: View {
     @State private var isRestoringPurchases = false
     @AppStorage(AppLanguageStore.storageKey) private var languageRawValue = AppLanguage.system.rawValue
     @AppStorage(ReciHaptics.enabledDefaultsKey) private var hapticsEnabled = true
-    @AppStorage("reciapp.folderSort.v1") private var folderSortRawValue = FolderSort.created.rawValue
-    @AppStorage("reciapp.folderColumns.v1") private var folderColumns = 2
 
     private var preferenceUserID: String? {
         auth.session?.user.id.uuidString
@@ -303,6 +301,24 @@ struct ProfileView: View {
                 subtitle: "Home layout and organization."
             )
 
+            SettingsSegmentedRow(
+                icon: "folder",
+                title: "Folder layout",
+                subtitle: "Choose grid or list independently.",
+                options: CollectionLayout.allCases,
+                selection: folderLayoutBinding,
+                label: { $0.title }
+            )
+
+            SettingsSegmentedRow(
+                icon: "fork.knife",
+                title: "Recipe layout",
+                subtitle: "Choose grid or list independently.",
+                options: CollectionLayout.allCases,
+                selection: recipeLayoutBinding,
+                label: { $0.title }
+            )
+
             SettingsMenuRow(
                 icon: "arrow.up.arrow.down",
                 title: "Folder order",
@@ -321,7 +337,8 @@ struct ProfileView: View {
                 label: { "\($0)" }
             )
 
-            if currentFolderSort != .created || folderColumns != 2 {
+            if currentFolderSort != .created || app.folderColumns != 2
+                || currentFolderLayout != .grid || currentRecipeLayout != .grid {
                 Button {
                     resetFolderLayout()
                 } label: {
@@ -387,7 +404,15 @@ struct ProfileView: View {
     }
 
     private var currentFolderSort: FolderSort {
-        FolderSort(rawValue: folderSortRawValue) ?? .created
+        FolderSort(rawValue: app.folderSortRawValue) ?? .created
+    }
+
+    private var currentFolderLayout: CollectionLayout {
+        CollectionLayout(rawValue: app.folderLayoutRawValue) ?? .grid
+    }
+
+    private var currentRecipeLayout: CollectionLayout {
+        CollectionLayout(rawValue: app.recipeLayoutRawValue) ?? .grid
     }
 
     private var appVersion: String {
@@ -440,7 +465,7 @@ struct ProfileView: View {
             get: { currentFolderSort },
             set: { newValue in
                 guard currentFolderSort != newValue else { return }
-                folderSortRawValue = newValue.rawValue
+                app.updateFolderDisplayPreferences(sort: newValue)
                 ReciHaptics.selection()
             }
         )
@@ -448,10 +473,32 @@ struct ProfileView: View {
 
     private var folderColumnsBinding: Binding<Int> {
         Binding(
-            get: { folderColumns },
+            get: { app.folderColumns },
             set: { newValue in
-                guard folderColumns != newValue else { return }
-                folderColumns = newValue
+                guard app.folderColumns != newValue else { return }
+                app.updateFolderDisplayPreferences(columns: newValue)
+                ReciHaptics.selection()
+            }
+        )
+    }
+
+    private var folderLayoutBinding: Binding<CollectionLayout> {
+        Binding(
+            get: { currentFolderLayout },
+            set: { newValue in
+                guard currentFolderLayout != newValue else { return }
+                app.updateFolderDisplayPreferences(folderLayout: newValue)
+                ReciHaptics.selection()
+            }
+        )
+    }
+
+    private var recipeLayoutBinding: Binding<CollectionLayout> {
+        Binding(
+            get: { currentRecipeLayout },
+            set: { newValue in
+                guard currentRecipeLayout != newValue else { return }
+                app.updateFolderDisplayPreferences(recipeLayout: newValue)
                 ReciHaptics.selection()
             }
         )
@@ -469,11 +516,11 @@ struct ProfileView: View {
     }
 
     private func resetFolderLayout() {
-        guard currentFolderSort != .created || folderColumns != 2 else { return }
+        guard currentFolderSort != .created || app.folderColumns != 2
+            || currentFolderLayout != .grid || currentRecipeLayout != .grid else { return }
         ReciHaptics.lightImpact()
         withAnimation(.easeInOut(duration: 0.2)) {
-            folderSortRawValue = FolderSort.created.rawValue
-            folderColumns = 2
+            app.resetFolderDisplayPreferences()
         }
     }
 

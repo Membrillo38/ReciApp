@@ -203,6 +203,8 @@ private struct RecipeLoadErrorView: View {
 
 struct RecipeDetailView: View {
     @EnvironmentObject private var app: AppViewModel
+    @EnvironmentObject private var auth: AuthService
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let recipe: RecipePublic
     @State private var showNewCategory = false
     @State private var showIngredientEditor = false
@@ -211,6 +213,13 @@ struct RecipeDetailView: View {
     @State private var newCategoryName = ""
     @State private var adjustedIngredientSections: [IngredientSection]?
     @State private var isDescriptionExpanded = false
+    @State private var preferences = UserPreferences()
+    @State private var sourceVisible = false
+    @State private var shoppingToast = false
+
+    private var preferenceUserID: String? {
+        auth.session?.user.id.uuidString
+    }
 
     private var folderTint: Color {
         Color(hex: app.colorHex(for: app.category(for: recipe.id)))
@@ -221,14 +230,33 @@ struct RecipeDetailView: View {
     }
 
     private var displayedIngredientSections: [IngredientSection] {
+        let base: [IngredientSection]
         if let adjustedIngredientSections {
-            return adjustedIngredientSections.filter { !$0.ingredients.isEmpty }
+            base = adjustedIngredientSections.filter { !$0.ingredients.isEmpty }
+        } else {
+            base = MeasurementConversion.convertSections(
+                sourceIngredientSections,
+                measurement: preferences.measurementSystem
+            )
         }
-        return sourceIngredientSections
+        return base
     }
 
     private var displayedIngredients: [Ingredient] {
         displayedIngredientSections.flatMap(\.ingredients)
+    }
+
+    private var displaySteps: [Step] {
+        recipe.steps.sorted(by: { $0.order < $1.order }).map { step in
+            Step(
+                order: step.order,
+                text: MeasurementConversion.convertTemperatures(
+                    in: step.text,
+                    to: preferences.temperatureUnit
+                ),
+                durationMinutes: step.durationMinutes
+            )
+        }
     }
 
     private var shouldOfferDescriptionExpansion: Bool {
@@ -243,6 +271,28 @@ struct RecipeDetailView: View {
         }
         var seen = Set<URL>()
         return values.filter { seen.insert($0).inserted }
+    }
+
+    private var shareText: String {
+        var lines = [recipe.title]
+        if let url = URL(string: recipe.sourceUrl) {
+            lines.append(url.absoluteString)
+        }
+        let ingredientLines = displayedIngredients.prefix(8).map { ingredient in
+            [ingredient.quantity, ingredient.unit, ingredient.name]
+                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+        }
+        if !ingredientLines.isEmpty {
+            lines.append("")
+            lines.append(contentsOf: ingredientLines)
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private var showStickyCook: Bool {
+        !recipe.steps.isEmpty && !sourceVisible
     }
 
     var body: some View {
@@ -280,19 +330,83 @@ struct RecipeDetailView: View {
 
                         if let url = URL(string: recipe.sourceUrl) {
                             sourceButton(url: url)
+                                .background(
+                                    GeometryReader { proxy in
+                                        Color.clear.preference(
+                                            key: SourceVisibilityKey.self,
+                                            value: proxy.frame(in: .named("recipeScroll")).minY < UIScreen.main.bounds.height
+                                        )
+                                    }
+                                )
                         }
                     }
                     .padding(.horizontal, 20)
                     .padding(.top, 22)
-                    .padding(.bottom, 38)
+                    .padding(.bottom, showStickyCook ? 100 : 38)
+                }
+            }
+            .coordinateSpace(name: "recipeScroll")
+            .onPreferenceChange(SourceVisibilityKey.self) { visible in
+                withAnimation(reduceMotion ? .easeOut(duration: 0.12) : .spring(response: 0.34, dampingFraction: 0.88)) {
+                    sourceVisible = visible
                 }
             }
             .ignoresSafeArea(edges: .top)
+
+            if shoppingToast {
+                VStack {
+                    Spacer()
+                    Text(ReciLocalization.string("Added to shopping list"))
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                        .background(ReciTheme.ink, in: Capsule())
+                        .padding(.bottom, showStickyCook ? 92 : 28)
+                }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .allowsHitTesting(false)
+            }
         }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if showStickyCook {
+                stickyCookButton
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(reduceMotion ? .easeOut(duration: 0.12) : .spring(response: 0.36, dampingFraction: 0.88), value: showStickyCook)
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
         .toolbarColorScheme(.dark, for: .navigationBar)
+        .toolbar {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                ShareLink(item: shareText) {
+                    Image(systemName: "square.and.arrow.up")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 36, height: 36)
+                        .background(.black.opacity(0.28), in: Circle())
+                }
+                .simultaneousGesture(TapGesture().onEnded { ReciHaptics.selection() })
+                .accessibilityLabel(ReciLocalization.string("Share recipe"))
+
+                Button {
+                    ReciHaptics.selection()
+                    app.toggleFavorite(recipe.id)
+                } label: {
+                    Image(systemName: app.isFavorite(recipe.id) ? "heart.fill" : "heart")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(app.isFavorite(recipe.id) ? ReciTheme.orange : .white)
+                        .frame(width: 36, height: 36)
+                        .background(.black.opacity(0.28), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(
+                    ReciLocalization.string(app.isFavorite(recipe.id) ? "Remove favorite" : "Favorite")
+                )
+            }
+        }
         .alert("New folder", isPresented: $showNewCategory) {
             TextField("Name", text: $newCategoryName)
             Button("Save") {
@@ -308,7 +422,10 @@ struct RecipeDetailView: View {
             Text("Create a folder and move this recipe into it.")
         }
         .sheet(isPresented: $showIngredientEditor) {
-            IngredientAdjustmentView(sections: displayedIngredientSections) { sections in
+            IngredientAdjustmentView(
+                sections: displayedIngredientSections,
+                measurement: preferences.measurementSystem
+            ) { sections in
                 adjustedIngredientSections = sections
             }
             .presentationDetents([.large])
@@ -323,12 +440,40 @@ struct RecipeDetailView: View {
                 .presentationBackground(ReciTheme.canvas)
         }
         .fullScreenCover(isPresented: $showCooking) {
-            // Cooking mode owns its own action feedback.
-            CookingView(recipe: recipe, ingredientSections: displayedIngredientSections, tint: folderTint)
+            CookingView(
+                recipe: recipe,
+                ingredientSections: displayedIngredientSections,
+                steps: displaySteps,
+                tint: folderTint
+            )
         }
         .onAppear {
             app.markImportedRecipeSeen(recipe.id)
+            if let preferenceUserID {
+                preferences = UserPreferencesStore.load(for: preferenceUserID) ?? UserPreferences()
+            }
+            #if DEBUG
+            MeasurementConversionSelfCheck.run()
+            #endif
         }
+    }
+
+    private var stickyCookButton: some View {
+        Button {
+            ReciHaptics.mediumImpact()
+            showCooking = true
+        } label: {
+            Text("Cook")
+                .font(.headline.weight(.bold))
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity, minHeight: 58)
+                .background(ReciTheme.orange, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 10)
+        .background(ReciTheme.canvas.opacity(0.96))
+        .accessibilityLabel("Cook")
     }
 
     private var hero: some View {
@@ -366,24 +511,6 @@ struct RecipeDetailView: View {
             )
             .frame(height: 145)
             .allowsHitTesting(false)
-        }
-        .overlay(alignment: .topTrailing) {
-            Button {
-                ReciHaptics.selection()
-                app.toggleFavorite(recipe.id)
-            } label: {
-                Image(systemName: app.isFavorite(recipe.id) ? "heart.fill" : "heart")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(app.isFavorite(recipe.id) ? ReciTheme.orange : .white)
-                    .frame(width: 44, height: 44)
-                    .background(.black.opacity(0.28), in: Circle())
-            }
-            .buttonStyle(.plain)
-            .padding(.top, 56)
-            .padding(.trailing, 16)
-            .accessibilityLabel(
-                ReciLocalization.string(app.isFavorite(recipe.id) ? "Remove favorite" : "Favorite")
-            )
         }
         .overlay(alignment: .bottomLeading) {
             let userTags = app.tags(for: recipe.id)
@@ -429,35 +556,7 @@ struct RecipeDetailView: View {
 
     private var primaryActions: some View {
         VStack(spacing: 12) {
-            HStack(spacing: 12) {
-                folderMenu
-
-                Button {
-                    ReciHaptics.mediumImpact()
-                    showCooking = true
-                } label: {
-                    HStack(alignment: .center, spacing: 10) {
-                        Image(systemName: "play.fill")
-                            .font(.system(size: 15, weight: .bold))
-
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Cook")
-                                .font(.subheadline.weight(.bold))
-                            Text("Step by step")
-                                .font(.caption.weight(.medium))
-                                .opacity(0.82)
-                        }
-                    }
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)
-                    .padding(.horizontal, 14)
-                    .background(ReciTheme.orange, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .disabled(recipe.steps.isEmpty)
-                .opacity(recipe.steps.isEmpty ? 0.45 : 1)
-                .accessibilityLabel("Start cooking step by step")
-            }
+            folderMenu
 
             Button {
                 ReciHaptics.selection()
@@ -622,39 +721,75 @@ struct RecipeDetailView: View {
                     )
                 }
             }
+
+            Button {
+                ReciHaptics.success()
+                let userID = preferenceUserID ?? "anonymous"
+                ShoppingListStore.add(
+                    ingredients: displayedIngredients,
+                    recipeID: recipe.id,
+                    recipeTitle: recipe.title,
+                    for: userID
+                )
+                withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+                    shoppingToast = true
+                }
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(1.6))
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        shoppingToast = false
+                    }
+                }
+            } label: {
+                Label(ReciLocalization.string("Add to shopping list"), systemImage: "cart.badge.plus")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(ReciTheme.orange)
+                    .frame(maxWidth: .infinity, minHeight: 48)
+                    .background(ReciTheme.orangeSoft, in: Capsule())
+            }
+            .buttonStyle(.plain)
         }
     }
 
     private var methodSection: some View {
         VStack(alignment: .leading, spacing: 20) {
-            RecipeSectionHeader(title: "Method", count: recipe.steps.count)
+            RecipeSectionHeader(title: "Method", count: displaySteps.filter { !RestStepClassifier.isRestStep($0) }.count)
 
             VStack(alignment: .leading, spacing: 0) {
-                ForEach(recipe.steps.sorted(by: { $0.order < $1.order })) { step in
-                    HStack(alignment: .top, spacing: 14) {
-                        Text("\(step.order)")
-                            .font(.headline.weight(.bold))
-                            .foregroundStyle(ReciTheme.ink.opacity(0.68))
-                            .frame(width: 36, height: 36)
-                            .background(folderTint.opacity(0.22), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                            .frame(width: 40, alignment: .leading)
+                ForEach(Array(displaySteps.enumerated()), id: \.element.id) { index, step in
+                    if RestStepClassifier.isRestStep(step) {
+                        RestStepDivider(step: step)
+                            .padding(.vertical, 10)
+                    } else {
+                        let visibleOrder = displaySteps
+                            .prefix(index + 1)
+                            .filter { !RestStepClassifier.isRestStep($0) }
+                            .count
+                        HStack(alignment: .top, spacing: 14) {
+                            Text("\(visibleOrder)")
+                                .font(.headline.weight(.bold))
+                                .foregroundStyle(ReciTheme.ink.opacity(0.68))
+                                .frame(width: 36, height: 36)
+                                .background(folderTint.opacity(0.22), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                .frame(width: 40, alignment: .leading)
 
-                        VStack(alignment: .leading, spacing: 9) {
-                            Text(step.text)
-                                .font(.body)
-                                .foregroundStyle(ReciTheme.ink)
-                                .lineSpacing(4)
-                                .fixedSize(horizontal: false, vertical: true)
-                            if let minutes = step.durationMinutes {
-                                Label(String(format: ReciLocalization.string("%d min"), minutes), systemImage: "clock")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(ReciTheme.muted)
+                            VStack(alignment: .leading, spacing: 9) {
+                                Text(step.text)
+                                    .font(.body)
+                                    .foregroundStyle(ReciTheme.ink)
+                                    .lineSpacing(4)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                if let minutes = step.durationMinutes {
+                                    Label(String(format: ReciLocalization.string("%d min"), minutes), systemImage: "clock")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(ReciTheme.muted)
+                                }
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 12)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 12)
                 }
             }
         }
@@ -666,7 +801,7 @@ struct RecipeDetailView: View {
 
             VStack(alignment: .leading, spacing: 14) {
                 ForEach(Array(recipe.tips.enumerated()), id: \.offset) { _, tip in
-                    RecipeTipRow(tip: tip, tint: folderTint)
+                    RecipeTipRow(tip: tip, tint: folderTint, temperatureUnit: preferences.temperatureUnit)
                 }
             }
             .padding(16)
@@ -798,6 +933,7 @@ private struct IngredientRow: View {
 private struct RecipeTipRow: View {
     let tip: RecipeTip
     let tint: Color
+    var temperatureUnit: TemperatureUnit = .celsius
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -813,7 +949,7 @@ private struct RecipeTipRow: View {
                         .font(.subheadline.weight(.bold))
                         .foregroundStyle(ReciTheme.ink)
                 }
-                Text(tip.text)
+                Text(MeasurementConversion.convertTemperatures(in: tip.text, to: temperatureUnit))
                     .font(.body)
                     .foregroundStyle(ReciTheme.ink.opacity(0.78))
                     .lineSpacing(3)
@@ -824,9 +960,43 @@ private struct RecipeTipRow: View {
     }
 }
 
+private struct RestStepDivider: View {
+    let step: Step
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Rectangle()
+                .fill(ReciTheme.line)
+                .frame(height: 1)
+            HStack(spacing: 6) {
+                Image(systemName: "clock")
+                    .font(.caption.weight(.semibold))
+                Text(RestStepClassifier.displayLabel(for: step))
+                    .font(.caption.weight(.bold))
+                    .lineLimit(2)
+            }
+            .foregroundStyle(ReciTheme.muted)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(ReciTheme.surface, in: Capsule())
+            Rectangle()
+                .fill(ReciTheme.line)
+                .frame(height: 1)
+        }
+        .accessibilityLabel(step.text)
+    }
+}
+
+private struct SourceVisibilityKey: PreferenceKey {
+    static var defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) {
+        value = value || nextValue()
+    }
+}
+
 private struct EditableIngredient: Identifiable {
     let id = UUID()
-    let baseQuantity: Double?
+    var baseQuantity: Double?
     var name: String
     var quantity: String
     var unit: String
@@ -926,10 +1096,16 @@ private struct EditableIngredientSection: Identifiable {
 
 private struct IngredientAdjustmentView: View {
     @Environment(\.dismiss) private var dismiss
+    let measurement: MeasurementSystem
     let onSave: ([IngredientSection]) -> Void
     @State private var draftSections: [EditableIngredientSection]
 
-    init(sections: [IngredientSection], onSave: @escaping ([IngredientSection]) -> Void) {
+    init(
+        sections: [IngredientSection],
+        measurement: MeasurementSystem,
+        onSave: @escaping ([IngredientSection]) -> Void
+    ) {
+        self.measurement = measurement
         self.onSave = onSave
         _draftSections = State(initialValue: sections.map(EditableIngredientSection.init))
     }
@@ -980,12 +1156,8 @@ private struct IngredientAdjustmentView: View {
                                             .multilineTextAlignment(.trailing)
                                             .frame(width: 58)
 
-                                            TextField("Unit", text: $draftSections[sectionIndex].drafts[ingredientIndex].unit)
-                                                .font(.caption.weight(.semibold))
-                                                .foregroundStyle(ReciTheme.muted)
-                                                .lineLimit(1)
-                                                .minimumScaleFactor(0.72)
-                                                .frame(width: 72, alignment: .leading)
+                                            unitMenu(sectionIndex: sectionIndex, ingredientIndex: ingredientIndex)
+                                                .frame(width: 78, alignment: .leading)
 
                                             TextField("Ingredient", text: $draftSections[sectionIndex].drafts[ingredientIndex].name)
                                                 .font(.body)
@@ -1034,6 +1206,63 @@ private struct IngredientAdjustmentView: View {
         }
     }
 
+    @ViewBuilder
+    private func unitMenu(sectionIndex: Int, ingredientIndex: Int) -> some View {
+        let draft = draftSections[sectionIndex].drafts[ingredientIndex]
+        let options = MeasurementConversion.compatibleUnits(
+            for: draft.ingredient,
+            measurement: measurement
+        )
+        if options.count <= 1 {
+            Text(draft.unit.isEmpty ? "—" : draft.unit)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(ReciTheme.muted)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+        } else {
+            Menu {
+                ForEach(options, id: \.self) { unit in
+                    Button(unit) {
+                        convertUnit(
+                            sectionIndex: sectionIndex,
+                            ingredientIndex: ingredientIndex,
+                            to: unit
+                        )
+                    }
+                }
+            } label: {
+                HStack(spacing: 2) {
+                    Text(draft.unit.isEmpty ? "—" : draft.unit)
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 9, weight: .bold))
+                }
+                .foregroundStyle(ReciTheme.orange)
+            }
+        }
+    }
+
+    private func convertUnit(sectionIndex: Int, ingredientIndex: Int, to newUnit: String) {
+        var draft = draftSections[sectionIndex].drafts[ingredientIndex]
+        let oldUnit = draft.unit
+        guard oldUnit != newUnit else { return }
+        if let value = IngredientQuantityMath.parse(draft.quantity),
+           let converted = MeasurementConversion.convertQuantity(
+            value: value,
+            fromUnit: oldUnit,
+            toUnit: newUnit,
+            ingredientName: draft.name
+           ) {
+            draft.quantity = IngredientQuantityMath.format(converted, unit: newUnit)
+            draft.baseQuantity = converted
+        }
+        draft.unit = newUnit
+        draftSections[sectionIndex].drafts[ingredientIndex] = draft
+        ReciHaptics.selection()
+    }
+
     private func quantityBinding(sectionIndex: Int, ingredientIndex: Int) -> Binding<String> {
         Binding(
             get: {
@@ -1079,6 +1308,7 @@ private struct CookingView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let recipe: RecipePublic
     let ingredientSections: [IngredientSection]
+    let steps: [Step]
     let tint: Color
     @State private var selectedStepIndex = 0
     @State private var completedStepOrders: Set<Int> = []
@@ -1087,15 +1317,22 @@ private struct CookingView: View {
     @State private var hasAppeared = false
     @State private var hasFinalized = false
 
-    init(recipe: RecipePublic, ingredientSections: [IngredientSection], tint: Color) {
+    init(
+        recipe: RecipePublic,
+        ingredientSections: [IngredientSection],
+        steps: [Step]? = nil,
+        tint: Color
+    ) {
         self.recipe = recipe
         self.ingredientSections = ingredientSections
+        let resolved = steps ?? recipe.steps.sorted { $0.order < $1.order }
+        self.steps = resolved
         self.tint = tint
 
-        let validStepOrders = Set(recipe.steps.map(\.order))
+        let validStepOrders = Set(resolved.map(\.order))
         let savedProgress = CookingProgressStore.load(for: recipe.id)
         let savedIndex = savedProgress?.selectedStepIndex ?? 0
-        let lastStepIndex = max(recipe.steps.count - 1, 0)
+        let lastStepIndex = max(resolved.count - 1, 0)
 
         _selectedStepIndex = State(initialValue: min(max(savedIndex, 0), lastStepIndex))
         _completedStepOrders = State(
@@ -1103,13 +1340,18 @@ private struct CookingView: View {
         )
     }
 
-    private var sortedSteps: [Step] {
-        recipe.steps.sorted { $0.order < $1.order }
-    }
+    private var sortedSteps: [Step] { steps }
 
     private var currentStepNumber: Int {
         guard !sortedSteps.isEmpty else { return 0 }
-        return min(selectedStepIndex, sortedSteps.count - 1) + 1
+        return sortedSteps
+            .prefix(min(selectedStepIndex, sortedSteps.count - 1) + 1)
+            .filter { !RestStepClassifier.isRestStep($0) }
+            .count
+    }
+
+    private var cookStepTotal: Int {
+        max(sortedSteps.filter { !RestStepClassifier.isRestStep($0) }.count, 1)
     }
 
     private var currentStepIsComplete: Bool {
@@ -1153,25 +1395,35 @@ private struct CookingView: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 12) {
                             ForEach(Array(sortedSteps.enumerated()), id: \.element.id) { index, step in
-                                Button {
-                                    selectStep(index)
-                                } label: {
-                                    CookingStepCard(
-                                        step: step,
-                                        index: index,
-                                        isActive: selectedStepIndex == index,
-                                        isComplete: completedStepOrders.contains(step.order),
-                                        tint: tint
+                                if RestStepClassifier.isRestStep(step) {
+                                    RestStepDivider(step: step)
+                                        .id(step.id)
+                                        .opacity(hasAppeared ? 1 : 0)
+                                        .animation(
+                                            motion.delay(reduceMotion ? 0 : 0.06 * Double(index)),
+                                            value: hasAppeared
+                                        )
+                                } else {
+                                    Button {
+                                        selectStep(index)
+                                    } label: {
+                                        CookingStepCard(
+                                            step: step,
+                                            index: index,
+                                            isActive: selectedStepIndex == index,
+                                            isComplete: completedStepOrders.contains(step.order),
+                                            tint: tint
+                                        )
+                                    }
+                                    .buttonStyle(.plain)
+                                    .id(step.id)
+                                    .opacity(hasAppeared ? 1 : 0)
+                                    .offset(y: hasAppeared ? 0 : 18)
+                                    .animation(
+                                        motion.delay(reduceMotion ? 0 : 0.06 * Double(index)),
+                                        value: hasAppeared
                                     )
                                 }
-                                .buttonStyle(.plain)
-                                .id(step.id)
-                                .opacity(hasAppeared ? 1 : 0)
-                                .offset(y: hasAppeared ? 0 : 18)
-                                .animation(
-                                    motion.delay(reduceMotion ? 0 : 0.06 * Double(index)),
-                                    value: hasAppeared
-                                )
                             }
                         }
                         .padding(.horizontal, 20)
@@ -1203,6 +1455,10 @@ private struct CookingView: View {
             withAnimation(motion) {
                 hasAppeared = true
             }
+            if sortedSteps.indices.contains(selectedStepIndex),
+               RestStepClassifier.isRestStep(sortedSteps[selectedStepIndex]) {
+                selectedStepIndex = nearestCookStep(from: selectedStepIndex) ?? selectedStepIndex
+            }
         }
         .onChange(of: selectedStepIndex) { _, _ in
             persistCookingProgress()
@@ -1233,7 +1489,7 @@ private struct CookingView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if !sortedSteps.isEmpty {
-                Text("\(currentStepNumber)/\(sortedSteps.count)")
+                Text("\(currentStepNumber)/\(cookStepTotal)")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(ReciTheme.muted)
                     .monospacedDigit()
@@ -1325,7 +1581,9 @@ private struct CookingView: View {
     }
 
     private func selectStep(_ index: Int) {
-        guard sortedSteps.indices.contains(index), selectedStepIndex != index else { return }
+        guard sortedSteps.indices.contains(index),
+              !RestStepClassifier.isRestStep(sortedSteps[index]),
+              selectedStepIndex != index else { return }
         ReciHaptics.selection()
         withAnimation(motion) {
             selectedStepIndex = index
@@ -1334,10 +1592,12 @@ private struct CookingView: View {
     }
 
     private func previousStep() {
-        guard selectedStepIndex > 0 else { return }
+        guard let previous = sortedSteps.indices.reversed().first(where: {
+            $0 < selectedStepIndex && !RestStepClassifier.isRestStep(sortedSteps[$0])
+        }) else { return }
         ReciHaptics.selection()
         withAnimation(motion) {
-            selectedStepIndex -= 1
+            selectedStepIndex = previous
             showCompletion = false
         }
     }
@@ -1356,12 +1616,27 @@ private struct CookingView: View {
 
         withAnimation(motion) {
             completedStepOrders.insert(currentStep.order)
+            // Auto-complete rest dividers between cook steps.
+            var cursor = selectedStepIndex + 1
+            while sortedSteps.indices.contains(cursor), RestStepClassifier.isRestStep(sortedSteps[cursor]) {
+                completedStepOrders.insert(sortedSteps[cursor].order)
+                cursor += 1
+            }
         }
 
-        if selectedStepIndex < sortedSteps.count - 1 {
+        if let next = sortedSteps.indices.first(where: {
+            $0 > selectedStepIndex && !RestStepClassifier.isRestStep(sortedSteps[$0])
+        }) {
             ReciHaptics.selection()
             withAnimation(motion) {
-                selectedStepIndex += 1
+                selectedStepIndex = next
+            }
+        } else if selectedStepIndex < sortedSteps.count - 1 {
+            // Only rest steps remain — finish.
+            ReciHaptics.success()
+            withAnimation(motion) {
+                selectedStepIndex = sortedSteps.count - 1
+                showCompletion = true
             }
         } else {
             ReciHaptics.success()
@@ -1369,6 +1644,16 @@ private struct CookingView: View {
                 showCompletion = true
             }
         }
+    }
+
+    private func nearestCookStep(from index: Int) -> Int? {
+        if sortedSteps.indices.contains(index), !RestStepClassifier.isRestStep(sortedSteps[index]) {
+            return index
+        }
+        if let next = sortedSteps.indices.first(where: { $0 >= index && !RestStepClassifier.isRestStep(sortedSteps[$0]) }) {
+            return next
+        }
+        return sortedSteps.indices.reversed().first { !RestStepClassifier.isRestStep(sortedSteps[$0]) }
     }
 }
 

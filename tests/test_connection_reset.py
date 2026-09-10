@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+pytest.skip("Legacy Supabase SDK transport tests; backend now uses psycopg/Postgres.", allow_module_level=True)
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.testclient import TestClient

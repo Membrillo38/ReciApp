@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import HTTPException
 
 from app.config import settings
-from app.db import get_supabase
+from app.db import execute, fetch_one
 
 
 @dataclass(frozen=True)
@@ -21,21 +20,20 @@ def reserve_spend(*, user_id: UUID, job_id: UUID) -> SpendReservation:
     if not settings.billing_guard_enabled:
         raise HTTPException(status_code=503, detail="Usage protection is disabled")
     try:
-        result = get_supabase().rpc(
-            "reserve_api_spend",
-            {
-                "p_user_id": str(user_id),
-                "p_job_id": str(job_id),
-                "p_reserved_cents": float(settings.max_job_cost_cents),
-                "p_daily_budget_cents": float(settings.daily_api_budget_cents),
-                "p_monthly_budget_cents": float(settings.monthly_api_budget_cents),
-                "p_user_monthly_budget_cents": float(settings.user_monthly_budget_cents),
-            },
-        ).execute()
+        row = fetch_one(
+            "select * from reserve_api_spend(%s, %s, %s, %s, %s, %s)",
+            (
+                user_id,
+                job_id,
+                float(settings.max_job_cost_cents),
+                float(settings.daily_api_budget_cents),
+                float(settings.monthly_api_budget_cents),
+                float(settings.user_monthly_budget_cents),
+            ),
+        )
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Usage protection unavailable") from exc
 
-    row = (result.data or [None])[0]
     if not isinstance(row, dict) or not row.get("allowed"):
         reason = str((row or {}).get("reason") or "budget_exhausted")
         raise HTTPException(
@@ -50,14 +48,7 @@ def reserve_spend(*, user_id: UUID, job_id: UUID) -> SpendReservation:
 
 def settle_spend(*, job_id: UUID, actual_cents: float, status: str) -> None:
     try:
-        get_supabase().rpc(
-            "settle_api_spend",
-            {
-                "p_job_id": str(job_id),
-                "p_actual_cents": max(float(actual_cents), 0.0),
-                "p_status": status,
-            },
-        ).execute()
+        execute("select settle_api_spend(%s, %s, %s)", (job_id, max(float(actual_cents), 0.0), status))
     except Exception:
         # The reservation remains in place, which is safer than releasing money
         # after a failed settlement call.

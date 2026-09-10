@@ -5,25 +5,32 @@ from contextlib import asynccontextmanager
 
 import json
 import logging
-import secrets
 import time
 from datetime import datetime, timezone
 from uuid import UUID
 
 import httpx
+import jwt
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.apple_auth import verify_apple_identity_token
 from app.auth import AuthUser, current_user, require_api_key
+from app.auth_tokens import create_access_token, create_refresh_token, revoke_refresh_token, rotate_refresh_token
 from app.apple_notifications import process_signed_notification
 from app.config import settings
 from app.dashboard_routes import router as dashboard_router
 from app.dashboard_stats import log_request
-from app.db import get_supabase, reset_supabase, probe_supabase
+from app.db import execute_returning, fetch_all, get_pool, probe_postgres, reset_db
 from app.models import (
     AdminUserCreate,
     AdminUserPatch,
+    AuthAppleRequest,
+    AuthLogoutRequest,
+    AuthRefreshRequest,
+    AuthTokenResponse,
+    AuthUserResponse,
     ExtractJobResponse,
     ExtractRequest,
     HealthResponse,
@@ -41,7 +48,7 @@ from app.pipeline import run_extract_job, run_translation_job
 from app.quota import assert_can_extract, get_quota, record_usage
 from app.job_guard import claim as claim_job, release as release_job, try_claim as try_claim_job
 from app.localization import normalize_language
-from app.security import audit_security_event, new_correlation_id, pseudonymous_ip, request_ip, require_rate_limit, validate_public_url
+from app.security import audit_security_event, check_not_banned, new_correlation_id, pseudonymous_ip, request_ip, require_rate_limit, validate_public_url
 from app.spend import reserve_spend, settle_spend
 from app.store import (
     claim_next_pending_extract_for_user,
@@ -73,12 +80,12 @@ from app.translation_cache import localized_recipe_row
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    settings.validate_supabase()
-    get_supabase()  # Validate SDK construction; startup does not contact Supabase.
+    settings.validate_database()
+    get_pool()
     try:
         yield
     finally:
-        reset_supabase()
+        reset_db()
 
 
 app = FastAPI(title="ReciApp API", version="1.3.0", lifespan=lifespan)
@@ -93,6 +100,24 @@ app.add_middleware(
 app.include_router(dashboard_router)
 
 _STALE_JOB_ERROR = "Job expired before completion. Retry the import."
+
+
+def _bearer_user_id(request: Request) -> str | None:
+    header = request.headers.get("authorization", "")
+    scheme, _, token = header.partition(" ")
+    if scheme.lower() != "bearer" or not token or not settings.auth_jwt_secret:
+        return None
+    try:
+        claims = jwt.decode(
+            token,
+            settings.auth_jwt_secret,
+            algorithms=["HS256"],
+            issuer=settings.auth_jwt_issuer,
+            audience=settings.auth_jwt_audience,
+        )
+        return str(UUID(str(claims.get("sub") or "")))
+    except Exception:
+        return None
 
 
 @app.exception_handler(httpx.HTTPStatusError)
@@ -231,7 +256,35 @@ async def request_metrics(request: Request, call_next):
     request.state.correlation_id = correlation_id
     content_length = request.headers.get("content-length")
     is_probe = request.url.path in {"/health", "/ready"}
-    if settings.maintenance_mode and not is_probe and request.method not in {"GET", "HEAD", "OPTIONS"}:
+    response = None
+    user_id = _bearer_user_id(request)
+    if not is_probe and request.url.path.startswith("/v1/"):
+        try:
+            check_not_banned(request, user_id=user_id)
+            require_rate_limit(
+                request,
+                key=f"ip:{request_ip(request)}",
+                limit=settings.rate_limit_per_ip_per_minute,
+                window_seconds=60,
+                event="general_ip_rate_limited",
+            )
+            if user_id:
+                require_rate_limit(
+                    request,
+                    key=f"user:{user_id}",
+                    limit=settings.rate_limit_per_user_per_minute,
+                    window_seconds=60,
+                    event="general_user_rate_limited",
+                )
+        except HTTPException as exc:
+            response = JSONResponse(
+                status_code=exc.status_code,
+                content={"detail": exc.detail},
+                headers=exc.headers,
+            )
+    if response is not None:
+        pass
+    elif settings.maintenance_mode and not is_probe and request.method not in {"GET", "HEAD", "OPTIONS"}:
         response = JSONResponse(
             status_code=503, content={"detail": "Maintenance in progress. Retry."},
             headers={"Retry-After": "30"},
@@ -289,7 +342,7 @@ async def ready() -> JSONResponse:
     error = None
     try:
         async with asyncio.timeout(settings.readiness_timeout_seconds):
-            await probe_supabase()
+            await probe_postgres()
     except Exception as exc:
         error = type(exc).__name__
     return JSONResponse(
@@ -310,6 +363,21 @@ def require_writes_enabled() -> None:
             status_code=503, detail="Maintenance in progress. Retry.",
             headers={"Retry-After": "30"},
         )
+
+
+def _require_auth_secret() -> None:
+    if not settings.auth_jwt_secret:
+        raise HTTPException(status_code=503, detail="AUTH_JWT_SECRET not configured")
+
+
+def _auth_user_response(row: dict) -> AuthUserResponse:
+    return AuthUserResponse(
+        id=UUID(str(row["id"])),
+        email=row.get("email"),
+        display_name=row.get("display_name"),
+        is_pro=bool(row.get("is_pro")),
+        pro_expires_at=str(row["pro_expires_at"]) if row.get("pro_expires_at") else None,
+    )
 
 
 @app.post("/v1/webhooks/superwall")
@@ -383,6 +451,61 @@ async def apple_webhook(request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
+@app.post("/v1/auth/apple", response_model=AuthTokenResponse)
+def auth_apple(request: Request, body: AuthAppleRequest) -> AuthTokenResponse:
+    require_writes_enabled()
+    _require_auth_secret()
+    try:
+        apple = verify_apple_identity_token(body.identity_token, nonce=body.nonce)
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail="Invalid Apple identity token") from exc
+    display_name = (body.full_name or "").strip()[:200] or None
+    row = execute_returning(
+        """
+        insert into profiles (email, apple_sub, display_name)
+        values (%s, %s, %s)
+        on conflict (apple_sub) do update
+           set email = coalesce(profiles.email, excluded.email),
+               display_name = coalesce(profiles.display_name, excluded.display_name)
+         where profiles.deleted_at is null
+        returning id, email, display_name, is_pro, pro_expires_at, deleted_at
+        """,
+        (apple.email, apple.apple_sub, display_name),
+    )
+    if not row or row.get("deleted_at"):
+        raise HTTPException(status_code=403, detail="Account unavailable")
+    user_id = UUID(str(row["id"]))
+    return AuthTokenResponse(
+        access_token=create_access_token(user_id, row.get("email")),
+        refresh_token=create_refresh_token(
+            user_id,
+            user_agent=request.headers.get("user-agent"),
+            ip_hash=pseudonymous_ip(request_ip(request)),
+        ),
+        expires_in=settings.auth_access_token_ttl_seconds,
+        user=_auth_user_response(row),
+    )
+
+
+@app.post("/v1/auth/refresh", response_model=AuthTokenResponse)
+def auth_refresh(body: AuthRefreshRequest) -> AuthTokenResponse:
+    _require_auth_secret()
+    pair = rotate_refresh_token(body.refresh_token)
+    if not pair:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+    return AuthTokenResponse(
+        access_token=pair["access_token"],
+        refresh_token=pair["refresh_token"],
+        expires_in=settings.auth_access_token_ttl_seconds,
+    )
+
+
+@app.post("/v1/auth/logout", response_model=OkResponse)
+def auth_logout(body: AuthLogoutRequest) -> OkResponse:
+    revoke_refresh_token(body.refresh_token)
+    return OkResponse()
+
+
 @app.get("/v1/me", response_model=MeResponse)
 def me(user: AuthUser = Depends(current_user)) -> MeResponse:
     q = get_quota(user)
@@ -402,10 +525,6 @@ def me(user: AuthUser = Depends(current_user)) -> MeResponse:
 def delete_me(user: AuthUser = Depends(current_user)) -> OkResponse:
     anonymize_user_data(user.id)
     soft_delete_profile(user.id)
-    try:
-        get_supabase().auth.admin.delete_user(str(user.id))
-    except Exception:
-        pass
     return OkResponse()
 
 
@@ -421,16 +540,24 @@ def extract_recipe(
     require_rate_limit(
         request,
         key=f"extract-ip:{request_ip(request)}",
-        limit=settings.rate_limit_per_ip_per_minute,
+        limit=settings.rate_limit_extract_per_ip_per_minute,
         window_seconds=60,
         event="extract_ip_rate_limited",
     )
     require_rate_limit(
         request,
         key=f"extract-user:{user.id}",
-        limit=settings.rate_limit_per_user_per_minute,
+        limit=settings.rate_limit_extract_per_user_per_minute,
         window_seconds=60,
         event="extract_user_rate_limited",
+    )
+    require_rate_limit(
+        request,
+        key=f"extract-user-day:{user.id}",
+        limit=settings.rate_limit_extract_daily_per_user,
+        window_seconds=24 * 60 * 60,
+        event="extract_user_daily_rate_limited",
+        retry_after_seconds=60 * 60,
     )
     try:
         validate_public_url(
@@ -731,28 +858,18 @@ def admin_list_users(limit: int = Query(100, ge=1, le=500)) -> ListResponse:
 
 @app.post("/v1/admin/users", response_model=ListResponse, dependencies=[Depends(require_api_key)])
 def admin_create_user(request: Request, body: AdminUserCreate) -> ListResponse:
-    sb = get_supabase()
-    attrs: dict = {"email": body.email, "email_confirm": True}
-    attrs["password"] = body.password or secrets.token_urlsafe(24)
-    try:
-        created = sb.auth.admin.create_user(attrs)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail="User create failed") from None
-
-    user = created.user
-    if not user:
+    row = execute_returning(
+        """
+        insert into profiles (email, display_name, is_pro)
+        values (%s, %s, %s)
+        returning *
+        """,
+        (body.email, body.display_name or body.email, body.is_pro),
+    )
+    if not row:
         raise HTTPException(status_code=400, detail="User create failed")
-
-    payload = {
-        "id": str(user.id),
-        "display_name": body.display_name or body.email,
-        "is_pro": body.is_pro,
-    }
-    result = sb.table("profiles").update(payload).eq("id", str(user.id)).is_("deleted_at", "null").execute()
-    if not result.data:
-        raise HTTPException(status_code=503, detail="Account profile unavailable", headers={"Retry-After": "1"})
-    audit_security_event(event="admin_user_created", request=request, user_id=str(user.id), metadata={"is_pro": body.is_pro})
-    return ListResponse(items=[payload])
+    audit_security_event(event="admin_user_created", request=request, user_id=str(row["id"]), metadata={"is_pro": body.is_pro})
+    return ListResponse(items=[row])
 
 
 @app.patch("/v1/admin/users/{user_id}", dependencies=[Depends(require_api_key)])
@@ -760,27 +877,21 @@ def admin_patch_user(request: Request, user_id: UUID, body: AdminUserPatch):
     fields = {k: v for k, v in body.model_dump().items() if v is not None}
     if not fields:
         raise HTTPException(status_code=400, detail="No fields to update")
-    res = (
-        get_supabase()
-        .table("profiles")
-        .update(fields)
-        .eq("id", str(user_id))
-        .execute()
+    assignments = ", ".join(f"{field} = %s" for field in fields)
+    row = execute_returning(
+        f"update profiles set {assignments} where id = %s and deleted_at is null returning *",
+        (*fields.values(), user_id),
     )
-    if not res.data:
+    if not row:
         raise HTTPException(status_code=404, detail="User not found")
     audit_security_event(event="admin_user_changed", request=request, user_id=str(user_id), metadata={"fields": sorted(fields)})
-    return res.data[0]
+    return row
 
 
 @app.delete("/v1/admin/users/{user_id}", response_model=OkResponse, dependencies=[Depends(require_api_key)])
 def admin_delete_user(request: Request, user_id: UUID) -> OkResponse:
     anonymize_user_data(user_id)
     soft_delete_profile(user_id)
-    try:
-        get_supabase().auth.admin.delete_user(str(user_id))
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail="User deletion failed") from None
     audit_security_event(event="admin_user_deleted", request=request, user_id=str(user_id))
     return OkResponse()
 
@@ -797,12 +908,4 @@ def admin_list_jobs(limit: int = Query(50, ge=1, le=500)) -> ListResponse:
 
 @app.get("/v1/admin/usage", response_model=ListResponse, dependencies=[Depends(require_api_key)])
 def admin_usage(limit: int = Query(100, ge=1, le=1000)) -> ListResponse:
-    res = (
-        get_supabase()
-        .table("usage_events")
-        .select("*")
-        .order("created_at", desc=True)
-        .limit(limit)
-        .execute()
-    )
-    return ListResponse(items=res.data or [])
+    return ListResponse(items=fetch_all("select * from usage_events order by created_at desc limit %s", (limit,)))

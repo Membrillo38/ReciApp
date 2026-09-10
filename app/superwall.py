@@ -6,10 +6,10 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import HTTPException
-from postgrest.exceptions import APIError
+from psycopg.errors import UniqueViolation
 
 from app.config import settings
-from app.db import get_supabase
+from app.db import execute_returning, fetch_one
 from app.limits import get_app_defaults, price_cents_from_superwall, proceeds_cents_from_superwall
 
 _UUID_RE = re.compile(
@@ -86,41 +86,42 @@ def _redacted(value):
 
 
 def _record_event(event_id: str, event_name: str, event_at: datetime, user_id: UUID | None, payload: dict) -> bool:
-    sb = get_supabase()
-    existing = sb.table("subscription_events").select("event_id,status").eq("event_id", event_id).limit(1).execute()
-    if existing.data:
-        return existing.data[0].get("status") not in {"processed", "skipped"}
+    existing = fetch_one("select event_id, status from subscription_events where event_id = %s limit 1", (event_id,))
+    if existing:
+        return existing.get("status") not in {"processed", "skipped"}
     try:
-        sb.table("subscription_events").insert({
-            "event_id": event_id,
-            "event_name": event_name[:120],
-            "event_at": event_at.isoformat(),
-            "user_id": str(user_id) if user_id else None,
-            "payload": _redacted(copy.deepcopy(payload)),
-        }).execute()
-    except APIError as exc:
+        execute_returning(
+            """
+            insert into subscription_events (event_id, event_name, event_at, user_id, payload)
+            values (%s, %s, %s, %s, %s)
+            returning event_id
+            """,
+            (event_id, event_name[:120], event_at, user_id, _redacted(copy.deepcopy(payload))),
+        )
+    except UniqueViolation:
         # An insert conflict is not proof that the other delivery succeeded.
-        if exc.code != "23505":
+        existing = fetch_one("select status from subscription_events where event_id = %s limit 1", (event_id,))
+        if not existing:
             raise
-        existing = sb.table("subscription_events").select("status").eq("event_id", event_id).limit(1).execute()
-        if not existing.data:
-            raise
-        return existing.data[0].get("status") not in {"processed", "skipped"}
+        return existing.get("status") not in {"processed", "skipped"}
     return True
 
 
 def _mark_event(event_id: str, *, status: str, error: str | None = None) -> None:
-    sb = get_supabase()
-    response = sb.table("subscription_events").update({
-        "status": status,
-        "error": error[:500] if error else None,
-        "processed_at": datetime.now(timezone.utc).isoformat(),
-    }).eq("event_id", event_id).in_("status", ["received", "failed"]).execute()
-    if not response.data:
+    row = execute_returning(
+        """
+        update subscription_events
+           set status = %s, error = %s, processed_at = %s
+         where event_id = %s and status = any(%s)
+        returning status
+        """,
+        (status, error[:500] if error else None, datetime.now(timezone.utc), event_id, ["received", "failed"]),
+    )
+    if not row:
         # Another delivery may have committed while this one was failing.
         # Terminal receipts are immutable, including processed versus skipped.
-        current = sb.table("subscription_events").select("status").eq("event_id", event_id).limit(1).execute()
-        if current.data and current.data[0].get("status") in {"processed", "skipped"}:
+        current = fetch_one("select status from subscription_events where event_id = %s limit 1", (event_id,))
+        if current and current.get("status") in {"processed", "skipped"}:
             return
         raise RuntimeError("Subscription event status was not persisted")
 
@@ -162,8 +163,8 @@ def _apply_superwall_event(payload: dict, event_id: str | None = None) -> dict:
 
     event_user_id = user_id
     if user_id:
-        profile_exists = get_supabase().table("profiles").select("id,deleted_at").eq("id", str(user_id)).limit(1).execute()
-        if not profile_exists.data:
+        profile_exists = fetch_one("select id, deleted_at from profiles where id = %s limit 1", (user_id,))
+        if not profile_exists:
             event_user_id = None
     if not _record_event(resolved_event_id, event_name, event_at, event_user_id, payload):
         result["skipped"] = "duplicate"
@@ -183,9 +184,10 @@ def _apply_superwall_event(payload: dict, event_id: str | None = None) -> dict:
         result["skipped"] = f"unhandled_event:{event_name}"
         return result
 
-    sb = get_supabase()
-    profile = sb.table("profiles").select("subscription_event_at,subscription_event_id,deleted_at").eq("id", str(user_id)).limit(1).execute()
-    current = (profile.data or [None])[0]
+    current = fetch_one(
+        "select subscription_event_at, subscription_event_id, deleted_at from profiles where id = %s limit 1",
+        (user_id,),
+    )
     if not current or current.get("deleted_at"):
         result["skipped"] = "profile_unavailable"
         _mark_event(resolved_event_id, status="skipped", error=result["skipped"])
@@ -233,13 +235,24 @@ def _apply_superwall_event(payload: dict, event_id: str | None = None) -> dict:
 
     # Compare-and-set prevents an old delivery from overwriting a concurrent
     # newer event. The deletion predicate also handles deletion after our read.
-    query = sb.table("profiles").update(update).eq("id", str(user_id)).is_("deleted_at", "null")
-    for field in ("subscription_event_at", "subscription_event_id"):
-        query = query.eq(field, current[field]) if current.get(field) is not None else query.is_(field, "null")
-    res = query.execute()
-    if not res.data:
-        latest_response = sb.table("profiles").select("subscription_event_at,subscription_event_id,deleted_at").eq("id", str(user_id)).limit(1).execute()
-        latest = (latest_response.data or [None])[0]
+    assignments = ", ".join(f"{field} = %s" for field in update)
+    res = execute_returning(
+        f"""
+        update profiles
+           set {assignments}
+         where id = %s
+           and deleted_at is null
+           and subscription_event_at is not distinct from %s
+           and subscription_event_id is not distinct from %s
+        returning id
+        """,
+        (*update.values(), user_id, current.get("subscription_event_at"), current.get("subscription_event_id")),
+    )
+    if not res:
+        latest = fetch_one(
+            "select subscription_event_at, subscription_event_id, deleted_at from profiles where id = %s limit 1",
+            (user_id,),
+        )
         if not latest or latest.get("deleted_at"):
             result["skipped"] = "profile_unavailable"
         elif latest.get("subscription_event_id") == resolved_event_id:

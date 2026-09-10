@@ -3,7 +3,7 @@
 Open `ReciApp.xcodeproj` in Xcode.
 
 1. Select your Team → Signing & Capabilities
-2. Bundle ID: `com.membri.reciapp` (must match the Apple Client ID in Supabase)
+2. Bundle ID: `com.membri.reciapp` (must match the Apple service configuration in the backend)
 3. Confirm **Sign In with Apple**
 4. Confirm App Group `group.com.membri.reciapp` on `ReciApp` and `ReciAppShare`
 

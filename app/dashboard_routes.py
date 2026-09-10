@@ -23,7 +23,7 @@ from app.dashboard_auth import (
 from app.config import settings
 from app.security import audit_security_event, allow_rate_limit, request_ip
 from app.dashboard_stats import dashboard_overview, list_usage
-from app.db import get_supabase
+from app.db import execute, fetch_all
 from app.store import anonymize_user_data, list_jobs, list_live_queue_jobs, list_profiles, list_recipes, soft_delete_profile
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -122,9 +122,7 @@ def toggle_pro(request: Request, user_id: UUID, csrf: str = Form(...), is_pro: s
         return redir
     if not csrf_matches(request, csrf):
         return RedirectResponse("/dashboard/users?err=csrf", status_code=303)
-    get_supabase().table("profiles").update({"is_pro": is_pro == "1"}).eq(
-        "id", str(user_id)
-    ).execute()
+    execute("update profiles set is_pro = %s where id = %s and deleted_at is null", (is_pro == "1", user_id))
     audit_security_event(event="dashboard_pro_changed", request=request, user_id=str(user_id), metadata={"is_pro": is_pro == "1"})
     return RedirectResponse("/dashboard/users?ok=updated", status_code=303)
 
@@ -137,10 +135,6 @@ def delete_user(request: Request, user_id: UUID, csrf: str = Form(...)):
         return RedirectResponse("/dashboard/users?err=csrf", status_code=303)
     anonymize_user_data(user_id)
     soft_delete_profile(user_id)
-    try:
-        get_supabase().auth.admin.delete_user(str(user_id))
-    except Exception:
-        pass
     audit_security_event(event="dashboard_user_deleted", request=request, user_id=str(user_id))
     return RedirectResponse("/dashboard/users?ok=deleted", status_code=303)
 
@@ -187,16 +181,7 @@ def usage_page(request: Request):
 def requests_page(request: Request):
     if redir := _guard(request):
         return redir
-    rows = (
-        get_supabase()
-        .table("api_request_logs")
-        .select("*")
-        .order("created_at", desc=True)
-        .limit(200)
-        .execute()
-        .data
-        or []
-    )
+    rows = fetch_all("select * from api_request_logs order by created_at desc limit 200")
     return templates.TemplateResponse(
         "dashboard/requests.html",
         _ctx(request, "requests", requests=rows),

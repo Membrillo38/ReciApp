@@ -201,6 +201,12 @@ enum FolderHierarchyPolicy {
     }
 }
 
+enum RecipeDragPayloadPolicy {
+    static func recipeIDs(from payloads: [String]) -> Set<UUID> {
+        Set(payloads.compactMap(UUID.init(uuidString:)))
+    }
+}
+
 enum CacheRefreshPolicy {
     /// A decoded successful response, including `[]`, replaces cache. A missing value
     /// represents transport or decoding failure and preserves last known data.

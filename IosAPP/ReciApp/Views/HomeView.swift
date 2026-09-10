@@ -1,7 +1,9 @@
 import SwiftUI
+import UIKit
 
 struct HomeView: View {
     @EnvironmentObject private var app: AppViewModel
+    @EnvironmentObject private var auth: AuthService
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
     @State private var presentedSheet: HomeSheet?
@@ -9,25 +11,31 @@ struct HomeView: View {
     @State private var foldersAppeared = false
     @State private var homeAppeared = false
     @State private var addButtonExpanded = false
-    @AppStorage("reciapp.folderSort.v1") private var folderSortRawValue = FolderSort.created.rawValue
-    @AppStorage("reciapp.folderColumns.v1") private var folderColumns = 2
-    @AppStorage("reciapp.folderLayout.v1") private var folderLayoutRawValue = CollectionLayout.grid.rawValue
+    @State private var isSelectingRecipes = false
+    @State private var selectedRecipeIDs: Set<UUID> = []
     @State private var errorToastOffset: CGFloat = 0
     @Namespace private var folderAnimation
+    @State private var shoppingRevision = 0
+
+    private var shoppingCount: Int {
+        _ = shoppingRevision
+        let userID = auth.session?.user.id.uuidString ?? "anonymous"
+        return ShoppingListStore.load(for: userID).filter { !$0.isChecked }.count
+    }
 
     private var folderSort: FolderSort {
-        FolderSort(rawValue: folderSortRawValue) ?? .created
+        FolderSort(rawValue: app.folderSortRawValue) ?? .created
     }
 
     private var folderLayout: CollectionLayout {
-        CollectionLayout(rawValue: folderLayoutRawValue) ?? .grid
+        CollectionLayout(rawValue: app.folderLayoutRawValue) ?? .grid
     }
 
     private var columns: [GridItem] {
         if dynamicTypeSize.isAccessibilitySize {
             return [GridItem(.flexible())]
         }
-        return Array(repeating: GridItem(.flexible(), spacing: 14), count: folderColumns)
+        return Array(repeating: GridItem(.flexible(), spacing: 14), count: app.folderColumns)
     }
 
     var body: some View {
@@ -52,6 +60,14 @@ struct HomeView: View {
                         } else {
                             statusContent
                                 .homeEntrance(appeared: homeAppeared, delay: 0.10, reduceMotion: accessibilityReduceMotion)
+                                .animation(
+                                    accessibilityReduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.86),
+                                    value: app.isImporting
+                                )
+                                .animation(
+                                    accessibilityReduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.86),
+                                    value: app.lastImportedRecipe?.id
+                                )
                         folderSection(
                             folders: orderedFolders(folders),
                             groupedRecipes: groupedRecipes
@@ -64,8 +80,8 @@ struct HomeView: View {
                     .padding(.bottom, 24)
                 }
                 .refreshable { await refreshRecipes() }
-                .safeAreaInset(edge: .bottom, alignment: .leading, spacing: 0) {
-                    HStack {
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    HStack(spacing: 12) {
                         if addButtonExpanded {
                             pasteToast
                                 .transition(.asymmetric(
@@ -78,11 +94,18 @@ struct HomeView: View {
                                     insertion: .scale(scale: 0.98).combined(with: .opacity),
                                     removal: .scale(scale: 0.94).combined(with: .opacity)
                                 ))
-                        }
-                        if !addButtonExpanded {
                             Spacer(minLength: 0)
+                            shoppingListButton
+                                .transition(.asymmetric(
+                                    insertion: .scale(scale: 0.92).combined(with: .opacity),
+                                    removal: .scale(scale: 0.86).combined(with: .opacity)
+                                ))
                         }
                     }
+                    .animation(
+                        accessibilityReduceMotion ? nil : .spring(response: 0.42, dampingFraction: 0.80),
+                        value: addButtonExpanded
+                    )
                     .homeEntrance(
                         appeared: homeAppeared,
                         delay: 0.28,
@@ -110,7 +133,12 @@ struct HomeView: View {
                 RecipeLoadingView(summary: summary)
             }
             .navigationDestination(item: $selectedFolder) { folder in
-                CategoryRecipesView(categoryName: folder.name, colorHex: folder.colorHex)
+                CategoryRecipesView(
+                    categoryName: folder.name,
+                    colorHex: folder.colorHex,
+                    isSelecting: $isSelectingRecipes,
+                    selectedIDs: $selectedRecipeIDs
+                )
             }
             .sheet(item: $presentedSheet) { sheet in
                 switch sheet {
@@ -122,10 +150,17 @@ struct HomeView: View {
                         .presentationDragIndicator(.visible)
                         .presentationCornerRadius(36)
                         .presentationBackground(ReciTheme.canvas)
+                case .shoppingList:
+                    ShoppingListView()
+                        .presentationDetents([.medium, .large])
+                        .presentationDragIndicator(.visible)
+                        .presentationCornerRadius(32)
+                        .presentationBackground(ReciTheme.canvas)
                 case .folder(let state):
                     FolderEditorView(
                         folder: state.folder,
                         initialParent: state.parent,
+                        allowsParentChange: state.folder != nil,
                         onSave: { name, colorHex, parent in
                             if let folder = state.folder {
                                 return app.updateCategory(folder.name, name: name, colorHex: colorHex, parent: parent)
@@ -147,6 +182,7 @@ struct HomeView: View {
                 }
             }
             .onAppear {
+                shoppingRevision += 1
                 guard !homeAppeared else { return }
                 if accessibilityReduceMotion {
                     homeAppeared = true
@@ -161,6 +197,9 @@ struct HomeView: View {
                         foldersAppeared = true
                     }
                 }
+            }
+            .onChange(of: presentedSheet?.id) { _, _ in
+                shoppingRevision += 1
             }
         }
     }
@@ -208,6 +247,7 @@ struct HomeView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(16)
             .background(ReciTheme.surface, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .transition(.opacity.combined(with: .move(edge: .top)))
         }
 
         if app.isImporting {
@@ -216,12 +256,23 @@ struct HomeView: View {
                 status: app.statusMessage,
                 position: app.importQueuePosition,
                 total: app.importQueueTotal,
-                waitingHosts: app.importQueueHosts
+                waitingHosts: app.importQueueHosts,
+                finishedRecipe: app.lastImportedRecipe,
+                onOpenFinished: { recipe in
+                    ReciHaptics.selection()
+                    app.markImportedRecipeSeen(recipe.id)
+                    app.selectedRecipe = recipe
+                }
             )
+            .transition(.asymmetric(
+                insertion: .opacity.combined(with: .offset(y: -8)),
+                removal: .opacity.combined(with: .offset(y: -6))
+            ))
         } else if app.canResumeImport {
             ResumeImportCard {
                 Task { await app.resumeImport() }
             }
+            .transition(.opacity.combined(with: .offset(y: -8)))
         } else if let recipe = app.lastImportedRecipe {
             Button {
                 ReciHaptics.selection()
@@ -231,6 +282,10 @@ struct HomeView: View {
                 ImportedRecipeCard(recipe: recipe)
             }
             .buttonStyle(.plain)
+            .transition(.asymmetric(
+                insertion: .opacity.combined(with: .offset(y: -8)),
+                removal: .opacity.combined(with: .offset(y: -6))
+            ))
         }
     }
 
@@ -250,7 +305,7 @@ struct HomeView: View {
                         selection: Binding(
                             get: { folderSort },
                             set: {
-                                folderSortRawValue = $0.rawValue
+                                app.updateFolderDisplayPreferences(sort: $0)
                                 ReciHaptics.selection()
                             }
                         )
@@ -263,9 +318,9 @@ struct HomeView: View {
                         Divider()
 
                         Picker("Folders per row", selection: Binding(
-                            get: { folderColumns },
+                            get: { app.folderColumns },
                             set: {
-                                folderColumns = $0
+                                app.updateFolderDisplayPreferences(columns: $0)
                                 ReciHaptics.selection()
                             }
                         )) {
@@ -279,7 +334,7 @@ struct HomeView: View {
                         Picker("Folder layout", selection: Binding(
                             get: { folderLayout },
                             set: {
-                                folderLayoutRawValue = $0.rawValue
+                                app.updateFolderDisplayPreferences(folderLayout: $0)
                                 ReciHaptics.selection()
                             }
                         )) {
@@ -322,7 +377,7 @@ struct HomeView: View {
                     }
                 }
             }
-            .animation(.spring(response: 0.38, dampingFraction: 0.82), value: folderColumns)
+            .animation(.spring(response: 0.38, dampingFraction: 0.82), value: app.folderColumns)
             .animation(.spring(response: 0.46, dampingFraction: 0.84), value: folderSort)
             .animation(.easeInOut(duration: 0.2), value: folderLayout)
         }
@@ -335,22 +390,27 @@ struct HomeView: View {
         list: Bool
     ) -> some View {
         ForEach(Array(folders.enumerated()), id: \.element.id) { index, folder in
-            Button {
-                ReciHaptics.selection()
-                selectedFolder = folder
-            } label: {
-                if list {
-                    FolderListRow(folder: folder, path: app.folderPath(folder.name))
-                } else {
-                    FolderTile(
-                        folder: folder,
-                        recipes: Array((groupedRecipes[folder.name] ?? []).prefix(3)),
-                        isThreeColumnLayout: folderColumns == 3
-                    )
-                    .matchedGeometryEffect(id: folder.id, in: folderAnimation)
+            RecipeFolderDropTarget(
+                destination: folder.name,
+                tint: Color(hex: folder.colorHex)
+            ) {
+                Button {
+                    ReciHaptics.selection()
+                    selectedFolder = folder
+                } label: {
+                    if list {
+                        FolderListRow(folder: folder, path: app.folderPath(folder.name))
+                    } else {
+                        FolderTile(
+                            folder: folder,
+                            recipes: Array(app.recipes(in: folder.name, includingDescendants: true).prefix(3)),
+                            isThreeColumnLayout: app.folderColumns == 3
+                        )
+                        .matchedGeometryEffect(id: folder.id, in: folderAnimation)
+                    }
                 }
+                .buttonStyle(FolderButtonStyle())
             }
-            .buttonStyle(FolderButtonStyle())
             .contextMenu { folderActions(for: folder) }
             .accessibilityLabel(
                 String(format: ReciLocalization.string("%@, %@ recipes"), AppViewModel.localizedCategoryName(folder.name), String(folder.count))
@@ -418,7 +478,7 @@ struct HomeView: View {
     private func requestDeleteFolder(_ folder: RecipeCategoryFolder) {
         guard folder.name != AppViewModel.uncategorized else { return }
 
-        if app.recipes(in: folder.name).isEmpty {
+        if app.recipes(in: folder.name, includingDescendants: true).isEmpty {
             ReciHaptics.warning()
             app.deleteCategory(folder.name)
             ReciHaptics.success()
@@ -494,6 +554,33 @@ struct HomeView: View {
         }
         .buttonStyle(.plain)
         .accessibilityHint("Import a recipe link")
+    }
+
+    private var shoppingListButton: some View {
+        Button {
+            ReciHaptics.lightImpact()
+            presentedSheet = .shoppingList
+        } label: {
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: "cart.fill")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundStyle(ReciTheme.orange)
+                    .frame(width: 56, height: 56)
+                    .background(ReciTheme.orangeSoft, in: Circle())
+
+                if shoppingCount > 0 {
+                    Text(shoppingCount > 9 ? "9+" : "\(shoppingCount)")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5)
+                        .frame(minWidth: 18, minHeight: 18)
+                        .background(ReciTheme.ink, in: Capsule())
+                        .offset(x: 4, y: -2)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(ReciLocalization.string("Shopping list"))
     }
 
     private var pasteToast: some View {
@@ -575,6 +662,7 @@ enum FolderSort: String, CaseIterable, Identifiable {
 private enum HomeSheet: Identifiable {
     case settings
     case importRecipe
+    case shoppingList
     case folder(FolderEditorState)
     case deleteFolder(String)
 
@@ -582,6 +670,7 @@ private enum HomeSheet: Identifiable {
         switch self {
         case .settings: "settings"
         case .importRecipe: "import"
+        case .shoppingList: "shopping"
         case .folder(let state): "folder-\(state.id)"
         case .deleteFolder(let name): "delete-\(name)"
         }
@@ -617,7 +706,7 @@ private struct FolderDeletionView: View {
     @Environment(\.dismiss) private var dismiss
     let folderName: String
 
-    private var recipes: [RecipeSummary] { app.recipes(in: folderName) }
+    private var recipes: [RecipeSummary] { app.recipes(in: folderName, includingDescendants: true) }
     private var otherFolders: [String] {
         app.allCategoryNames.filter { $0 != folderName && $0 != AppViewModel.uncategorized }
     }
@@ -1015,6 +1104,7 @@ private struct FolderEditorView: View {
     @Environment(\.dismiss) private var dismiss
     let folder: RecipeCategoryFolder?
     let initialParent: String?
+    var allowsParentChange = true
     let onSave: (String, String, String?) -> Bool
     let onDelete: (() -> Void)?
     @State private var name: String
@@ -1026,11 +1116,13 @@ private struct FolderEditorView: View {
     init(
         folder: RecipeCategoryFolder?,
         initialParent: String?,
+        allowsParentChange: Bool = true,
         onSave: @escaping (String, String, String?) -> Bool,
         onDelete: (() -> Void)? = nil
     ) {
         self.folder = folder
         self.initialParent = initialParent
+        self.allowsParentChange = allowsParentChange
         self.onSave = onSave
         self.onDelete = onDelete
         _name = State(initialValue: folder?.name ?? "")
@@ -1057,21 +1149,21 @@ private struct FolderEditorView: View {
                     .foregroundStyle(ReciTheme.muted)
                     .frame(maxWidth: .infinity, alignment: .trailing)
 
-                Menu {
-                    Button("Top level") { parent = nil }
-                    ForEach(parentDestinations, id: \.self) { destination in
-                        Button(app.folderPath(destination)) { parent = destination }
+                if allowsParentChange {
+                    Menu {
+                        Button("Top level") { parent = nil }
+                        ForEach(parentDestinations, id: \.self) { destination in
+                            Button(app.folderPath(destination)) { parent = destination }
+                        }
+                    } label: {
+                        parentRowLabel
                     }
-                } label: {
+                } else if let parent {
+                    parentRowLabel
+                } else {
                     HStack {
-                        Label("Inside", systemImage: "folder")
+                        Label(ReciLocalization.string("Top level"), systemImage: "folder")
                         Spacer()
-                        Text(parent.map(app.folderPath) ?? ReciLocalization.string("Top level"))
-                            .foregroundStyle(ReciTheme.muted)
-                            .lineLimit(1)
-                        Image(systemName: "chevron.up.chevron.down")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(ReciTheme.muted)
                     }
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(ReciTheme.ink)
@@ -1121,8 +1213,12 @@ private struct FolderEditorView: View {
 
                 if let onDelete {
                     Button(role: .destructive) {
-                        onDelete()
                         dismiss()
+                        Task { @MainActor in
+                            try? await Task.sleep(for: .milliseconds(250))
+                            guard !Task.isCancelled else { return }
+                            onDelete()
+                        }
                     } label: {
                         Label("Delete folder", systemImage: "trash")
                             .font(.subheadline.weight(.semibold))
@@ -1156,6 +1252,26 @@ private struct FolderEditorView: View {
                 }
             }
         }
+    }
+
+    private var parentRowLabel: some View {
+        HStack {
+            Label("Inside", systemImage: "folder")
+            Spacer()
+            Text(parent.map(app.folderPath) ?? ReciLocalization.string("Top level"))
+                .foregroundStyle(ReciTheme.muted)
+                .lineLimit(1)
+            if allowsParentChange {
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(ReciTheme.muted)
+            }
+        }
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(ReciTheme.ink)
+        .padding(.horizontal, 16)
+        .frame(height: 52)
+        .background(ReciTheme.surface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
     private var parentDestinations: [String] {
@@ -1199,6 +1315,8 @@ private struct ImportProgressCard: View {
     var position: Int = 0
     var total: Int = 0
     var waitingHosts: [String] = []
+    var finishedRecipe: RecipePublic? = nil
+    var onOpenFinished: ((RecipePublic) -> Void)? = nil
 
     private var normalizedProgress: Double {
         Double(min(max(progress, 0), 100)) / 100
@@ -1215,6 +1333,41 @@ private struct ImportProgressCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
+            if let finishedRecipe {
+                Button {
+                    onOpenFinished?(finishedRecipe)
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 22, weight: .semibold))
+                            .foregroundStyle(ReciTheme.green)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(ReciLocalization.string("Finished"))
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(ReciTheme.green)
+                                .textCase(.uppercase)
+                            Text(finishedRecipe.title)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(ReciTheme.ink)
+                                .lineLimit(2)
+                        }
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(ReciTheme.muted)
+                    }
+                    .padding(12)
+                    .background(ReciTheme.canvas, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .id(finishedRecipe.id)
+                .transition(.asymmetric(
+                    insertion: .opacity.combined(with: .move(edge: .top)),
+                    removal: .opacity.combined(with: .scale(scale: 0.96))
+                ))
+            }
+
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(queueLabel ?? ReciLocalization.string("Creating your recipe"))
@@ -1251,6 +1404,7 @@ private struct ImportProgressCard: View {
         }
         .padding(17)
         .background(ReciTheme.surface, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .animation(.spring(response: 0.38, dampingFraction: 0.86), value: finishedRecipe?.id)
     }
 }
 
@@ -1326,34 +1480,29 @@ private struct CategoryRecipesView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let categoryName: String
     let colorHex: String
-    @State private var isSelecting = false
-    @State private var selectedIDs: Set<UUID> = []
+    @Binding var isSelecting: Bool
+    @Binding var selectedIDs: Set<UUID>
     @State private var tagEditor: TagEditorTarget?
     @State private var folderSheet: FolderScreenSheet?
-    @AppStorage("reciapp.folderLayout.v1") private var folderLayoutRawValue = CollectionLayout.grid.rawValue
-    @AppStorage("reciapp.recipeLayout.v1") private var recipeLayoutRawValue = CollectionLayout.grid.rawValue
-    @AppStorage("reciapp.folderColumns.v1") private var folderColumns = 2
 
     private var recipes: [RecipeSummary] { app.recipes(in: categoryName) }
-    private var childFolders: [RecipeCategoryFolder] { app.childFolders(of: categoryName) }
+    private var childFolders: [RecipeCategoryFolder] { orderedFolders(app.childFolders(of: categoryName)) }
     private var recipeIDs: [UUID] { recipes.map(\.id) }
     private var moveDestinations: [String] {
         app.allCategoryNames.filter { $0 != categoryName }
     }
-    private var canSelect: Bool { !recipes.isEmpty && !moveDestinations.isEmpty }
-    private var folderLayout: CollectionLayout { CollectionLayout(rawValue: folderLayoutRawValue) ?? .grid }
-    private var recipeLayout: CollectionLayout { CollectionLayout(rawValue: recipeLayoutRawValue) ?? .grid }
+    private var canSelect: Bool { (!recipes.isEmpty || isSelecting) && !moveDestinations.isEmpty }
+    private var folderLayout: CollectionLayout { CollectionLayout(rawValue: app.folderLayoutRawValue) ?? .grid }
+    private var recipeLayout: CollectionLayout { CollectionLayout(rawValue: app.recipeLayoutRawValue) ?? .grid }
     private var columns: [GridItem] {
         if dynamicTypeSize.isAccessibilitySize {
             return [GridItem(.flexible())]
         }
-        return [
-            GridItem(.adaptive(minimum: 156, maximum: 220), spacing: 14),
-        ]
+        return Array(repeating: GridItem(.flexible(), spacing: 14), count: app.recipeColumns)
     }
     private var subfolderColumns: [GridItem] {
         if dynamicTypeSize.isAccessibilitySize { return [GridItem(.flexible())] }
-        return Array(repeating: GridItem(.flexible(), spacing: 14), count: folderColumns)
+        return Array(repeating: GridItem(.flexible(), spacing: 14), count: app.folderColumns)
     }
 
     var body: some View {
@@ -1364,7 +1513,7 @@ private struct CategoryRecipesView: View {
                 VStack(alignment: .leading, spacing: 26) {
                     categoryHeader
 
-                    if !childFolders.isEmpty {
+                    if categoryName != AppViewModel.uncategorized {
                         subfolderSection
                     }
 
@@ -1410,42 +1559,19 @@ private struct CategoryRecipesView: View {
                 }
                 if !isSelecting {
                     Menu {
-                        Picker("Folder layout", selection: $folderLayoutRawValue) {
-                            ForEach(CollectionLayout.allCases) { layout in
-                                Label(layout.title, systemImage: layout.icon).tag(layout.rawValue)
-                            }
-                        }
-                        Picker("Recipe layout", selection: $recipeLayoutRawValue) {
-                            ForEach(CollectionLayout.allCases) { layout in
-                                Label(layout.title, systemImage: layout.icon).tag(layout.rawValue)
-                            }
-                        }
+                        categoryLayoutMenu
                     } label: {
                         Image(systemName: "rectangle.grid.1x2")
                     }
-                    .accessibilityLabel("Folder and recipe layout")
-
-                    if categoryName != AppViewModel.uncategorized {
-                        Button {
-                            folderSheet = .editor(FolderEditorState(folder: nil, parent: categoryName))
-                        } label: {
-                            Image(systemName: "folder.badge.plus")
-                        }
-                        .accessibilityLabel("New subfolder")
-                    }
+                    .accessibilityLabel(ReciLocalization.string("Layout"))
                 }
             }
         }
         .animation(.easeOut(duration: 0.2), value: isSelecting)
         .onChange(of: recipeIDs) { _, ids in
-            selectedIDs.formIntersection(ids)
-            if recipes.isEmpty { isSelecting = false }
-        }
-        .onChange(of: canSelect) { _, possible in
-            if !possible {
-                isSelecting = false
-                selectedIDs = []
-            }
+            _ = ids
+            selectedIDs.formIntersection(Set(app.recipes.map(\.id)))
+            if selectedIDs.isEmpty && app.recipes.isEmpty { isSelecting = false }
         }
         .sheet(item: $tagEditor) { target in
             RecipeTagEditorView(recipeID: target.id)
@@ -1459,6 +1585,7 @@ private struct CategoryRecipesView: View {
                 FolderEditorView(
                     folder: state.folder,
                     initialParent: state.parent,
+                    allowsParentChange: state.folder != nil,
                     onSave: { name, color, parent in
                         if let folder = state.folder {
                             return app.updateCategory(folder.name, name: name, colorHex: color, parent: parent)
@@ -1508,9 +1635,27 @@ private struct CategoryRecipesView: View {
                                     .contextMenu {
                                         recipeContextMenu(for: recipe)
                                     }
-                                    .draggable(recipe.id.uuidString)
+                                    .background(NativeRecipeDragInstaller(recipeID: recipe.id))
 
-                                    if !isSelecting {
+                                    if isSelecting {
+                                        Button {
+                                            toggleSelection(recipe.id)
+                                        } label: {
+                                            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                                                .font(.system(size: 22, weight: .semibold))
+                                                .symbolRenderingMode(.palette)
+                                                .foregroundStyle(
+                                                    isSelected ? Color.white : Color.white.opacity(0.95),
+                                                    isSelected ? ReciTheme.green : Color.white.opacity(0.45)
+                                                )
+                                                .frame(width: 44, height: 44)
+                                                .contentShape(Rectangle())
+                                        }
+                                        .buttonStyle(.plain)
+                                        .accessibilityLabel(
+                                            ReciLocalization.string(isSelected ? "Deselect recipe" : "Select recipe")
+                                        )
+                                    } else {
                                         Button {
                                             ReciHaptics.selection()
                                             app.toggleFavorite(recipe.id)
@@ -1533,12 +1678,96 @@ private struct CategoryRecipesView: View {
                             }
     }
 
+    @ViewBuilder
+    private var categoryLayoutMenu: some View {
+        if !childFolders.isEmpty {
+            Section(ReciLocalization.string("Subfolders")) {
+                Picker(
+                    ReciLocalization.string("Subfolders"),
+                    selection: Binding(
+                        get: { app.folderLayoutRawValue },
+                        set: { rawValue in
+                            guard let layout = CollectionLayout(rawValue: rawValue) else { return }
+                            app.updateFolderDisplayPreferences(folderLayout: layout)
+                            ReciHaptics.selection()
+                        }
+                    )
+                ) {
+                    ForEach(CollectionLayout.allCases) { layout in
+                        Label(layout.title, systemImage: layout.icon).tag(layout.rawValue)
+                    }
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+            }
+        }
+
+        Section(ReciLocalization.string("Recipes")) {
+            Picker(
+                ReciLocalization.string("Recipes"),
+                selection: Binding(
+                    get: { app.recipeLayoutRawValue },
+                    set: { rawValue in
+                        guard let layout = CollectionLayout(rawValue: rawValue) else { return }
+                        app.updateFolderDisplayPreferences(recipeLayout: layout)
+                        ReciHaptics.selection()
+                    }
+                )
+            ) {
+                ForEach(CollectionLayout.allCases) { layout in
+                    Label(layout.title, systemImage: layout.icon).tag(layout.rawValue)
+                }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+
+            if recipeLayout == .grid {
+                Picker(
+                    ReciLocalization.string("Recipes per row"),
+                    selection: Binding(
+                        get: { app.recipeColumns },
+                        set: {
+                            app.updateFolderDisplayPreferences(recipeColumns: $0)
+                            ReciHaptics.selection()
+                        }
+                    )
+                ) {
+                    Text("1").tag(1)
+                    Text("2").tag(2)
+                    Text("3").tag(3)
+                }
+            }
+        }
+    }
+
     private var subfolderSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Subfolders")
-                .font(.headline)
-                .foregroundStyle(ReciTheme.ink)
-            if folderLayout == .grid {
+            HStack(alignment: .center, spacing: 0) {
+                Text("Subfolders")
+                    .font(.headline)
+                    .foregroundStyle(ReciTheme.ink)
+                Spacer(minLength: 0)
+                Button {
+                    ReciHaptics.mediumImpact()
+                    folderSheet = .editor(FolderEditorState(folder: nil, parent: categoryName))
+                } label: {
+                    Label("New", systemImage: "plus")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(ReciTheme.orange)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(ReciTheme.orangeSoft, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(ReciLocalization.string("New subfolder"))
+            }
+
+            if childFolders.isEmpty {
+                Text(ReciLocalization.string("No subfolders yet"))
+                    .font(.subheadline)
+                    .foregroundStyle(ReciTheme.muted)
+                    .padding(.vertical, 4)
+            } else if folderLayout == .grid {
                 LazyVGrid(columns: subfolderColumns, spacing: 14) { subfolderItems(list: false) }
             } else {
                 LazyVStack(spacing: 10) { subfolderItems(list: true) }
@@ -1549,17 +1778,25 @@ private struct CategoryRecipesView: View {
     @ViewBuilder
     private func subfolderItems(list: Bool) -> some View {
         ForEach(childFolders) { folder in
-            RecipeFolderDropTarget(destination: folder.name, tint: Color(hex: folder.colorHex)) {
+            RecipeFolderDropTarget(
+                destination: folder.name,
+                tint: Color(hex: folder.colorHex)
+            ) {
                 NavigationLink {
-                    CategoryRecipesView(categoryName: folder.name, colorHex: folder.colorHex)
+                    CategoryRecipesView(
+                        categoryName: folder.name,
+                        colorHex: folder.colorHex,
+                        isSelecting: $isSelecting,
+                        selectedIDs: $selectedIDs
+                    )
                 } label: {
                     if list {
                         FolderListRow(folder: folder, path: app.folderPath(folder.name))
                     } else {
                         FolderTile(
                             folder: folder,
-                            recipes: Array(app.recipes(in: folder.name).prefix(3)),
-                            isThreeColumnLayout: folderColumns == 3
+                            recipes: Array(app.recipes(in: folder.name, includingDescendants: true).prefix(3)),
+                            isThreeColumnLayout: app.folderColumns == 3
                         )
                     }
                 }
@@ -1645,7 +1882,7 @@ private struct CategoryRecipesView: View {
     }
 
     private func requestDeleteFolder(_ folder: RecipeCategoryFolder) {
-        if app.recipes(in: folder.name).isEmpty {
+        if app.recipes(in: folder.name, includingDescendants: true).isEmpty {
             app.deleteCategory(folder.name)
             ReciHaptics.success()
         } else {
@@ -1730,6 +1967,10 @@ private struct CategoryRecipesView: View {
 
     private func endSelecting() {
         ReciHaptics.lightImpact()
+        clearRecipeSelection()
+    }
+
+    private func clearRecipeSelection() {
         isSelecting = false
         selectedIDs = []
     }
@@ -1745,7 +1986,7 @@ private struct CategoryRecipesView: View {
 
     private func selectAll() {
         ReciHaptics.selection()
-        selectedIDs = Set(recipeIDs)
+        selectedIDs.formUnion(recipeIDs)
     }
 
     private func moveSelected(to destination: String) {
@@ -1753,6 +1994,20 @@ private struct CategoryRecipesView: View {
         app.moveRecipes(withIDs: selectedIDs, to: destination)
         isSelecting = false
         selectedIDs = []
+    }
+
+    private func orderedFolders(_ folders: [RecipeCategoryFolder]) -> [RecipeCategoryFolder] {
+        switch FolderSort(rawValue: app.folderSortRawValue) ?? .created {
+        case .created:
+            return folders
+        case .name:
+            return folders.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        case .recipeCount:
+            return folders.sorted { lhs, rhs in
+                if lhs.count == rhs.count { return false }
+                return lhs.count > rhs.count
+            }
+        }
     }
 }
 
@@ -1785,15 +2040,109 @@ private struct RecipeFolderDropTarget<Content: View>: View {
             .scaleEffect(isTargeted ? 1.02 : 1)
             .animation(.easeOut(duration: 0.16), value: isTargeted)
             .dropDestination(for: String.self) { items, _ in
-                guard let raw = items.first,
-                      let id = UUID(uuidString: raw),
-                      app.recipes.contains(where: { $0.id == id }),
-                      app.category(for: id) != destination else { return false }
-                app.setCategory(destination, for: id)
+                let requestedIDs = RecipeDragPayloadPolicy.recipeIDs(from: items)
+                let liveIDs = Set(app.recipes.map(\.id))
+                let movableIDs = requestedIDs
+                    .intersection(liveIDs)
+                    .filter { app.category(for: $0) != destination }
+                guard !movableIDs.isEmpty else { return false }
+                app.moveRecipes(withIDs: Set(movableIDs), to: destination)
                 ReciHaptics.success()
                 return true
             } isTargeted: { isTargeted = $0 }
             .accessibilityHint("Drop a recipe here to move it")
+    }
+}
+
+private struct NativeRecipeDragInstaller: UIViewRepresentable {
+    let recipeID: UUID
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(recipeID: recipeID)
+    }
+
+    func makeUIView(context: Context) -> UIView {
+        let marker = UIView(frame: .zero)
+        marker.isUserInteractionEnabled = false
+        return marker
+    }
+
+    func updateUIView(_ marker: UIView, context: Context) {
+        context.coordinator.recipeID = recipeID
+        DispatchQueue.main.async {
+            context.coordinator.install(on: marker.superview)
+        }
+    }
+
+    static func dismantleUIView(_ marker: UIView, coordinator: Coordinator) {
+        coordinator.detach()
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, UIDragInteractionDelegate {
+        var recipeID: UUID
+        private weak var installedView: UIView?
+        private var interaction: UIDragInteraction?
+
+        init(recipeID: UUID) {
+            self.recipeID = recipeID
+        }
+
+        func install(on view: UIView?) {
+            guard let view, installedView !== view else { return }
+            detach()
+            let interaction = UIDragInteraction(delegate: self)
+            interaction.isEnabled = true
+            view.addInteraction(interaction)
+            installedView = view
+            self.interaction = interaction
+        }
+
+        func detach() {
+            if let interaction, let installedView {
+                installedView.removeInteraction(interaction)
+            }
+            interaction = nil
+            installedView = nil
+        }
+
+        func dragInteraction(
+            _ interaction: UIDragInteraction,
+            itemsForBeginning session: UIDragSession
+        ) -> [UIDragItem] {
+            [dragItem()]
+        }
+
+        func dragInteraction(
+            _ interaction: UIDragInteraction,
+            itemsForAddingTo session: UIDragSession,
+            withTouchAt point: CGPoint
+        ) -> [UIDragItem] {
+            guard !session.items.contains(where: { ($0.localObject as? UUID) == recipeID }) else { return [] }
+            return [dragItem()]
+        }
+
+        func dragInteraction(
+            _ interaction: UIDragInteraction,
+            sessionForAddingItems sessions: [UIDragSession],
+            withTouchAt point: CGPoint
+        ) -> UIDragSession? {
+            sessions.first
+        }
+
+        func dragInteraction(
+            _ interaction: UIDragInteraction,
+            sessionIsRestrictedToDraggingApplication session: UIDragSession
+        ) -> Bool {
+            true
+        }
+
+        private func dragItem() -> UIDragItem {
+            let provider = NSItemProvider(object: recipeID.uuidString as NSString)
+            let item = UIDragItem(itemProvider: provider)
+            item.localObject = recipeID
+            return item
+        }
     }
 }
 
@@ -1810,14 +2159,6 @@ private struct RecipeListRow: View {
             RecipeArtwork(recipe: recipe, tint: tint, compact: true, showsFallbackText: false)
                 .frame(width: 68, height: 68)
                 .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
-                .overlay(alignment: .topTrailing) {
-                    if isSelecting {
-                        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                            .symbolRenderingMode(.palette)
-                            .foregroundStyle(.white, isSelected ? ReciTheme.green : .white.opacity(0.5))
-                            .padding(5)
-                    }
-                }
             VStack(alignment: .leading, spacing: 5) {
                 Text(recipe.title)
                     .font(.headline)
@@ -2054,19 +2395,6 @@ private struct RecipeTile: View {
                 )
                     .frame(width: proxy.size.width, height: proxy.size.height)
                     .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                    .overlay(alignment: .topTrailing) {
-                        if isSelecting {
-                            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                                .font(.system(size: 22, weight: .semibold))
-                                .symbolRenderingMode(.palette)
-                                .foregroundStyle(
-                                    isSelected ? Color.white : Color.white.opacity(0.95),
-                                    isSelected ? ReciTheme.green : Color.white.opacity(0.45)
-                                )
-                                .padding(10)
-                                .accessibilityHidden(true)
-                        }
-                    }
                     .overlay(alignment: .topLeading) {
                         if isSelecting, isFavorite {
                             Image(systemName: "heart.fill")

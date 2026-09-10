@@ -7,7 +7,7 @@ from uuid import UUID
 from fastapi import HTTPException
 
 from app.auth import AuthUser
-from app.db import get_supabase
+from app.db import execute, fetch_one
 from app.limits import resolve_user_limits
 from app.store import week_start_utc
 
@@ -30,38 +30,35 @@ def _month_start_utc(now: datetime | None = None) -> datetime:
 
 
 def get_quota(user: AuthUser) -> QuotaStatus:
-    sb = get_supabase()
-    week_start = week_start_utc().isoformat()
-    month_start = _month_start_utc().isoformat()
+    week_start = week_start_utc()
+    month_start = _month_start_utc()
 
-    profile = (
-        sb.table("profiles")
-        .select("free_weekly_limit,pro_monthly_price_cents,pro_margin_ratio,is_pro")
-        .eq("id", str(user.id))
-        .limit(1)
-        .execute()
-    )
-    row = (profile.data or [{}])[0]
+    row = fetch_one(
+        """
+        select free_weekly_limit, pro_monthly_price_cents, pro_margin_ratio, is_pro
+          from profiles
+         where id = %s
+         limit 1
+        """,
+        (user.id,),
+    ) or {}
     limits = resolve_user_limits(row)
 
-    week = (
-        sb.table("usage_events")
-        .select("id", count="exact")
-        .eq("user_id", str(user.id))
-        .gte("created_at", week_start)
-        .execute()
+    week = fetch_one(
+        "select count(*) as count from usage_events where user_id = %s and created_at >= %s",
+        (user.id, week_start),
     )
-    free_used = int(week.count or 0)
+    free_used = int((week or {}).get("count") or 0)
 
-    month = (
-        sb.table("usage_events")
-        .select("cost_cents")
-        .eq("user_id", str(user.id))
-        .eq("kind", "extract_miss")
-        .gte("created_at", month_start)
-        .execute()
+    month = fetch_one(
+        """
+        select coalesce(sum(cost_cents), 0) as cost
+          from usage_events
+         where user_id = %s and kind = 'extract_miss' and created_at >= %s
+        """,
+        (user.id, month_start),
     )
-    pro_cost = sum(float(r.get("cost_cents") or 0) for r in (month.data or []))
+    pro_cost = float((month or {}).get("cost") or 0)
 
     return QuotaStatus(
         is_pro=user.is_pro,
@@ -114,13 +111,10 @@ def record_usage(
     recipe_id: UUID | None,
     job_id: UUID | None,
 ) -> None:
-    sb = get_supabase()
-    sb.table("usage_events").insert(
-        {
-            "user_id": str(user_id),
-            "kind": kind,
-            "cost_cents": cost_cents,
-            "recipe_id": str(recipe_id) if recipe_id else None,
-            "job_id": str(job_id) if job_id else None,
-        }
-    ).execute()
+    execute(
+        """
+        insert into usage_events (user_id, kind, cost_cents, recipe_id, job_id)
+        values (%s, %s, %s, %s, %s)
+        """,
+        (user_id, kind, cost_cents, recipe_id, job_id),
+    )

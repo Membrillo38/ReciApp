@@ -3,84 +3,64 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from app.limits import get_app_defaults
-from app.db import get_supabase
-
-
-def _since(days: int) -> str:
-    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+from app.db import execute, fetch_all, fetch_one
 
 
 def dashboard_overview() -> dict:
-    sb = get_supabase()
-    day = _since(1)
-    week = _since(7)
-    month = _since(30)
+    day = datetime.now(timezone.utc) - timedelta(days=1)
+    week = datetime.now(timezone.utc) - timedelta(days=7)
+    month = datetime.now(timezone.utc) - timedelta(days=30)
 
-    users = sb.table("profiles").select("id,is_pro,deleted_at").execute().data or []
+    users = fetch_all("select id, is_pro, deleted_at from profiles")
     active_users = [u for u in users if not u.get("deleted_at")]
     pro_users = [u for u in active_users if u.get("is_pro")]
 
-    recipes = sb.table("recipes").select("id", count="exact").execute()
-    jobs_week = (
-        sb.table("extract_jobs")
-        .select("id,status,progress,cache_hit,cost_cents,created_at")
-        .gte("created_at", week)
-        .execute()
-        .data
-        or []
+    recipes = fetch_one("select count(*) as count from recipes") or {}
+    jobs_week = fetch_all(
+        "select id, status, progress, cache_hit, cost_cents, created_at from extract_jobs where created_at >= %s",
+        (week,),
     )
-    usage_month = (
-        sb.table("usage_events")
-        .select("kind,cost_cents,created_at,user_id")
-        .gte("created_at", month)
-        .execute()
-        .data
-        or []
+    jobs_month = fetch_all(
+        "select id, status, cost_cents, created_at, cache_hit from extract_jobs where created_at >= %s",
+        (month,),
     )
-    reqs_day = (
-        sb.table("api_request_logs")
-        .select("id,path,status_code,duration_ms,created_at")
-        .gte("created_at", day)
-        .order("created_at", desc=True)
-        .limit(200)
-        .execute()
-        .data
-        or []
+    usage_month = fetch_all(
+        "select kind, cost_cents, created_at, user_id from usage_events where created_at >= %s",
+        (month,),
     )
-    reqs_week_count = (
-        sb.table("api_request_logs")
-        .select("id", count="exact")
-        .gte("created_at", week)
-        .execute()
+    reqs_day = fetch_all(
+        """
+        select id, path, status_code, duration_ms, created_at
+          from api_request_logs
+         where created_at >= %s
+         order by created_at desc
+         limit 200
+        """,
+        (day,),
     )
-    spend_alerts = (
-        sb.table("spend_alerts")
-        .select("scope,threshold,period_start,created_at")
-        .order("created_at", desc=True)
-        .limit(20)
-        .execute()
-        .data
-        or []
+    reqs_week_count = fetch_one("select count(*) as count from api_request_logs where created_at >= %s", (week,)) or {}
+    spend_alerts = fetch_all(
+        "select scope, threshold, period_start, created_at from spend_alerts order by created_at desc limit 20"
     )
 
-    cost_month = sum(float(u.get("cost_cents") or 0) for u in usage_month)
+    # Real OpenAI spend: sum job cost_cents for completed + failed (includes paid failures).
+    cost_month = sum(
+        float(j.get("cost_cents") or 0)
+        for j in jobs_month
+        if j.get("status") in {"completed", "failed"}
+    )
     cost_week = sum(
-        float(u.get("cost_cents") or 0)
-        for u in usage_month
-        if (u.get("created_at") or "") >= week
+        float(j.get("cost_cents") or 0)
+        for j in jobs_week
+        if j.get("status") in {"completed", "failed"}
     )
     hits = sum(1 for j in jobs_week if j.get("cache_hit"))
     misses = sum(1 for j in jobs_week if not j.get("cache_hit"))
     failed = sum(1 for j in jobs_week if j.get("status") == "failed")
 
-    live = (
-        sb.table("extract_jobs")
-        .select("id,status")
-        .eq("job_kind", "extract")
-        .in_("status", ["pending", "processing"])
-        .execute()
-        .data
-        or []
+    live = fetch_all(
+        "select id, status from extract_jobs where job_kind = 'extract' and status = any(%s)",
+        (["pending", "processing"],),
     )
     processing_now = sum(1 for j in live if j.get("status") == "processing")
     queued_now = sum(1 for j in live if j.get("status") == "pending")
@@ -90,7 +70,7 @@ def dashboard_overview() -> dict:
         "users_total": len(active_users),
         "users_pro": len(pro_users),
         "users_free": len(active_users) - len(pro_users),
-        "recipes_cached": int(recipes.count or 0),
+        "recipes_cached": int(recipes.get("count") or 0),
         "jobs_week": len(jobs_week),
         "cache_hits_week": hits,
         "cache_misses_week": misses,
@@ -101,7 +81,8 @@ def dashboard_overview() -> dict:
         "cost_cents_month": round(cost_month, 4),
         "cost_usd_week": round(cost_week / 100.0, 4),
         "cost_usd_month": round(cost_month / 100.0, 4),
-        "requests_week": int(reqs_week_count.count or 0),
+        "usage_events_month": len(usage_month),
+        "requests_week": int(reqs_week_count.get("count") or 0),
         "requests_recent": reqs_day[:50],
         "pro_price_cents": defaults.default_pro_monthly_price_cents,
         "pro_budget_cents": round(
@@ -114,16 +95,7 @@ def dashboard_overview() -> dict:
 
 
 def list_usage(limit: int = 100) -> list[dict]:
-    sb = get_supabase()
-    return (
-        sb.table("usage_events")
-        .select("*")
-        .order("created_at", desc=True)
-        .limit(limit)
-        .execute()
-        .data
-        or []
-    )
+    return fetch_all("select * from usage_events order by created_at desc limit %s", (limit,))
 
 
 def log_request(
@@ -139,17 +111,13 @@ def log_request(
     if path.startswith("/dashboard") or path in {"/health", "/favicon.ico"}:
         return
     try:
-        get_supabase().table("api_request_logs").insert(
-            {
-                "method": method,
-                "path": path[:500],
-                "status_code": status_code,
-                "duration_ms": duration_ms,
-                "user_id": user_id,
-                "ip": (ip or "")[:64] or None,
-                "correlation_id": correlation_id,
-            }
-        ).execute()
+        execute(
+            """
+            insert into api_request_logs (method, path, status_code, duration_ms, user_id, ip, correlation_id)
+            values (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (method, path[:500], status_code, duration_ms, user_id, (ip or "")[:64] or None, correlation_id),
+        )
     except Exception:
         # Never break API if logging fails
         pass

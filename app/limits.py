@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 
-from app.db import get_supabase
+from app.db import fetch_one
 
 
 @dataclass
@@ -28,9 +28,7 @@ def _cached_defaults_key() -> str:
 
 def get_app_defaults() -> AppDefaults:
     _cached_defaults_key()  # cache bust hook if needed later
-    sb = get_supabase()
-    res = sb.table("app_settings").select("*").eq("id", 1).limit(1).execute()
-    row = (res.data or [None])[0]
+    row = fetch_one("select * from app_settings where id = 1 limit 1")
     if not row:
         return AppDefaults()
     return AppDefaults(

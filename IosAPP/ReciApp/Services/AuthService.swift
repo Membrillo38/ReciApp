@@ -1,16 +1,29 @@
 import AuthenticationServices
 import CryptoKit
 import Foundation
-import Supabase
+import Security
+
+struct AuthUser: Codable, Equatable, Sendable {
+    let id: UUID
+    let email: String?
+    let displayName: String?
+    let isPro: Bool
+}
+
+struct Session: Codable, Equatable, Sendable {
+    let accessToken: String
+    let refreshToken: String
+    let expiresAt: Date?
+    let user: AuthUser
+
+    var isNearExpiry: Bool {
+        guard let expiresAt else { return false }
+        return expiresAt.timeIntervalSinceNow < 60
+    }
+}
 
 @MainActor
 final class AuthService: ObservableObject {
-    let client = SupabaseClient(
-        supabaseURL: AppConfig.supabaseURL,
-        supabaseKey: AppConfig.supabaseAnonKey,
-        options: SupabaseClientOptions(auth: .init(emitLocalSessionAsInitialSession: true))
-    )
-
     @Published private(set) var session: Session?
     @Published private(set) var isLoading = false
     @Published private(set) var hasRestoredSession = false
@@ -19,6 +32,17 @@ final class AuthService: ObservableObject {
     private var refreshTasks = SharedTaskCoordinator<AuthRefreshKey, Session?, Never>()
     private var unauthorizedTokenPolicy = UnauthorizedTokenPolicy()
     private var authGeneration = 0
+    private let keychain = AuthKeychainStore()
+    private let decoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return decoder
+    }()
+    private let encoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        return encoder
+    }()
 
     var accessToken: String? { session?.accessToken }
 
@@ -32,20 +56,16 @@ final class AuthService: ObservableObject {
     func dismissError() { errorMessage = nil }
 
     func bearerToken(refresh: Bool) async throws -> String {
-        if refresh {
-            let refreshed = try await client.auth.refreshSession()
+        guard let current = session else { throw AppError.unauthorized }
+        if refresh || current.isNearExpiry {
+            let refreshed = try await refreshFromBackend(refreshToken: current.refreshToken)
             apply(refreshed)
             return refreshed.accessToken
         }
-        let live = try await client.auth.session
-        if session?.accessToken != live.accessToken {
-            apply(live)
-        }
-        return live.accessToken
+        return current.accessToken
     }
 
     init() {
-        Task { await listenAuth() }
         Task { await restoreSession() }
     }
 
@@ -53,13 +73,12 @@ final class AuthService: ObservableObject {
         let expectedGeneration = authGeneration
         AppLogger.auth.info("restore session started")
         do {
-            let restored = try await client.auth.session
+            let restored = try keychain.load()
             if expectedGeneration == authGeneration {
                 apply(restored)
                 AppLogger.auth.info("restore session succeeded")
             }
         } catch {
-            // Keep a session already emitted from local storage when refresh is offline.
             let missingSession = isMissingSession(error)
             if session == nil, missingSession {
                 AppLogger.auth.info("restore session: no saved session")
@@ -117,11 +136,11 @@ final class AuthService: ObservableObject {
         // Consume before starting so cancellation or invalidation cannot reopen this JWT.
         unauthorizedTokenPolicy.finishRefresh(for: rejectedToken)
 
-        let client = client
         let entry = refreshTasks.acquire(for: refreshKey) {
             Task<Session?, Never> {
                 do {
-                    let refreshed = try await client.auth.refreshSession()
+                    guard let refreshToken = await self.session?.refreshToken else { return nil }
+                    let refreshed = try await self.refreshFromBackend(refreshToken: refreshToken)
                     return Task.isCancelled ? nil : refreshed
                 } catch {
                     AppLogger.auth.error("session refresh failed: \(error.localizedDescription, privacy: .public)")
@@ -154,27 +173,15 @@ final class AuthService: ObservableObject {
         return refreshed.accessToken
     }
 
-    private func listenAuth() async {
-        for await (event, newSession) in client.auth.authStateChanges {
-            if event == .initialSession, newSession?.isExpired == true {
-                AppLogger.auth.info("ignored expired initial session")
-                continue
-            }
-            if let newSession {
-                apply(newSession)
-            } else {
-                clearSession()
-            }
-            hasRestoredSession = true
-            AppLogger.auth.info("auth state changed signedIn=\(newSession != nil, privacy: .public)")
-        }
-    }
-
     func signOut() async {
         AppLogger.auth.info("sign out started")
+        let refreshToken = session?.refreshToken
         await LogoutOrderingPolicy.clearBeforeRemote(
             clear: { self.clearSession() },
-            remote: { _ = try? await self.client.auth.signOut(scope: .local) }
+            remote: {
+                guard let refreshToken else { return }
+                try? await self.logout(refreshToken: refreshToken)
+            }
         )
         AppLogger.auth.info("sign out completed")
     }
@@ -201,12 +208,10 @@ final class AuthService: ObservableObject {
                   let idToken = String(data: tokenData, encoding: .utf8) else {
                 throw AppError.server("Invalid Apple credential")
             }
-            let signedIn = try await client.auth.signInWithIdToken(
-                credentials: OpenIDConnectCredentials(
-                    provider: .apple,
-                    idToken: idToken,
-                    nonce: nonce
-                )
+            let signedIn = try await signInWithApple(
+                identityToken: idToken,
+                nonce: nonce,
+                fullName: formattedName(apple.fullName)
             )
             guard expectedGeneration == authGeneration else { return }
             apply(signedIn)
@@ -222,6 +227,11 @@ final class AuthService: ObservableObject {
             authGeneration += 1
         }
         session = newSession
+        do {
+            try keychain.save(newSession)
+        } catch {
+            AppLogger.auth.error("session save failed: \(error.localizedDescription, privacy: .public)")
+        }
         SubscriptionService.shared.identify(userID: newSession.user.id)
     }
 
@@ -229,14 +239,137 @@ final class AuthService: ObservableObject {
         authGeneration += 1
         session = nil
         refreshTasks.cancelAll()
+        keychain.clear()
         SubscriptionService.shared.reset()
     }
 
     private func isMissingSession(_ error: Error) -> Bool {
-        error.localizedDescription.localizedCaseInsensitiveContains("Auth session missing")
+        if case AuthKeychainStore.StoreError.missing = error { return true }
+        return error.localizedDescription.localizedCaseInsensitiveContains("Auth session missing")
     }
 
     private func sha256(_ input: String) -> String {
         SHA256.hash(data: Data(input.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func formattedName(_ components: PersonNameComponents?) -> String? {
+        guard let components else { return nil }
+        let value = PersonNameComponentsFormatter().string(from: components).trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
+    private func signInWithApple(identityToken: String, nonce: String, fullName: String?) async throws -> Session {
+        let payload = AppleAuthRequest(identityToken: identityToken, nonce: nonce, fullName: fullName)
+        let response: AuthTokenResponse = try await post("v1/auth/apple", body: payload)
+        return try makeSession(from: response, fallbackUser: nil)
+    }
+
+    private func refreshFromBackend(refreshToken: String) async throws -> Session {
+        let response: AuthTokenResponse = try await post("v1/auth/refresh", body: RefreshAuthRequest(refreshToken: refreshToken))
+        return try makeSession(from: response, fallbackUser: session?.user)
+    }
+
+    private func logout(refreshToken: String) async throws {
+        let _: OkResponse = try await post("v1/auth/logout", body: RefreshAuthRequest(refreshToken: refreshToken))
+    }
+
+    private func makeSession(from response: AuthTokenResponse, fallbackUser: AuthUser?) throws -> Session {
+        guard response.tokenType.lowercased() == "bearer" else { throw AppError.server("Unsupported auth token") }
+        guard let user = response.user ?? fallbackUser else { throw AppError.server("Missing auth user") }
+        return Session(
+            accessToken: response.accessToken,
+            refreshToken: response.refreshToken,
+            expiresAt: Date().addingTimeInterval(TimeInterval(response.expiresIn)),
+            user: user
+        )
+    }
+
+    private func post<Request: Encodable, Response: Decodable>(_ path: String, body: Request) async throws -> Response {
+        let url = AppConfig.apiBaseURL.appending(path: path)
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 30
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try encoder.encode(body)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw AppError.server("No response") }
+        if http.statusCode == 401 { throw AppError.unauthorized }
+        guard (200...299).contains(http.statusCode) else {
+            let parsed = APIErrorDetailParser.parse(data: data, status: http.statusCode)
+            throw AppError.server(parsed.message)
+        }
+        return try decoder.decode(Response.self, from: data)
+    }
+}
+
+private struct AppleAuthRequest: Encodable {
+    let identityToken: String
+    let nonce: String
+    let fullName: String?
+}
+
+private struct RefreshAuthRequest: Encodable {
+    let refreshToken: String
+}
+
+private struct AuthTokenResponse: Decodable {
+    let accessToken: String
+    let refreshToken: String
+    let tokenType: String
+    let expiresIn: Int
+    let user: AuthUser?
+}
+
+private struct AuthKeychainStore {
+    enum StoreError: Error {
+        case missing
+        case unhandled(OSStatus)
+    }
+
+    private let service = "com.membri.reciapp.auth"
+    private let account = "session"
+
+    func load() throws -> Session {
+        var query = baseQuery()
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { throw StoreError.missing }
+        guard status == errSecSuccess else { throw StoreError.unhandled(status) }
+        guard let data = result as? Data else { throw StoreError.missing }
+        return try JSONDecoder().decode(Session.self, from: data)
+    }
+
+    func save(_ session: Session) throws {
+        let data = try JSONEncoder().encode(session)
+        var query = baseQuery()
+        let attributes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        ]
+        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if status == errSecSuccess { return }
+        if status == errSecItemNotFound {
+            query.merge(attributes) { _, new in new }
+            let addStatus = SecItemAdd(query as CFDictionary, nil)
+            guard addStatus == errSecSuccess else { throw StoreError.unhandled(addStatus) }
+            return
+        }
+        throw StoreError.unhandled(status)
+    }
+
+    func clear() {
+        SecItemDelete(baseQuery() as CFDictionary)
+    }
+
+    private func baseQuery() -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
     }
 }

@@ -7,10 +7,10 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import HTTPException
-from postgrest.exceptions import APIError
+from psycopg.errors import UniqueViolation
 
 from app.config import settings
-from app.db import get_supabase
+from app.db import execute_returning, fetch_one
 
 
 def _b64(value: str) -> bytes:
@@ -57,35 +57,56 @@ def verify_jws(compact: str) -> dict:
     return payload
 
 
-def _record_notification(sb, notification_id: str, payload: dict) -> bool:
-    existing = sb.table("apple_notification_events").select("status").eq("event_id", notification_id).limit(1).execute()
-    if existing.data:
-        return existing.data[0].get("status") not in {"processed", "skipped"}
+def _record_notification(notification_id: str, payload: dict) -> bool:
+    existing = fetch_one("select status from apple_notification_events where event_id = %s limit 1", (notification_id,))
+    if existing:
+        return existing.get("status") not in {"processed", "skipped"}
     try:
-        sb.table("apple_notification_events").insert(payload).execute()
-    except APIError as exc:
-        if exc.code != "23505":
+        execute_returning(
+            """
+            insert into apple_notification_events (event_id, notification_type, signed_payload_sha256, payload, status)
+            values (%s, %s, %s, %s, %s)
+            returning event_id
+            """,
+            (
+                payload["event_id"],
+                payload.get("notification_type"),
+                payload["signed_payload_sha256"],
+                payload.get("payload") or {},
+                payload.get("status") or "received",
+            ),
+        )
+    except UniqueViolation:
+        existing = fetch_one("select status from apple_notification_events where event_id = %s limit 1", (notification_id,))
+        if not existing:
             raise
         # Concurrent receipt insertion is not proof of successful processing.
-        existing = sb.table("apple_notification_events").select("status").eq("event_id", notification_id).limit(1).execute()
-        if not existing.data:
-            raise
-        return existing.data[0].get("status") not in {"processed", "skipped"}
+        return existing.get("status") not in {"processed", "skipped"}
     return True
 
 
-def _mark_notification(sb, notification_id: str, status: str) -> None:
-    response = sb.table("apple_notification_events").update({"status": status}).eq("event_id", notification_id).in_("status", ["received", "failed"]).execute()
-    if not response.data:
-        current = sb.table("apple_notification_events").select("status").eq("event_id", notification_id).limit(1).execute()
-        if current.data and current.data[0].get("status") in {"processed", "skipped"}:
+def _mark_notification(notification_id: str, status: str) -> None:
+    row = execute_returning(
+        """
+        update apple_notification_events
+           set status = %s
+         where event_id = %s and status = any(%s)
+        returning status
+        """,
+        (status, notification_id, ["received", "failed"]),
+    )
+    if not row:
+        current = fetch_one("select status from apple_notification_events where event_id = %s limit 1", (notification_id,))
+        if current and current.get("status") in {"processed", "skipped"}:
             return
         raise RuntimeError("Apple notification status was not persisted")
 
 
-def _apply_notification_to_profile(sb, user_uuid: UUID, event_id: str, event_at: datetime, update: dict) -> str:
-    profile = sb.table("profiles").select("subscription_event_at,subscription_event_id,deleted_at").eq("id", str(user_uuid)).limit(1).execute()
-    current = (profile.data or [None])[0]
+def _apply_notification_to_profile(user_uuid: UUID, event_id: str, event_at: datetime, update: dict) -> str:
+    current = fetch_one(
+        "select subscription_event_at, subscription_event_id, deleted_at from profiles where id = %s limit 1",
+        (user_uuid,),
+    )
     if not current or current.get("deleted_at"):
         return "profile_unavailable"
     if current.get("subscription_event_id") == event_id:
@@ -95,15 +116,26 @@ def _apply_notification_to_profile(sb, user_uuid: UUID, event_id: str, event_at:
         if current_at >= event_at:
             return "out_of_order"
     update = {**update, "subscription_event_at": event_at.isoformat(), "subscription_event_id": event_id}
-    query = sb.table("profiles").update(update).eq("id", str(user_uuid)).is_("deleted_at", "null")
-    for field in ("subscription_event_at", "subscription_event_id"):
-        query = query.eq(field, current[field]) if current.get(field) is not None else query.is_(field, "null")
-    if query.execute().data:
+    assignments = ", ".join(f"{field} = %s" for field in update)
+    if execute_returning(
+        f"""
+        update profiles
+           set {assignments}
+         where id = %s
+           and deleted_at is null
+           and subscription_event_at is not distinct from %s
+           and subscription_event_id is not distinct from %s
+        returning id
+        """,
+        (*update.values(), user_uuid, current.get("subscription_event_at"), current.get("subscription_event_id")),
+    ):
         return "updated"
     # Re-read after a lost compare-and-set; never blindly overwrite a newer
     # Apple or Superwall event and never re-create a concurrently deleted user.
-    latest_response = sb.table("profiles").select("subscription_event_at,subscription_event_id,deleted_at").eq("id", str(user_uuid)).limit(1).execute()
-    latest = (latest_response.data or [None])[0]
+    latest = fetch_one(
+        "select subscription_event_at, subscription_event_id, deleted_at from profiles where id = %s limit 1",
+        (user_uuid,),
+    )
     if not latest or latest.get("deleted_at"):
         return "profile_unavailable"
     if latest.get("subscription_event_id") == event_id:
@@ -152,9 +184,8 @@ def process_signed_notification(signed_payload: str) -> dict:
     off = event_type in {"EXPIRED", "REFUND", "REVOKE"} or bool(transaction.get("revocationDate"))
     update = {"is_pro": not off, "pro_expires_at": expires_at.isoformat() if expires_at else None}
     redacted = {"notificationType": event_type, "environment": data.get("environment"), "productId": transaction.get("productId")}
-    sb = get_supabase()
     try:
-        if not _record_notification(sb, notification_id, {
+        if not _record_notification(notification_id, {
             "event_id": notification_id,
             "notification_type": event_type,
             "signed_payload_sha256": hashlib.sha256(signed_payload.encode()).hexdigest(),
@@ -162,11 +193,11 @@ def process_signed_notification(signed_payload: str) -> dict:
             "status": "received",
         }):
             return {"ok": True, "skipped": "duplicate", "event_id": notification_id}
-        outcome = _apply_notification_to_profile(sb, user_uuid, "apple:" + notification_id, event_at, update) if user_uuid else "no_supabase_user_id"
-        _mark_notification(sb, notification_id, "processed" if outcome in {"updated", "duplicate"} else "skipped")
+        outcome = _apply_notification_to_profile(user_uuid, "apple:" + notification_id, event_at, update) if user_uuid else "no_supabase_user_id"
+        _mark_notification(notification_id, "processed" if outcome in {"updated", "duplicate"} else "skipped")
     except Exception:
         try:
-            _mark_notification(sb, notification_id, "failed")
+            _mark_notification(notification_id, "failed")
         except Exception:
             pass
         raise HTTPException(status_code=503, detail="Apple notification processing temporarily unavailable", headers={"Retry-After": "1"}) from None

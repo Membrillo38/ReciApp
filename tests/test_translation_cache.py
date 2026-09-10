@@ -14,8 +14,8 @@ def test_translation_cache_is_global_and_language_keyed():
     assert "create table if not exists public.recipe_translations" in migration
     assert "primary key (recipe_id, language_code)" in migration
     assert "user_id" not in migration
-    assert '.eq("recipe_id", str(recipe_id))' in cache
-    assert '.eq("language_code", code)' in cache
+    assert "where recipe_id = %s and language_code = %s" in cache
+    assert "on conflict (recipe_id, language_code)" in cache
 
 
 def test_extract_flow_joins_shared_translation_jobs():

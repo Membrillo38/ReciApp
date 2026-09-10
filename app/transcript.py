@@ -14,11 +14,14 @@ from youtube_transcript_api._errors import (
 )
 
 from app.config import settings
-from app.extract import ExtractError, MAX_VIDEO_FRAMES
+from app.costing import estimate_miss_cost_cents, record_chat_usage, record_transcription_usage
+from app.extract import ExtractError, MAX_UNIQUE_VISION_FRAMES
 from app.platforms import youtube_video_id
 from app.tiktok_slides import MAX_CAROUSEL_SLIDES, SlideInfo, download_image_b64
 
 logger = logging.getLogger(__name__)
+
+_local_whisper_model = None
 
 
 def youtube_transcript(url: str) -> str | None:
@@ -39,7 +42,46 @@ def youtube_transcript(url: str) -> str | None:
     return text or None
 
 
-def whisper_transcript(audio_path: Path) -> str:
+def local_transcript(audio_path: Path) -> str | None:
+    """Free/local STT via faster-whisper tiny. Soft-fails to None."""
+    try:
+        from faster_whisper import WhisperModel
+    except Exception as exc:
+        logger.warning(
+            "extract stage=local_transcribe_fallback error_type=%s",
+            type(exc).__name__,
+        )
+        return None
+
+    global _local_whisper_model
+    try:
+        if _local_whisper_model is None:
+            _local_whisper_model = WhisperModel(
+                settings.local_whisper_model,
+                device="cpu",
+                compute_type="int8",
+            )
+        segments, _info = _local_whisper_model.transcribe(
+            str(audio_path),
+            beam_size=1,
+            vad_filter=True,
+        )
+        parts: list[str] = []
+        for segment in segments:
+            text = (getattr(segment, "text", None) or "").strip()
+            if text:
+                parts.append(text)
+        merged = " ".join(parts).strip()
+        return merged or None
+    except Exception as exc:
+        logger.warning(
+            "extract stage=local_transcribe_fallback error_type=%s",
+            type(exc).__name__,
+        )
+        return None
+
+
+def whisper_transcript(audio_path: Path, *, duration_seconds: float | None = None) -> str:
     """Transcribe audio via OpenAI Transcriptions API (gpt-4o-mini-transcribe)."""
     if not settings.openai_api_key:
         raise ExtractError("OPENAI_API_KEY is not configured")
@@ -49,9 +91,18 @@ def whisper_transcript(audio_path: Path) -> str:
         result = client.audio.transcriptions.create(
             model=settings.transcribe_model,
             file=audio_file,
-            response_format="text",
+            response_format="json",
         )
-    text = str(result).strip()
+    record_transcription_usage(
+        result,
+        duration_seconds=duration_seconds,
+        fallback_cents=estimate_miss_cost_cents(
+            duration_seconds=int(duration_seconds) if duration_seconds else None,
+            used_transcribe=True,
+        )
+        - settings.cost_text_cents_per_extract,
+    )
+    text = (getattr(result, "text", None) or str(result)).strip()
     if not text:
         raise ExtractError("Transcription returned empty text")
     return text
@@ -89,6 +140,11 @@ def _ocr_image(
             }
         ],
         max_tokens=500,
+    )
+    record_chat_usage(
+        response,
+        fallback_cents=settings.cost_ocr_cents_per_slide,
+        frames=1,
     )
     choices = getattr(response, "choices", None) or []
     if not choices:
@@ -183,13 +239,13 @@ def _ocr_overlay_batch(
         {
             "type": "text",
             "text": (
-                f"Overlay frames {start_index}-{start_index + len(frame_paths) - 1} of one cooking video. "
-                "Ingredient cards often appear as short on-screen overlay text, one or two at a time. "
-                "Extract ALL distinct overlay recipe text in order: ingredients, quantities, units, steps, times, tips. "
-                "Copy measurements exactly (cups, grams, ounces, counts). Deduplicate identical overlays. "
-                "Do not drop an ingredient that appears in only one frame. "
-                "Skip watermarks, usernames, like/follow prompts, and frames with no recipe text. "
-                "Return concise plain text only."
+                f"Visual frames {start_index}-{start_index + len(frame_paths) - 1} of one cooking video. "
+                "Extract ALL recipe-relevant details in chronological order: ingredients, quantities, "
+                "units, utensils, actions performed, temperatures, times, step order, and on-screen text. "
+                "Copy measurements exactly. Deduplicate identical overlays. "
+                "Do not drop an ingredient or action that appears in only one frame. "
+                "Skip watermarks, usernames, like/follow prompts, and frames with no recipe content. "
+                "Return concise time-ordered plain text notes only — not a finished recipe."
             ),
         }
     ]
@@ -207,6 +263,11 @@ def _ocr_overlay_batch(
         model=settings.vision_model,
         messages=[{"role": "user", "content": content}],
         max_tokens=2000,
+    )
+    record_chat_usage(
+        response,
+        fallback_cents=len(frame_paths) * settings.cost_ocr_cents_per_slide,
+        frames=len(frame_paths),
     )
     choices = getattr(response, "choices", None) or []
     if not choices:
@@ -226,11 +287,11 @@ def ocr_video_frames(
     *,
     on_attempt: Callable[[], None] | None = None,
 ) -> str:
-    """OCR bounded overlay frames. Empty frames are skipped, not fatal."""
+    """OCR vision frames. Empty frames are skipped, not fatal."""
     if not settings.openai_api_key:
         raise ExtractError("OPENAI_API_KEY is not configured")
-    if not frame_paths or len(frame_paths) > MAX_VIDEO_FRAMES:
-        raise ExtractError("TikTok video frame fallback returned an invalid frame set")
+    if not frame_paths or len(frame_paths) > MAX_UNIQUE_VISION_FRAMES:
+        raise ExtractError("Video frame set is invalid or exceeds supported bound")
 
     client = OpenAI(api_key=settings.openai_api_key)
     parts: list[str] = []

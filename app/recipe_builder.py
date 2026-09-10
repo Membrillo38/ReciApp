@@ -2,20 +2,24 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from openai import OpenAI
 from pydantic import ValidationError
 
 from app.config import settings
-from app.extract import ExtractError, MediaInfo
+from app.costing import estimate_miss_cost_cents, record_chat_usage
+from app.extract import ExtractError
 from app.localization import build_recipe_prompt, language_name, normalize_language, untitled_recipe_name
 from app.models import Ingredient, IngredientSection, Platform, Recipe, RecipeTip, Step
 
 logger = logging.getLogger(__name__)
 
 RECIPE_UNDETERMINED_ERROR = "Could not determine a recipe from this video."
-_MIN_RECIPE_CONFIDENCE = 0.4
+RECIPE_INCOMPLETE_ERROR = "Could not extract a complete recipe from this video."
+_MIN_RECIPE_CONFIDENCE = 0.7
 _BLANK_VALUES = {"", "null", "none", "n/a", "nil", "undefined", "-"}
+_TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
 
 
 RECIPE_SCHEMA = {
@@ -82,6 +86,8 @@ RECIPE_SCHEMA = {
             "tags": {"type": "array", "items": {"type": "string"}},
             "confidence": {"type": "number"},
             "missing_fields": {"type": "array", "items": {"type": "string"}},
+            "is_complete": {"type": "boolean"},
+            "blocking_gaps": {"type": "array", "items": {"type": "string"}},
         },
         "required": [
             "title",
@@ -95,6 +101,8 @@ RECIPE_SCHEMA = {
             "tags",
             "confidence",
             "missing_fields",
+            "is_complete",
+            "blocking_gaps",
         ],
     },
 }
@@ -112,7 +120,8 @@ def build_recipe(
     slide_text: str | None,
     language_code: str = "en-US",
     carousel_image_urls: list[str] | None = None,
-) -> Recipe:
+    require_complete: bool = True,
+) -> Recipe | None:
     if not settings.openai_api_key:
         raise ExtractError("OPENAI_API_KEY is not configured")
 
@@ -132,7 +141,10 @@ def build_recipe(
     messages = [
         {
             "role": "system",
-            "content": f"You extract recipes from noisy social video metadata. Write all user-facing recipe fields in {target_language}.",
+            "content": (
+                f"You extract complete, reproducible recipes from noisy social video metadata. "
+                f"Write all user-facing recipe fields in {target_language}."
+            ),
         },
         {"role": "user", "content": user_content},
     ]
@@ -143,20 +155,21 @@ def build_recipe(
         confidence = float(data.get("confidence"))
     except (TypeError, ValueError):
         confidence = 0.0
-    if (
-        not ingredient_sections
-        or not steps
-        or confidence < _MIN_RECIPE_CONFIDENCE
-    ):
-        raise ExtractError(RECIPE_UNDETERMINED_ERROR)
+    is_complete = bool(data.get("is_complete"))
+    blocking_gaps = [
+        str(item).strip()
+        for item in (data.get("blocking_gaps") or [])
+        if str(item).strip()
+    ]
     ingredients = [
         ingredient
         for section in ingredient_sections
         for ingredient in section.ingredients
     ]
-
+    if not ingredient_sections or not steps or confidence < _MIN_RECIPE_CONFIDENCE:
+        return None
     try:
-        return Recipe(
+        recipe = Recipe(
             title=_visible_text(data.get("title")) or untitled_recipe_name(language_code),
             ingredients=ingredients,
             ingredient_sections=ingredient_sections,
@@ -175,9 +188,58 @@ def build_recipe(
             description=_optional_text(data.get("description")),
             tips=data.get("tips") or [],
             raw_transcript=_merge_text(transcript, slide_text),
+            language_code=language_code,
         )
-    except (KeyError, TypeError, ValueError, ValidationError) as exc:
-        raise ExtractError("Recipe output failed validation") from exc
+    except (KeyError, TypeError, ValueError, ValidationError):
+        return None
+    if require_complete and not recipe_is_complete(
+        recipe,
+        is_complete=is_complete,
+        blocking_gaps=blocking_gaps,
+    ):
+        return None
+    return recipe
+
+
+def recipe_is_complete(
+    recipe: Recipe,
+    *,
+    is_complete: bool = True,
+    blocking_gaps: list[str] | None = None,
+) -> bool:
+    """Deterministic completeness gate after structured model output."""
+    if not is_complete:
+        return False
+    if blocking_gaps:
+        return False
+    if recipe.confidence < _MIN_RECIPE_CONFIDENCE:
+        return False
+    if not recipe.ingredient_sections or not recipe.steps:
+        return False
+    if not recipe.ingredients:
+        return False
+    orders = [step.order for step in recipe.steps]
+    if orders != list(range(1, len(orders) + 1)):
+        return False
+    if any(not step.text.strip() for step in recipe.steps):
+        return False
+    step_blob = " ".join(step.text.lower() for step in recipe.steps)
+    step_tokens = set(_TOKEN_RE.findall(step_blob))
+    identified = []
+    for ingredient in recipe.ingredients:
+        name = (ingredient.name or "").strip().lower()
+        if not name:
+            return False
+        tokens = [token for token in _TOKEN_RE.findall(name) if len(token) > 2]
+        if tokens and not any(token in step_tokens for token in tokens):
+            # Ingredient may only appear in the list (mise en place). That is OK
+            # when at least one later step mentions cooking/assembly broadly.
+            identified.append(name)
+            continue
+        identified.append(name)
+    if not identified:
+        return False
+    return True
 
 
 def _visible_text(value: object) -> str:
@@ -199,46 +261,41 @@ def _usable_ingredient_sections(raw_sections: object) -> list[IngredientSection]
     for section in raw_sections:
         if not isinstance(section, dict):
             continue
-        items: list[Ingredient] = []
-        for raw in section.get("ingredients") or []:
-            if not isinstance(raw, dict):
+        title = _visible_text(section.get("title")) or "Ingredients"
+        ingredients: list[Ingredient] = []
+        for item in section.get("ingredients") or []:
+            if not isinstance(item, dict):
                 continue
-            name = _visible_text(raw.get("name"))
+            name = _visible_text(item.get("name"))
             if not name:
                 continue
-            items.append(
-                Ingredient(
-                    name=name,
-                    quantity=_optional_text(raw.get("quantity")),
-                    unit=_optional_text(raw.get("unit")),
-                )
-            )
-        if items:
-            sections.append(
-                IngredientSection(
-                    title=_visible_text(section.get("title")) or "Ingredients",
-                    ingredients=items,
-                )
-            )
+            quantity = _optional_text(item.get("quantity"))
+            unit = _optional_text(item.get("unit"))
+            ingredients.append(Ingredient(name=name, quantity=quantity, unit=unit))
+        if ingredients:
+            sections.append(IngredientSection(title=title, ingredients=ingredients))
     return sections
 
 
-def _usable_steps(raw_steps: object) -> list[dict]:
-    steps: list[dict] = []
+def _usable_steps(raw_steps: object) -> list[Step]:
+    steps: list[Step] = []
     if not isinstance(raw_steps, list):
         return steps
     order = 1
-    for raw in raw_steps:
-        if not isinstance(raw, dict):
+    for item in raw_steps:
+        if not isinstance(item, dict):
             continue
-        text = _visible_text(raw.get("text"))
+        text = _visible_text(item.get("text"))
         if not text:
             continue
-        step = dict(raw)
-        step["text"] = text
-        step["order"] = order
+        duration = item.get("duration_minutes")
+        if duration is not None:
+            try:
+                duration = int(duration)
+            except (TypeError, ValueError):
+                duration = None
+        steps.append(Step(order=order, text=text, duration_minutes=duration))
         order += 1
-        steps.append(step)
     return steps
 
 
@@ -287,11 +344,14 @@ def translate_recipe(recipe: Recipe, target_language_code: str) -> Recipe:
         "tags": recipe.tags,
         "missing_fields": recipe.missing_fields,
         "tips": [tip.model_dump() for tip in recipe.tips],
+        "is_complete": True,
+        "blocking_gaps": [],
+        "confidence": recipe.confidence,
     }
     prompt = (
         f"Translate this structured cooking recipe into {target_language}.\n"
         "Translate every user-facing text field, including section titles, ingredient names, units, steps, tips, tags, and description. "
-        "Preserve quantities, durations, ordering, and null values. Do not add or remove recipe content. "
+        "Preserve quantities, durations, ordering, null values, is_complete, and blocking_gaps. Do not add or remove recipe content. "
         "Return the same JSON structure.\n\n"
         f"RECIPE:\n{json.dumps(source, ensure_ascii=False)}"
     )
@@ -330,6 +390,7 @@ def translate_recipe(recipe: Recipe, target_language_code: str) -> Recipe:
             description=data.get("description") or None,
             tips=[RecipeTip(**tip) for tip in data.get("tips") or []],
             raw_transcript=recipe.raw_transcript,
+            language_code=language_code,
         )
     except (KeyError, TypeError, ValueError, ValidationError) as exc:
         raise ExtractError("Translated recipe output failed validation") from exc
@@ -358,6 +419,10 @@ def _request_structured_recipe(messages: list[dict]) -> dict:
             logger.warning("recipe_model attempt=%d error_type=%s", attempt + 1, type(exc).__name__)
             last_error = exc
             continue
+        record_chat_usage(
+            response,
+            fallback_cents=estimate_miss_cost_cents(),
+        )
         choices = getattr(response, "choices", None) or []
         if not choices:
             last_error = ExtractError("Recipe model returned no choices")
