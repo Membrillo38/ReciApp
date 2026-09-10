@@ -1,0 +1,7 @@
+build/
+DerivedData/
+.DS_Store
+*.xcuserstate
+xcuserdata/
+Secrets.swift
+ClientStateHarness/.build/
