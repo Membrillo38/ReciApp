@@ -1,0 +1,19 @@
+---
+# ReciApp VPS ops homepage (Tailscale only)
+title: ReciApp Ops
+theme: dark
+color: slate
+headerStyle: clean
+hideVersion: true
+target: _blank
+language: es
+layout:
+  Ops:
+    style: row
+    columns: 3
+  API:
+    style: row
+    columns: 2
+  Infra:
+    style: row
+    columns: 2

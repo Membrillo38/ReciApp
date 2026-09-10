@@ -1,0 +1,33 @@
+- Ops:
+    - Coolify:
+        href: https://coolify.51-255-43-100.sslip.io
+        description: Deploys y apps
+        icon: mdi-rocket-launch
+    - Uptime Kuma:
+        href: http://100.123.33.15:3001
+        description: Uptime y alertas
+        icon: mdi-heart-pulse
+    - Netdata:
+        href: http://100.123.33.15:19999
+        description: CPU RAM disco containers
+        icon: mdi-chart-line
+
+- API:
+    - Recipe Backend Health:
+        href: https://51-255-43-100.sslip.io/health
+        description: Liveness
+        icon: mdi-check-circle
+    - Recipe Backend Ready:
+        href: https://51-255-43-100.sslip.io/ready
+        description: Postgres OK
+        icon: mdi-database-check
+
+- Infra:
+    - Coolify (Tailscale):
+        href: http://100.123.33.15:8000
+        description: Panel por mesh
+        icon: mdi-server
+    - VPS SSH hint:
+        href: https://51-255-43-100.sslip.io/health
+        description: ubuntu@51.255.43.100
+        icon: mdi-console

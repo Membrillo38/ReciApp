@@ -1,0 +1,12 @@
+- resources:
+    cpu: true
+    memory: true
+    disk: /
+    cputemp: false
+    uptime: true
+    units: metric
+- datetime:
+    text_size: xl
+    format:
+      timeStyle: short
+      dateStyle: medium
