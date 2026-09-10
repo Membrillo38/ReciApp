@@ -14,12 +14,28 @@
         # name cambia en cada deploy — sync script lo actualiza
         container: m6kbwmrfcknunjrnxbbsllca-164736609156
         showStats: true
+    - Database:
+        href: http://100.123.33.15:8081
+        description: Tablas Postgres
+        icon: mdi-table-eye
+        server: local
+        container: reciapp-pgweb
+        showStats: true
+
+- Ops:
     - Coolify:
         href: http://100.123.33.15:8000
         description: Deploys
         icon: mdi-rocket-launch
         server: local
         container: coolify
+        showStats: true
+    - Uptime Kuma:
+        href: http://100.123.33.15:3001
+        description: Uptime y alertas
+        icon: mdi-heart-pulse
+        server: local
+        container: uptime-kuma
         showStats: true
     - Netdata:
         href: http://100.123.33.15:19999

@@ -10,4 +10,7 @@ showStats: true
 layout:
   ReciApp:
     style: row
-    columns: 4
+    columns: 3
+  Ops:
+    style: row
+    columns: 3
