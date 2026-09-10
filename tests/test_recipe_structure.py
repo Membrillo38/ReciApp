@@ -82,6 +82,7 @@ def test_recipe_prompt_and_schema_require_sections_and_tips():
 
     assert "Group ingredients into the distinct components" in prompt
     assert "Extract separate actionable tips" in prompt
+    assert "Never glue shaping, mixing, or plating into the wait step" in prompt
     assert "slide_text is on-screen overlay OCR" in prompt
     assert "transcript is spoken audio or captions" in prompt
     assert "empty ingredient_sections, empty steps, confidence 0" in prompt
