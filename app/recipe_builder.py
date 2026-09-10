@@ -10,7 +10,14 @@ from pydantic import ValidationError
 from app.config import settings
 from app.costing import estimate_miss_cost_cents, record_chat_usage
 from app.extract import ExtractError
-from app.localization import build_recipe_prompt, language_name, normalize_language, untitled_recipe_name
+from app.localization import (
+    build_recipe_prompt,
+    ingredient_section_name,
+    language_name,
+    normalize_language,
+    optional_section_name,
+    untitled_recipe_name,
+)
 from app.models import Ingredient, IngredientSection, Platform, Recipe, RecipeTip, Step
 
 logger = logging.getLogger(__name__)
@@ -21,6 +28,47 @@ LINK_IN_BIO_ERROR = "Recipe link in bio. Open the creator profile bio for the fu
 _MIN_RECIPE_CONFIDENCE = 0.7
 _BLANK_VALUES = {"", "null", "none", "n/a", "nil", "undefined", "-"}
 _TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
+_OPTIONAL_MARKER_RE = re.compile(
+    r"(?i)(?:\s*[\(\[]\s*)?(?:optional|opcional(?:es)?|optionnel(?:le)?|opzionale|opcjonalnie)"
+    r"(?:\s*[\)\]]\s*)?$"
+)
+_OPTIONAL_PREFIX_RE = re.compile(
+    r"(?i)^\s*(?:optional|opcional(?:es)?|optionnel(?:le)?|opzionale)\s*[:\-–]?\s+"
+)
+_GENERIC_INGREDIENT_TITLES = {
+    "ingredients",
+    "ingredient",
+    "ingredientes",
+    "ingrédient",
+    "ingrédients",
+    "zutaten",
+    "ingredienti",
+}
+_OPTIONAL_TITLES = {
+    "optional",
+    "opcionales",
+    "opcional",
+    "optionnel",
+    "optionnelle",
+    "opzionale",
+    "optional ingredients",
+    "ingredientes opcionales",
+    "opcionales",
+}
+# Headings that OCR/LLM sometimes emit as fake ingredient rows.
+_SECTION_HEADING_RE = re.compile(
+    r"(?i)^(?:"
+    r"optional(?:\s+ingredients?)?|"
+    r"opcionales?(?:\s+ingredientes?)?|"
+    r"optionnel(?:le)?s?(?:\s+ingr[eé]dients?)?|"
+    r"opzionale(?:\s+ingredienti)?|"
+    r"for the\s+.+|"
+    r"para (?:el|la|los|las)\s+.+|"
+    r"pour (?:la|le|les)\s+.+|"
+    r".+\s+(?:sauce|dough|marinade|dressing|topping|toppings|garnish|filling|glaze|base|mix)|"
+    r"(?:salsa|masa|adobo|cobertura|relleno|ali[nñ]o|cobertura|guarnici[oó]n|recheio).*"
+    r")$"
+)
 # Caption/spoken marketing that points off-video — abort before OCR/STT/vision spend.
 _LINK_IN_BIO_RE = re.compile(
     r"(?:"
@@ -177,7 +225,10 @@ def build_recipe(
         {"role": "user", "content": user_content},
     ]
     data = _request_structured_recipe(messages)
-    ingredient_sections = _usable_ingredient_sections(data.get("ingredient_sections"))
+    ingredient_sections = _usable_ingredient_sections(
+        data.get("ingredient_sections"),
+        language_code=language_code,
+    )
     steps = _usable_steps(data.get("steps"))
     try:
         confidence = float(data.get("confidence"))
@@ -282,14 +333,136 @@ def _optional_text(value: object) -> str | None:
     return text or None
 
 
-def _usable_ingredient_sections(raw_sections: object) -> list[IngredientSection]:
+def _norm_title(value: str) -> str:
+    return re.sub(r"\s+", " ", value.strip().lower()).rstrip(":.-–")
+
+
+def _is_optional_title(title: str) -> bool:
+    return _norm_title(title) in _OPTIONAL_TITLES or _norm_title(title).startswith("optional")
+
+
+def _is_generic_title(title: str) -> bool:
+    return _norm_title(title) in _GENERIC_INGREDIENT_TITLES
+
+
+def _looks_like_section_heading(ingredient: Ingredient) -> bool:
+    name = ingredient.name.strip()
+    if not name:
+        return False
+    if ingredient.quantity or ingredient.unit:
+        return False
+    cleaned = name.rstrip(":.-–").strip()
+    if _is_generic_title(cleaned) or _is_optional_title(cleaned):
+        return True
+    if name.endswith((":", "—", "-")) and len(cleaned.split()) <= 6:
+        return True
+    return bool(_SECTION_HEADING_RE.match(cleaned))
+
+
+def _strip_optional_marker(ingredient: Ingredient) -> tuple[Ingredient, bool]:
+    name = ingredient.name.strip()
+    optional = False
+    if _OPTIONAL_PREFIX_RE.match(name):
+        name = _OPTIONAL_PREFIX_RE.sub("", name).strip()
+        optional = True
+    if _OPTIONAL_MARKER_RE.search(name):
+        name = _OPTIONAL_MARKER_RE.sub("", name).strip(" ,;-–")
+        optional = True
+    if not name:
+        return ingredient, optional
+    if name == ingredient.name and not optional:
+        return ingredient, False
+    return Ingredient(name=name, quantity=ingredient.quantity, unit=ingredient.unit), optional
+
+
+def power_up_ingredient_sections(
+    sections: list[IngredientSection],
+    *,
+    language_code: str = "en-US",
+) -> list[IngredientSection]:
+    """Split headings / optional markers into real ingredient_sections."""
+    language_code = normalize_language(language_code)
+    default_title = ingredient_section_name(language_code)
+    optional_title = optional_section_name(language_code)
+
+    rebuilt: list[IngredientSection] = []
+    current_title = default_title
+    current: list[Ingredient] = []
+    optional_bucket: list[Ingredient] = []
+
+    def flush_current() -> None:
+        nonlocal current
+        if current:
+            rebuilt.append(IngredientSection(title=current_title, ingredients=list(current)))
+            current = []
+
+    for section in sections:
+        section_title = _visible_text(section.title) or default_title
+        flush_current()
+        route_all_optional = _is_optional_title(section_title)
+        if route_all_optional:
+            current_title = optional_title
+        elif _is_generic_title(section_title):
+            current_title = default_title
+        else:
+            current_title = section_title
+
+        for ingredient in section.ingredients:
+            if _looks_like_section_heading(ingredient):
+                heading = ingredient.name.strip().rstrip(":.-–").strip() or default_title
+                if _is_optional_title(heading):
+                    flush_current()
+                    current_title = optional_title
+                    route_all_optional = True
+                    continue
+                if _is_generic_title(heading):
+                    flush_current()
+                    current_title = default_title
+                    route_all_optional = False
+                    continue
+                flush_current()
+                current_title = heading
+                route_all_optional = False
+                continue
+
+            cleaned, marked_optional = _strip_optional_marker(ingredient)
+            if not cleaned.name.strip():
+                continue
+            if route_all_optional or marked_optional:
+                optional_bucket.append(cleaned)
+            else:
+                current.append(cleaned)
+
+    flush_current()
+
+    if optional_bucket:
+        # Merge into existing Optional section when present.
+        for section in rebuilt:
+            if _is_optional_title(section.title):
+                section.ingredients.extend(optional_bucket)
+                optional_bucket = []
+                break
+        if optional_bucket:
+            rebuilt.append(IngredientSection(title=optional_title, ingredients=optional_bucket))
+
+    # Drop empties / collapse duplicate generic titles only when single section.
+    rebuilt = [section for section in rebuilt if section.ingredients]
+    return rebuilt or sections
+
+
+def _usable_ingredient_sections(
+    raw_sections: object,
+    *,
+    language_code: str = "en-US",
+) -> list[IngredientSection]:
     sections: list[IngredientSection] = []
     if not isinstance(raw_sections, list):
         return sections
+    default_title = ingredient_section_name(language_code)
     for section in raw_sections:
         if not isinstance(section, dict):
             continue
-        title = _visible_text(section.get("title")) or "Ingredients"
+        title = _visible_text(section.get("title")) or default_title
         ingredients: list[Ingredient] = []
         for item in section.get("ingredients") or []:
             if not isinstance(item, dict):
@@ -302,7 +475,7 @@ def _usable_ingredient_sections(raw_sections: object) -> list[IngredientSection]
             ingredients.append(Ingredient(name=name, quantity=quantity, unit=unit))
         if ingredients:
             sections.append(IngredientSection(title=title, ingredients=ingredients))
-    return sections
+    return power_up_ingredient_sections(sections, language_code=language_code)
 
 
 def _usable_steps(raw_steps: object) -> list[Step]:
@@ -391,11 +564,14 @@ def translate_recipe(recipe: Recipe, target_language_code: str) -> Recipe:
         {"role": "user", "content": prompt[:16000]},
     ]
     data = _request_structured_recipe(messages)
-    ingredient_sections = [
-        IngredientSection(**section)
-        for section in (data.get("ingredient_sections") or [])
-        if section.get("ingredients")
-    ]
+    ingredient_sections = power_up_ingredient_sections(
+        [
+            IngredientSection(**section)
+            for section in (data.get("ingredient_sections") or [])
+            if isinstance(section, dict) and section.get("ingredients")
+        ],
+        language_code=language_code,
+    )
     ingredients = [ingredient for section in ingredient_sections for ingredient in section.ingredients]
     try:
         return Recipe(

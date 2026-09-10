@@ -29,6 +29,15 @@ INGREDIENT_SECTION_NAMES: dict[str, str] = {
     "pt-BR": "Ingredientes",
 }
 
+OPTIONAL_SECTION_NAMES: dict[str, str] = {
+    "en-US": "Optional",
+    "es-ES": "Opcional",
+    "fr-FR": "Optionnel",
+    "de": "Optional",
+    "it": "Opzionale",
+    "pt-BR": "Opcional",
+}
+
 
 def normalize_language(value: str | None) -> str:
     """Return one canonical allowlisted locale."""
@@ -62,6 +71,10 @@ def ingredient_section_name(code: str) -> str:
     return INGREDIENT_SECTION_NAMES[normalize_language(code)]
 
 
+def optional_section_name(code: str) -> str:
+    return OPTIONAL_SECTION_NAMES[normalize_language(code)]
+
+
 def build_recipe_prompt(target_language: str, source_json: str) -> str:
     return (
         "Turn the following social video content into a structured cooking recipe.\n"
@@ -74,9 +87,14 @@ def build_recipe_prompt(target_language: str, source_json: str) -> str:
         "If quantities are missing from the evidence, set quantity/unit null and list the field in "
         "missing_fields. Missing quantities alone do NOT make the recipe incomplete.\n"
         "Group ingredients into the distinct components or headings present in the source, such as "
-        "'Parmesan Chicken' and 'Creamy Sauce'. Keep each ingredient in its original component; "
-        "do not merge separate components. If no headings are supported, use one section named with "
-        "the localized equivalent of 'Ingredients'.\n"
+        "'Parmesan Chicken', 'Creamy Sauce', 'Dough', 'Filling', or the localized equivalent of "
+        "'Optional'. Keep each ingredient in its original component; do not merge separate "
+        "components into one flat list. Headings like 'Optional', 'Opcional', 'For the sauce', "
+        "'Para la salsa', or 'Toppings' MUST become their own ingredient_sections entries. "
+        "Never leave an optional list inside the main Ingredients section. If an ingredient is "
+        "marked optional inline (e.g. 'cheese (optional)'), put it in the Optional section and "
+        "strip the optional marker from the name. If no headings are supported, use one section "
+        "named with the localized equivalent of 'Ingredients'.\n"
         "Write cumulative steps: each step must assume everything that already happened, keep "
         "prior ingredients/preparations/state in context, and stay in chronological order. "
         "Do not emit isolated steps that ignore earlier work.\n"
