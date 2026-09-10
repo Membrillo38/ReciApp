@@ -1,0 +1,4 @@
+---
+# Local Docker socket (read-only mount on reciapp-homepage)
+local:
+  socket: /var/run/docker.sock
