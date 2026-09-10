@@ -678,6 +678,18 @@ def extract_recipe(
         )
         job_id = _as_uuid(job["id"])
         reserve_spend(user_id=user.id, job_id=job_id)
+    except HTTPException as exc:
+        if local_claimed:
+            release_job(user.id)
+        if "job_id" in locals():
+            detail = exc.detail
+            message = detail.get("message") if isinstance(detail, dict) else detail
+            update_job(
+                job_id,
+                status=JobStatus.failed.value,
+                error=str(message or "Usage protection unavailable")[:300],
+            )
+        raise
     except Exception:
         # Recovery reads/writes can fail too; release capacity before them.
         if local_claimed:

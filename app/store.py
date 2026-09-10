@@ -340,7 +340,19 @@ def create_job(
         "progress": 100 if status == "completed" else 0,
     }
     sql, params = _insert_sql("extract_jobs", payload)
-    return execute_returning(sql, params) or {}
+    try:
+        return execute_returning(sql, params) or {}
+    except UniqueViolation:
+        # Concurrent extract for same normalized URL — return the winner.
+        active = get_active_job(
+            source_url_norm=source_url_norm,
+            language_code=language_code,
+            job_kind=job_kind,
+            recipe_id=recipe_id,
+        )
+        if active:
+            return active
+        raise
 
 
 def update_job(job_id: UUID, **fields) -> dict | None:
