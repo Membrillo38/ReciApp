@@ -10,6 +10,10 @@ final class AppViewModel: ObservableObject {
     @Published var favoriteIDs: Set<UUID> = []
     @Published var recipeTags: [UUID: [String]] = [:]
     @Published var categoryParents: [String: String] = [:]
+    @Published private(set) var folderSortRawValue = FolderSort.created.rawValue
+    @Published private(set) var folderColumns = 2
+    @Published private(set) var folderLayoutRawValue = CollectionLayout.grid.rawValue
+    @Published private(set) var recipeLayoutRawValue = CollectionLayout.grid.rawValue
     @Published var isLoading = false
     @Published var isImporting = false
     @Published var importProgress = 0
@@ -35,6 +39,7 @@ final class AppViewModel: ObservableObject {
     private var detailTasks = SharedTaskCoordinator<String, RecipePublic, Error>()
     private var detailRevalidationPolicy = DetailRevalidationPolicy()
     private var importTask: (id: UUID, task: Task<Void, Error>)?
+    private var lastServerQueue: [QueuedJobItem] = []
     private var generation = 0
     private var lastForegroundRefresh: Date?
     private var subscriptionRefreshGeneration = 0
@@ -64,6 +69,10 @@ final class AppViewModel: ObservableObject {
         let categoryParents: [String: String]?
         let favoriteIDs: [String]
         let recipeTags: [String: [String]]
+        let folderSortRawValue: String?
+        let folderColumns: Int?
+        let folderLayoutRawValue: String?
+        let recipeLayoutRawValue: String?
 
         init(
             recipeCategories: [String: String],
@@ -71,7 +80,11 @@ final class AppViewModel: ObservableObject {
             categoryColors: [String: String],
             categoryParents: [String: String]?,
             favoriteIDs: [String] = [],
-            recipeTags: [String: [String]] = [:]
+            recipeTags: [String: [String]] = [:],
+            folderSortRawValue: String? = nil,
+            folderColumns: Int? = nil,
+            folderLayoutRawValue: String? = nil,
+            recipeLayoutRawValue: String? = nil
         ) {
             self.recipeCategories = recipeCategories
             self.customCategories = customCategories
@@ -79,6 +92,10 @@ final class AppViewModel: ObservableObject {
             self.categoryParents = categoryParents
             self.favoriteIDs = favoriteIDs
             self.recipeTags = recipeTags
+            self.folderSortRawValue = folderSortRawValue
+            self.folderColumns = folderColumns
+            self.folderLayoutRawValue = folderLayoutRawValue
+            self.recipeLayoutRawValue = recipeLayoutRawValue
         }
 
         init(from decoder: Decoder) throws {
@@ -89,6 +106,10 @@ final class AppViewModel: ObservableObject {
             categoryParents = try container.decodeIfPresent([String: String].self, forKey: .categoryParents)
             favoriteIDs = try container.decodeIfPresent([String].self, forKey: .favoriteIDs) ?? []
             recipeTags = try container.decodeIfPresent([String: [String]].self, forKey: .recipeTags) ?? [:]
+            folderSortRawValue = try container.decodeIfPresent(String.self, forKey: .folderSortRawValue)
+            folderColumns = try container.decodeIfPresent(Int.self, forKey: .folderColumns)
+            folderLayoutRawValue = try container.decodeIfPresent(String.self, forKey: .folderLayoutRawValue)
+            recipeLayoutRawValue = try container.decodeIfPresent(String.self, forKey: .recipeLayoutRawValue)
         }
     }
 
@@ -162,12 +183,12 @@ final class AppViewModel: ObservableObject {
             ),
         ]
         recipes = sampleRecipes
-        customCategories = ["Weeknight"]
-        categoryColors = ["Weeknight": "F2C94C"]
-        categoryParents = [:]
+        customCategories = ["Weeknight", "Quick"]
+        categoryColors = ["Weeknight": "F2C94C", "Quick": "34C759"]
+        categoryParents = ["Quick": "Weeknight"]
         recipeCategories = [
             sampleRecipes[0].id: "Weeknight",
-            sampleRecipes[1].id: "Weeknight",
+            sampleRecipes[1].id: "Quick",
             sampleRecipes[2].id: Self.uncategorized,
         ]
         rebuildFolderCache()
@@ -260,10 +281,21 @@ final class AppViewModel: ObservableObject {
             return
         }
 
+        var newURLs: [String] = []
         for url in urls {
+            if let existing = existingLibraryRecipe(matching: url) {
+                if let deliveryID { ShareInbox.markProcessed(deliveryID) }
+                openExistingRecipe(existing)
+                continue
+            }
+            newURLs.append(url)
+        }
+        guard !newURLs.isEmpty else { return }
+
+        for url in newURLs {
             ShareInbox.enqueue(raw: url, language: language)
         }
-        importURL = urls[0]
+        importURL = newURLs[0]
         updateQueuePreview()
 
         guard token != nil else {
@@ -271,6 +303,26 @@ final class AppViewModel: ObservableObject {
             return
         }
         await submitShareInboxAndFollow(language: language)
+    }
+
+    private func existingLibraryRecipe(matching url: String) -> RecipeSummary? {
+        let normalized = URLNormalizer.normalize(url) ?? url
+        return recipes.first { recipe in
+            let candidate = URLNormalizer.normalize(recipe.sourceUrl) ?? recipe.sourceUrl
+            return candidate == normalized
+        }
+    }
+
+    private func openExistingRecipe(_ summary: RecipeSummary) {
+        if let cached = recipeDetailsCache[summary.id] {
+            selectedRecipe = cached
+            lastImportedRecipe = nil
+        } else {
+            selectedRecipeSummary = summary
+            lastImportedRecipe = nil
+        }
+        statusMessage = ""
+        importProgress = 0
     }
 
     func importFromIncomingURL(_ url: URL) async {
@@ -308,7 +360,7 @@ final class AppViewModel: ObservableObject {
 
     /// Submit every inbox URL to the server (creates pending jobs), then follow the serial queue.
     private func submitShareInboxAndFollow(language: String) async {
-        await submitShareInbox(language: language)
+        _ = await submitShareInbox(language: language)
         guard !isImporting, importTask == nil else {
             updateQueuePreview()
             return
@@ -316,13 +368,25 @@ final class AppViewModel: ObservableObject {
         await followImportQueue()
     }
 
-    private func submitShareInbox(language: String) async {
-        guard token != nil else { return }
-        guard let expectedUserID = activeUserID else { return }
+    private enum InboxSubmitOutcome {
+        case drained
+        case retryLater
+        case stopped
+    }
+
+    @discardableResult
+    private func submitShareInbox(language: String) async -> InboxSubmitOutcome {
+        guard token != nil else { return .stopped }
+        guard let expectedUserID = activeUserID else { return .stopped }
         let expectedGeneration = generation
         let expectedIdentity = activeRecipeCacheIdentity
 
         for delivery in ShareInbox.takeUnprocessed() {
+            if let existing = existingLibraryRecipe(matching: delivery.url) {
+                ShareInbox.markProcessed(delivery.id)
+                openExistingRecipe(existing)
+                continue
+            }
             do {
                 let started = try await api.extract(url: delivery.url, language: delivery.language)
                 ShareInbox.markProcessed(delivery.id)
@@ -347,6 +411,25 @@ final class AppViewModel: ObservableObject {
                         expectedIdentity: expectedIdentity,
                         expectedUserID: expectedUserID
                     )
+                    if recipes.contains(where: { $0.id == recipe.id }) {
+                        openExistingRecipe(
+                            RecipeSummary(
+                                id: recipe.id,
+                                title: recipe.title,
+                                platform: recipe.platform,
+                                sourceUrl: recipe.sourceUrl,
+                                thumbnailUrl: recipe.thumbnailUrl,
+                                author: recipe.author,
+                                servings: recipe.servings,
+                                prepMinutes: recipe.prepMinutes,
+                                cookMinutes: recipe.cookMinutes,
+                                savedAt: "",
+                                languageCode: recipe.languageCode
+                            )
+                        )
+                        ImportJobStore.clear(userID: expectedUserID)
+                        continue
+                    }
                     try await finishImport(
                         recipe,
                         expectedGeneration: expectedGeneration,
@@ -355,32 +438,40 @@ final class AppViewModel: ObservableObject {
                         continueQueue: true
                     )
                 }
-            } catch let error as AppError {
-                switch error {
-                case .rateLimited(_, let retryAfter):
-                    try? await Task.sleep(for: .seconds(RetryAfterPolicy.delaySeconds(retryAfter: retryAfter)))
-                    // Leave delivery unprocessed so a later drain retries.
-                    continue
-                case .quota, .fairUse:
-                    // Keep remaining inbox items; paywall for this miss.
-                    presentImportError(error, userID: expectedUserID)
+            } catch is CancellationError {
+                updateQueuePreview()
+                return .stopped
+            } catch {
+                switch queueDisposition(for: error) {
+                case .retryLater:
+                    if let appError = error as? AppError, case .rateLimited(_, let retryAfter) = appError {
+                        try? await Task.sleep(for: .seconds(RetryAfterPolicy.delaySeconds(retryAfter: retryAfter)))
+                    }
                     updateQueuePreview()
-                    return
-                case .invalidInput:
+                    return .retryLater
+                case .skipItem:
                     ShareInbox.markProcessed(delivery.id)
                     continue
-                default:
-                    presentImportError(error, userID: expectedUserID)
+                case .failItem:
+                    ShareInbox.markProcessed(delivery.id)
+                    ImportJobStore.clear(userID: expectedUserID)
+                    errorMessage = error.localizedDescription
+                    continue
+                case .stopForUser:
+                    if isUnauthorized(error) {
+                        presentImportError(error, userID: expectedUserID)
+                    } else if let appError = error as? AppError {
+                        applyImportAction(appError)
+                    } else {
+                        presentImportError(error, userID: expectedUserID)
+                    }
                     updateQueuePreview()
-                    return
+                    return .stopped
                 }
-            } catch {
-                // Transient network — keep in inbox for next drain.
-                updateQueuePreview()
-                return
             }
         }
         updateQueuePreview()
+        return .drained
     }
 
     private func followImportQueue() async {
@@ -390,7 +481,30 @@ final class AppViewModel: ObservableObject {
         let expectedIdentity = activeRecipeCacheIdentity
         let language = AppLanguageStore.current.serverCode
 
-        isLoading = true
+        // Probe first so empty launches never flash the "Reading…" card.
+        let hasLocalPending = !ShareInbox.takeUnprocessed().isEmpty
+            || ImportJobStore.load(userID: expectedUserID) != nil
+        var openJobs: [QueuedJobItem] = []
+        do {
+            openJobs = try await api.myJobs().items
+        } catch is CancellationError {
+            return
+        } catch {
+            guard hasLocalPending else { return }
+            switch queueDisposition(for: error) {
+            case .stopForUser:
+                presentImportError(error, userID: expectedUserID)
+                return
+            case .retryLater, .failItem, .skipItem:
+                break
+            }
+        }
+        guard hasLocalPending || !openJobs.isEmpty else {
+            updateQueuePreview()
+            return
+        }
+
+        applyQueueSnapshot(openJobs)
         isImporting = true
         canResumeImport = false
         errorMessage = nil
@@ -398,7 +512,6 @@ final class AppViewModel: ObservableObject {
         defer {
             if importTask?.id == importTaskID { importTask = nil }
             if expectedGeneration == generation, expectedIdentity == activeRecipeCacheIdentity {
-                isLoading = false
                 isImporting = false
             }
             updateQueuePreview()
@@ -433,17 +546,70 @@ final class AppViewModel: ObservableObject {
         expectedGeneration: Int,
         expectedIdentity: String?
     ) async throws {
-        var idleRounds = 0
+        var backoffAttempt = 0
+        var allowSubmit = true
         while true {
             try Task.checkCancellation()
-            let queue = try await api.myJobs().items
+            if allowSubmit {
+                switch await submitShareInbox(language: language) {
+                case .stopped:
+                    allowSubmit = false
+                case .retryLater, .drained:
+                    break
+                }
+            }
+
+            let queue: [QueuedJobItem]
+            do {
+                queue = try await api.myJobs().items
+                backoffAttempt = queue.isEmpty ? backoffAttempt : 0
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                switch queueDisposition(for: error) {
+                case .retryLater, .failItem, .skipItem:
+                    backoffAttempt += 1
+                    await markImportWaitingForConnection()
+                    try await Task.sleep(for: .seconds(ImportQueueDrainPolicy.backoffSeconds(attempt: backoffAttempt)))
+                    continue
+                case .stopForUser:
+                    throw error
+                }
+            }
+
             await MainActor.run {
                 guard scopeIsCurrent(generation: expectedGeneration, identity: expectedIdentity, userID: userID) else { return }
                 self.applyQueueSnapshot(queue)
             }
-            guard !queue.isEmpty else { return }
 
-            idleRounds = 0
+            let inboxRemaining = allowSubmit && !ShareInbox.takeUnprocessed().isEmpty
+            if queue.isEmpty {
+                if let persisted = ImportJobStore.load(userID: userID) {
+                    let advanced = try await followPersistedJob(
+                        persisted,
+                        userID: userID,
+                        expectedGeneration: expectedGeneration,
+                        expectedIdentity: expectedIdentity
+                    )
+                    if advanced {
+                        backoffAttempt = 0
+                        try await Task.sleep(for: .seconds(0.5))
+                    } else {
+                        backoffAttempt += 1
+                        await markImportWaitingForConnection()
+                        try await Task.sleep(for: .seconds(ImportQueueDrainPolicy.backoffSeconds(attempt: backoffAttempt)))
+                    }
+                    continue
+                }
+                if inboxRemaining {
+                    backoffAttempt += 1
+                    await markImportWaitingForConnection()
+                    try await Task.sleep(for: .seconds(ImportQueueDrainPolicy.backoffSeconds(attempt: backoffAttempt)))
+                    continue
+                }
+                return
+            }
+
             let current = queue.first(where: { $0.status == "processing" }) ?? queue[0]
             let record = PersistedImportJob(
                 jobID: current.jobId,
@@ -459,56 +625,102 @@ final class AppViewModel: ObservableObject {
                 self.importURL = current.sourceUrl
             }
 
-            do {
-                let recipe = try await waitForPersistedJob(
-                    record,
-                    expectedGeneration: expectedGeneration,
-                    expectedIdentity: expectedIdentity,
-                    expectedUserID: userID
-                )
-                try await finishImport(
-                    recipe,
-                    expectedGeneration: expectedGeneration,
-                    expectedIdentity: expectedIdentity,
-                    expectedUserID: userID,
-                    continueQueue: true
-                )
-            } catch let error as AppError {
-                if case .jobFailed = error {
-                    ImportJobStore.clear(userID: userID)
-                    await MainActor.run {
-                        self.errorMessage = error.localizedDescription
-                    }
-                    // Continue remaining queue items.
-                    try await Task.sleep(for: .seconds(1))
-                    continue
+            let advanced = try await followPersistedJob(
+                record,
+                userID: userID,
+                expectedGeneration: expectedGeneration,
+                expectedIdentity: expectedIdentity
+            )
+            if advanced {
+                backoffAttempt = 0
+                try await Task.sleep(for: .seconds(0.5))
+            } else {
+                backoffAttempt += 1
+                await markImportWaitingForConnection()
+                try await Task.sleep(for: .seconds(ImportQueueDrainPolicy.backoffSeconds(attempt: backoffAttempt)))
+            }
+        }
+    }
+
+    /// Returns false when the job stayed on disk and should be retried after backoff.
+    private func followPersistedJob(
+        _ record: PersistedImportJob,
+        userID: UUID,
+        expectedGeneration: Int,
+        expectedIdentity: String?
+    ) async throws -> Bool {
+        do {
+            let recipe = try await waitForPersistedJob(
+                record,
+                expectedGeneration: expectedGeneration,
+                expectedIdentity: expectedIdentity,
+                expectedUserID: userID
+            )
+            try await finishImport(
+                recipe,
+                expectedGeneration: expectedGeneration,
+                expectedIdentity: expectedIdentity,
+                expectedUserID: userID,
+                continueQueue: true
+            )
+            return true
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            switch queueDisposition(for: error) {
+            case .retryLater:
+                return false
+            case .failItem, .skipItem:
+                ImportJobStore.clear(userID: userID)
+                await MainActor.run {
+                    self.errorMessage = error.localizedDescription
                 }
+                return true
+            case .stopForUser:
                 throw error
             }
+        }
+    }
 
-            // Brief pause so the server can flip the next pending → processing.
-            try await Task.sleep(for: .seconds(0.5))
-            _ = idleRounds
+    private func queueDisposition(for error: Error) -> ImportQueueErrorPolicy.Disposition {
+        if error is CancellationError { return .stopForUser }
+        if let appError = error as? AppError {
+            return ImportQueueErrorPolicy.disposition(
+                status: Self.statusCode(for: appError),
+                code: Self.errorCode(for: appError)
+            )
+        }
+        if ImportJobRetentionPolicy.shouldRetryTransport(error) {
+            return .retryLater
+        }
+        return .failItem
+    }
+
+    private func markImportWaitingForConnection() async {
+        await MainActor.run {
+            canResumeImport = false
+            statusMessage = ReciLocalization.string("Waiting for connection…")
         }
     }
 
     private func applyQueueSnapshot(_ queue: [QueuedJobItem]) {
-        importQueueTotal = queue.count
+        lastServerQueue = queue
+        let pending = ShareInbox.takeUnprocessed()
+        importQueueTotal = queue.count + pending.count
         if let processing = queue.first(where: { $0.status == "processing" }) {
             importQueuePosition = processing.queuePosition
-        } else {
+        } else if !queue.isEmpty {
             importQueuePosition = queue.first?.queuePosition ?? 0
+        } else {
+            importQueuePosition = pending.isEmpty ? 0 : 1
         }
-        importQueueHosts = queue.compactMap { URL(string: $0.sourceUrl)?.host }
+        var hosts = queue.compactMap { URL(string: $0.sourceUrl)?.host }
+        hosts.append(contentsOf: pending.compactMap { URL(string: $0.url)?.host })
+        importQueueHosts = hosts
     }
 
     private func updateQueuePreview() {
-        let pending = ShareInbox.takeUnprocessed()
-        if !isImporting {
-            importQueueTotal = pending.count
-            importQueuePosition = pending.isEmpty ? 0 : 1
-            importQueueHosts = pending.compactMap { URL(string: $0.url)?.host }
-        }
+        applyQueueSnapshot(isImporting ? lastServerQueue : [])
     }
 
     func importRecipe(language: String? = nil) async {
@@ -519,6 +731,10 @@ final class AppViewModel: ObservableObject {
         }
         guard !isImporting, importTask == nil else {
             if let normalized = URLNormalizer.normalize(importURL) {
+                if let existing = existingLibraryRecipe(matching: normalized) {
+                    openExistingRecipe(existing)
+                    return
+                }
                 ShareInbox.enqueue(raw: normalized, language: language ?? AppLanguageStore.current.serverCode)
                 updateQueuePreview()
             }
@@ -531,6 +747,11 @@ final class AppViewModel: ObservableObject {
 
         guard let normalized = URLNormalizer.normalize(importURL) else {
             errorMessage = ReciLocalization.string("Unsupported or invalid URL")
+            return
+        }
+
+        if let existing = existingLibraryRecipe(matching: normalized) {
+            openExistingRecipe(existing)
             return
         }
 
@@ -1044,6 +1265,27 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    func updateFolderDisplayPreferences(
+        sort: FolderSort? = nil,
+        columns: Int? = nil,
+        folderLayout: CollectionLayout? = nil,
+        recipeLayout: CollectionLayout? = nil
+    ) {
+        if let sort { folderSortRawValue = sort.rawValue }
+        if let columns { folderColumns = min(max(columns, 1), 3) }
+        if let folderLayout { folderLayoutRawValue = folderLayout.rawValue }
+        if let recipeLayout { recipeLayoutRawValue = recipeLayout.rawValue }
+        persistFolderCache()
+    }
+
+    func resetFolderDisplayPreferences() {
+        folderSortRawValue = FolderSort.created.rawValue
+        folderColumns = 2
+        folderLayoutRawValue = CollectionLayout.grid.rawValue
+        recipeLayoutRawValue = CollectionLayout.grid.rawValue
+        persistFolderCache()
+    }
+
     func folderPath(_ category: String) -> String {
         guard category != Self.uncategorized else { return Self.localizedCategoryName(category) }
         var parts = [category]
@@ -1120,7 +1362,7 @@ final class AppViewModel: ObservableObject {
             organizationErrorMessage = ReciLocalization.string("Enter a valid folder name.")
             return false
         }
-        guard !customCategories.contains(clean) else {
+        guard !FolderHierarchyPolicy.containsDuplicate(clean, folders: customCategories) else {
             organizationErrorMessage = ReciLocalization.string("A folder with this name already exists.")
             return false
         }
@@ -1258,7 +1500,7 @@ final class AppViewModel: ObservableObject {
         var updatedColors = categoryColors
         var updatedParents = categoryParents
         if clean != oldName {
-            guard !customCategories.contains(clean) else {
+            guard !FolderHierarchyPolicy.containsDuplicate(clean, folders: customCategories, excluding: oldName) else {
                 organizationErrorMessage = ReciLocalization.string("A folder with this name already exists.")
                 return false
             }
@@ -1320,8 +1562,8 @@ final class AppViewModel: ObservableObject {
     func setCategory(_ name: String, for recipeId: UUID) {
         let clean = cleanCategoryName(name)
         let category = clean.isEmpty ? Self.uncategorized : clean
-        if category != Self.uncategorized {
-            addCategory(category)
+        if category != Self.uncategorized, !customCategories.contains(category) {
+            _ = addCategory(category)
         }
         recipeCategories[recipeId] = category
         saveLocalCategories()
@@ -1403,6 +1645,10 @@ final class AppViewModel: ObservableObject {
         customCategories = []
         categoryColors = [:]
         categoryParents = [:]
+        folderSortRawValue = FolderSort.created.rawValue
+        folderColumns = 2
+        folderLayoutRawValue = CollectionLayout.grid.rawValue
+        recipeLayoutRawValue = CollectionLayout.grid.rawValue
         favoriteIDs = []
         recipeTags = [:]
         selectedRecipe = nil
@@ -1415,6 +1661,7 @@ final class AppViewModel: ObservableObject {
         statusMessage = canResumeImport ? ReciLocalization.string("An import is still in progress.") : ""
         importProgress = 0
         consumedShareIDs.removeAll()
+        lastServerQueue = []
         detailRevalidationPolicy.reset()
 
         loadFolderCache(userID: userID)
@@ -1464,6 +1711,10 @@ final class AppViewModel: ObservableObject {
         customCategories = []
         categoryColors = [:]
         categoryParents = [:]
+        folderSortRawValue = FolderSort.created.rawValue
+        folderColumns = 2
+        folderLayoutRawValue = CollectionLayout.grid.rawValue
+        recipeLayoutRawValue = CollectionLayout.grid.rawValue
         favoriteIDs = []
         recipeTags = [:]
         selectedRecipe = nil
@@ -1476,6 +1727,7 @@ final class AppViewModel: ObservableObject {
         statusMessage = ""
         importProgress = 0
         consumedShareIDs.removeAll()
+        lastServerQueue = []
         rebuildFolderCache()
     }
 
@@ -1520,7 +1772,11 @@ final class AppViewModel: ObservableObject {
             favoriteIDs: favoriteIDs.map(\.uuidString),
             recipeTags: recipeTags.reduce(into: [:]) { result, item in
                 result[item.key.uuidString] = item.value
-            }
+            },
+            folderSortRawValue: folderSortRawValue,
+            folderColumns: folderColumns,
+            folderLayoutRawValue: folderLayoutRawValue,
+            recipeLayoutRawValue: recipeLayoutRawValue
         )
         if let data = try? JSONEncoder().encode(snapshot) {
             UserDefaults.standard.set(data, forKey: folderCacheKey(for: activeUserID))
@@ -1546,6 +1802,10 @@ final class AppViewModel: ObservableObject {
             guard let id = UUID(uuidString: item.key) else { return }
             result[id] = item.value
         }
+        folderSortRawValue = FolderSort(rawValue: snapshot.folderSortRawValue ?? "")?.rawValue ?? FolderSort.created.rawValue
+        folderColumns = min(max(snapshot.folderColumns ?? 2, 1), 3)
+        folderLayoutRawValue = CollectionLayout(rawValue: snapshot.folderLayoutRawValue ?? "")?.rawValue ?? CollectionLayout.grid.rawValue
+        recipeLayoutRawValue = CollectionLayout(rawValue: snapshot.recipeLayoutRawValue ?? "")?.rawValue ?? CollectionLayout.grid.rawValue
     }
 
     private func removeLegacyCachesOnce() {

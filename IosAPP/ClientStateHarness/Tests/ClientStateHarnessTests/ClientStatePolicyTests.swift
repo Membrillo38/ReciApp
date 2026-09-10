@@ -75,6 +75,11 @@ final class LockedRecorder: @unchecked Sendable {
     #expect(FolderHierarchyPolicy.moving("Archive", to: "Dinner", parents: parents) == nil)
 }
 
+@Test func folderHierarchyRejectsCaseInsensitiveDuplicateNames() {
+    #expect(FolderHierarchyPolicy.containsDuplicate("dinner", folders: ["Dinner", "Dessert"]))
+    #expect(!FolderHierarchyPolicy.containsDuplicate("Dinner", folders: ["Dinner"], excluding: "Dinner"))
+}
+
 @Test func folderHierarchyPromotesChildrenWhenParentIsDeleted() {
     let parents = ["Dinner": "Plans", "Plans": "Archive", "Dessert": "Plans"]
     let promoted = FolderHierarchyPolicy.promotingChildren(of: "Plans", parents: parents)
@@ -394,6 +399,39 @@ final class LockedRecorder: @unchecked Sendable {
     #expect(!ImportJobRetentionPolicy.shouldRetainForResume(status: 422, code: nil))
     #expect(ImportJobRetentionPolicy.shouldRetainURLError(.timedOut))
     #expect(ImportJobRetentionPolicy.shouldRetainURLError(.notConnectedToInternet))
+    #expect(ImportJobRetentionPolicy.shouldRetainURLError(.cannotFindHost))
+    #expect(ImportJobRetentionPolicy.shouldRetainURLError(.dataNotAllowed))
+    #expect(ImportJobRetentionPolicy.shouldRetainURLError(.cannotLoadFromNetwork))
+    #expect(!ImportJobRetentionPolicy.shouldRetainURLError(.cancelled))
+    #expect(!ImportJobRetentionPolicy.shouldRetainURLError(.cannotParseResponse))
+}
+
+@Test func importQueueRetriesTransportAndKeepsLocalWork() {
+    #expect(ImportJobRetentionPolicy.shouldRetryTransport(URLError(.networkConnectionLost)))
+    #expect(ImportJobRetentionPolicy.shouldRetryTransport(URLError(.cannotFindHost)))
+    #expect(
+        ImportJobRetentionPolicy.shouldRetryTransport(
+            NSError(domain: NSPOSIXErrorDomain, code: Int(POSIXError.ECONNRESET.rawValue))
+        )
+    )
+    #expect(!ImportJobRetentionPolicy.shouldRetryTransport(CancellationError()))
+    #expect(!ImportJobRetentionPolicy.shouldRetryTransport(URLError(.cancelled)))
+
+    #expect(ImportQueueErrorPolicy.disposition(status: 429, code: nil) == .retryLater)
+    #expect(ImportQueueErrorPolicy.disposition(status: 503, code: nil) == .retryLater)
+    #expect(ImportQueueErrorPolicy.disposition(status: 400, code: nil) == .retryLater)
+    #expect(ImportQueueErrorPolicy.disposition(status: 422, code: nil) == .skipItem)
+    #expect(ImportQueueErrorPolicy.disposition(status: 200, code: "JOB_FAILED") == .failItem)
+    #expect(ImportQueueErrorPolicy.disposition(status: 404, code: nil) == .failItem)
+    #expect(ImportQueueErrorPolicy.disposition(status: 403, code: "FREE_WEEKLY_LIMIT") == .stopForUser)
+    #expect(ImportQueueErrorPolicy.disposition(status: 401, code: nil) == .stopForUser)
+
+    #expect(ImportQueueDrainPolicy.backoffSeconds(attempt: 1) == 2)
+    #expect(ImportQueueDrainPolicy.backoffSeconds(attempt: 2) == 4)
+    #expect(ImportQueueDrainPolicy.backoffSeconds(attempt: 8) == 30)
+    #expect(ImportQueueDrainPolicy.hasWork(inboxRemaining: true, serverJobCount: 0, hasPersistedJob: false))
+    #expect(ImportQueueDrainPolicy.hasWork(inboxRemaining: false, serverJobCount: 0, hasPersistedJob: true))
+    #expect(!ImportQueueDrainPolicy.hasWork(inboxRemaining: false, serverJobCount: 0, hasPersistedJob: false))
 }
 
 @Test func shareInboxDeduplicatesTheSameURLInsideTheWindow() {

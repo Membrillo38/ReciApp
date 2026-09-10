@@ -136,6 +136,12 @@ enum FolderAssignmentPolicy {
 }
 
 enum FolderHierarchyPolicy {
+    static func containsDuplicate(_ name: String, folders: [String], excluding: String? = nil) -> Bool {
+        folders.contains { candidate in
+            candidate != excluding && candidate.localizedCaseInsensitiveCompare(name) == .orderedSame
+        }
+    }
+
     static func canMove(_ folder: String, to parent: String?, parents: [String: String]) -> Bool {
         guard let parent else { return true }
         guard parent != folder else { return false }
@@ -164,7 +170,8 @@ enum FolderHierarchyPolicy {
     static func promotingChildren(of folder: String, parents: [String: String]) -> [String: String] {
         var result = parents
         let promotedParent = result.removeValue(forKey: folder)
-        for child in result.keys where result[child] == folder {
+        let children = result.compactMap { $0.value == folder ? $0.key : nil }
+        for child in children {
             if let promotedParent {
                 result[child] = promotedParent
             } else {
@@ -471,12 +478,74 @@ enum ImportJobRetentionPolicy {
 
     static func shouldRetainURLError(_ code: URLError.Code) -> Bool {
         switch code {
-        case .timedOut, .notConnectedToInternet, .networkConnectionLost,
-             .cannotConnectToHost, .dnsLookupFailed, .secureConnectionFailed:
+        case .timedOut, .cannotFindHost, .cannotConnectToHost,
+             .networkConnectionLost, .dnsLookupFailed,
+             .notConnectedToInternet, .internationalRoamingOff,
+             .callIsActive, .dataNotAllowed, .secureConnectionFailed,
+             .cannotLoadFromNetwork, .backgroundSessionWasDisconnected:
             return true
         default:
             return false
         }
+    }
+
+    static func shouldRetryTransport(_ error: Error) -> Bool {
+        if error is CancellationError { return false }
+        if let urlError = error as? URLError {
+            return shouldRetainURLError(urlError.code)
+        }
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain {
+            return shouldRetainURLError(URLError.Code(rawValue: nsError.code))
+        }
+        if nsError.domain == NSPOSIXErrorDomain {
+            guard let posix = POSIXError.Code(rawValue: Int32(nsError.code)) else { return false }
+            switch posix {
+            case .EAGAIN, .EPIPE, .EIO, .ENETDOWN, .ENETUNREACH,
+                 .EHOSTDOWN, .EHOSTUNREACH, .ECONNREFUSED, .ECONNRESET,
+                 .ECONNABORTED, .ETIMEDOUT, .ENOTCONN:
+                return true
+            default:
+                return false
+            }
+        }
+        return false
+    }
+}
+
+enum ImportQueueErrorPolicy {
+    enum Disposition: Equatable {
+        case retryLater
+        case skipItem
+        case failItem
+        case stopForUser
+    }
+
+    static func disposition(action: APIErrorAction) -> Disposition {
+        switch action {
+        case .waitAndRetry, .keepDataAndRetry, .showGeneric:
+            return .retryLater
+        case .correctInput:
+            return .skipItem
+        case .showJobFailure, .showNotFound:
+            return .failItem
+        case .presentPaywall, .showFairUse, .showForbidden, .reauthenticate:
+            return .stopForUser
+        }
+    }
+
+    static func disposition(status: Int, code: String?) -> Disposition {
+        disposition(action: APIErrorBehavior.action(status: status, code: code))
+    }
+}
+
+enum ImportQueueDrainPolicy {
+    static func backoffSeconds(attempt: Int, cap: Double = 30) -> Double {
+        min(Double(1 << min(max(attempt, 1), 10)), cap)
+    }
+
+    static func hasWork(inboxRemaining: Bool, serverJobCount: Int, hasPersistedJob: Bool) -> Bool {
+        inboxRemaining || serverJobCount > 0 || hasPersistedJob
     }
 }
 

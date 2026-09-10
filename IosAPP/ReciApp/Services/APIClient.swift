@@ -86,7 +86,7 @@ final class APIClient: @unchecked Sendable {
     }
 
     func job(id: UUID, language: String) async throws -> JobResponse {
-        try await request("v1/jobs/\(id.uuidString)", language: language, retrySafe: false)
+        try await request("v1/jobs/\(id.uuidString)", language: language)
     }
 
     func removeRecipe(id: UUID) async throws -> OkResponse {
@@ -131,8 +131,8 @@ final class APIClient: @unchecked Sendable {
                 default:
                     throw error
                 }
-            } catch let error as URLError {
-                guard ImportJobRetentionPolicy.shouldRetainURLError(error.code) else { throw error }
+            } catch {
+                guard ImportJobRetentionPolicy.shouldRetryTransport(error) else { throw error }
                 try await Task.sleep(for: .seconds(2))
                 continue
             }

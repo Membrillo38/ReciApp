@@ -9293,6 +9293,47 @@
         }
       }
     },
+    "Waiting for connection…": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Warten auf Verbindung…"
+          }
+        },
+        "en-US": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Waiting for connection…"
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esperando conexión…"
+          }
+        },
+        "fr-FR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "En attente de connexion…"
+          }
+        },
+        "it": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "In attesa di connessione…"
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aguardando conexão…"
+          }
+        }
+      }
+    },
     "We couldn't complete that action. Please try again.": {
       "extractionState": "manual",
       "localizations": {
