@@ -14,8 +14,8 @@
 - UFW: default deny incoming; allow `22`, `80`, `443`, and all on `tailscale0`
 - Docker bypass mitigation: `DOCKER-USER` chain drops published container ports from public NIC except `80`/`443`
 - Persisted by systemd unit `reciapp-docker-user-firewall.service`
-- Coolify UI / Kuma / Netdata bound to Tailscale IP `100.123.33.15`, not `0.0.0.0`
-- Public Coolify hostname (`coolify.*.sslip.io`) removed from Traefik; UI is Tailscale-only
+- Coolify UI / Kuma / Netdata bound to Tailscale IP `100.123.33.15` on the host
+- Coolify web UI also via Traefik: `https://coolify.51-255-43-100.sslip.io` (Coolify login required)
 - Traefik dashboard disabled; access log JSON at `/data/coolify/proxy/access.log`
 - Scanner paths return 403 at Traefik (`deploy/traefik/reciapp-hardening.yaml`) before the API
 

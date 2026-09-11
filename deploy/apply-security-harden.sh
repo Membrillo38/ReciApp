@@ -6,10 +6,7 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 
 install -d -m 0755 /data/coolify/proxy/dynamic
 install -m 0644 "$ROOT/traefik/reciapp-hardening.yaml" /data/coolify/proxy/dynamic/reciapp-hardening.yaml
-
-# Coolify UI must stay Tailscale-only (already bound on 100.123.33.15:8000).
-# Traefik rejects `http: {}`; deleting the public router file is the valid form.
-rm -f /data/coolify/proxy/dynamic/coolify-ui.yaml
+install -m 0644 "$ROOT/traefik/coolify-ui.yaml" /data/coolify/proxy/dynamic/coolify-ui.yaml
 
 install -m 0644 "$ROOT/fail2ban/filter.d/reciapp-probes.conf" /etc/fail2ban/filter.d/reciapp-probes.conf
 install -m 0644 "$ROOT/fail2ban/jail.d/reciapp-probes.conf" /etc/fail2ban/jail.d/reciapp-probes.conf
