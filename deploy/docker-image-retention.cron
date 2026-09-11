@@ -1,0 +1,2 @@
+# Prune extra Coolify app images: live + 1 previous
+15 */6 * * * root /usr/local/sbin/reciapp-docker-image-retention.sh >/dev/null 2>>/var/log/reciapp-docker-retention.log
