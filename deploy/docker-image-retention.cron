@@ -1,2 +1,2 @@
-# Prune extra Coolify app images: live + 1 previous
-15 */6 * * * root /usr/local/sbin/reciapp-docker-image-retention.sh >/dev/null 2>>/var/log/reciapp-docker-retention.log
+# Daily 04:00 UTC: live + 1 previous app image; drop extra tags and all build cache
+0 4 * * * root /usr/local/sbin/reciapp-docker-image-retention.sh >/dev/null 2>>/var/log/reciapp-docker-retention.log

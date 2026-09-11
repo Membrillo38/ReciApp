@@ -78,7 +78,7 @@ Hardening on recipe-backend: non-root image user, `no-new-privileges`, `cap_drop
    - Attach network `reciapp-internal` (or set `DATABASE_URL` host `reciapp-postgres`)
    - Copy env vars from `/etc/reciapp/recipe-backend.env` into Coolify secrets (never commit them)
 4. Webhook on push to `main` → build → healthcheck → swap.
-5. Keep 1 previous image for rollback (`docker_images_to_keep=1`). Extra app images are pruned (see `deploy/docker-image-retention.sh`).
+5. Keep 1 previous image for rollback (`docker_images_to_keep=1`). Daily cron at 04:00 UTC prunes extra app images and all build cache (`deploy/docker-image-retention.sh`).
 
 Until GitHub OAuth is connected in Coolify, use the manual compose path above.
 
@@ -139,7 +139,7 @@ Telegram watchdog: cron on the VPS (`deploy/watchdog-telegram.sh`). Alerts after
 # Updates
 sudo apt update && sudo apt upgrade
 sudo /usr/local/sbin/reciapp-docker-image-retention.sh
-# live + 1 previous app image; dangling images + unused build cache gone
+# live + 1 previous; extra app images and all build cache gone
 
 # Logs
 sudo docker logs -f recipe-backend --tail 200

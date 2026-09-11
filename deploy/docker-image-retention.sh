@@ -41,7 +41,9 @@ done < <(docker images --format '{{.Tag}}' "$APP_UUID")
 
 docker container prune -f >/dev/null
 docker image prune -f >/dev/null
-docker builder prune -f >/dev/null
+# Wipe all build cache. Next deploy rebuilds layers. Do not prune -a images:
+# that would delete the unused previous tag (the rollback copy).
+docker builder prune -af >/dev/null
 
 kept="$(printf '%s ' "${!keep[@]}")"
 echo "retention=ok keep=${kept} images=$(docker images -q "$APP_UUID" | wc -l | tr -d ' ')"
