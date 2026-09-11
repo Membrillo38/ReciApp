@@ -8,7 +8,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-JAILS = ("sshd", "reciapp-probes", "recidive")
+JAILS = ("sshd", "reciapp-probes")
 PASSWORD_FILE = Path("/etc/reciapp/secrets/postgres_password")
 
 

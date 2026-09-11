@@ -284,20 +284,10 @@ def dashboard_threats() -> dict:
         """
         select created_at, event, ip, metadata
           from security_events
-         where event <> 'fail2ban_snapshot'
+         where event = 'scanner_probe'
          order by created_at desc
          limit 150
         """
-    )
-    http_hits = fetch_all(
-        """
-        select created_at, method, path, status_code, ip
-          from api_request_logs
-         where status_code = any(%s)
-         order by created_at desc
-         limit 120
-        """,
-        ([401, 403, 429, 503],),
     )
     ssh_recent = snapshot.get("ssh_recent") if isinstance(snapshot.get("ssh_recent"), list) else []
     return {
@@ -310,7 +300,6 @@ def dashboard_threats() -> dict:
         "banned": banned,
         "ssh_recent": ssh_recent[:60],
         "events": events,
-        "http_hits": http_hits,
     }
 
 

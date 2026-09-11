@@ -2,7 +2,7 @@
 {% block title %}Amenazas · ReciApp{% endblock %}
 {% block content %}
 <h1>Amenazas</h1>
-<p class="muted">Fail2ban, SSH y probes HTTP. Snapshot host: {{ t.snapshot_at or 'aún no' }}</p>
+<p class="muted">Ban solo SSH brute-force y paths de scanner (<code>/.env</code>, WordPress, backups…). Un 401 o 503 de la API no bloquea. Snapshot: {{ t.snapshot_at or 'aún no' }}</p>
 
 <div class="grid">
   <div class="card">
@@ -76,26 +76,6 @@
       </tr>
       {% else %}
       <tr><td colspan="2" class="muted">Sin líneas SSH recientes</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
-
-<h2>HTTP 401 / 403 / 429 / 503</h2>
-<div class="card">
-  <table>
-    <thead><tr><th>Cuándo</th><th>Status</th><th>Método</th><th>Path</th><th>IP</th></tr></thead>
-    <tbody>
-      {% for r in t.http_hits %}
-      <tr>
-        <td class="muted">{{ r.created_at }}</td>
-        <td class="bad">{{ r.status_code }}</td>
-        <td>{{ r.method }}</td>
-        <td>{{ r.path }}</td>
-        <td class="muted">{{ r.ip or '—' }}</td>
-      </tr>
-      {% else %}
-      <tr><td colspan="5" class="muted">Sin hits de abuso en logs API</td></tr>
       {% endfor %}
     </tbody>
   </table>

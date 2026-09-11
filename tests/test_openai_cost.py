@@ -203,4 +203,4 @@ def test_dashboard_threats_flattens_fail2ban_snapshot():
     assert threats["currently_failed"] == 3
     assert {row["ip"] for row in threats["banned"]} == {"203.0.113.9", "198.51.100.7"}
     assert threats["events"][0]["event"] == "scanner_probe"
-    assert threats["http_hits"][0]["status_code"] == 401
+    assert "http_hits" not in threats

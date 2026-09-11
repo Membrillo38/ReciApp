@@ -5,7 +5,7 @@
 - Pubkey only (`AuthenticationMethods publickey`)
 - `PasswordAuthentication no` (fixed cloud-init first-wins via `/etc/ssh/sshd_config.d/50-cloud-init.conf` + `99-hardening.conf`)
 - Root password login disabled (`PermitRootLogin prohibit-password`; root account locked)
-- Fail2ban jails: `sshd`, `reciapp-probes` (scanner paths in Traefik access log), `recidive`
+- Fail2ban jails: `sshd` (pubkey failures), `reciapp-probes` (scanner paths only: `.env`, `.git`, WordPress, dumps). Never bans on API `401`/`503`. `recidive` off.
 - Verify before tightening: second SSH session with pubkey (Tailscale `100.123.33.15` works); keep an open session while reloading `sshd`
 - Public TCP/22 stays open on purpose so Tailscale downtime cannot lock out the host
 
