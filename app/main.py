@@ -50,7 +50,16 @@ from app.pipeline import run_extract_job, run_translation_job
 from app.quota import assert_can_extract, get_quota, record_usage
 from app.job_guard import claim as claim_job, release as release_job, try_claim as try_claim_job
 from app.localization import normalize_language
-from app.security import audit_security_event, check_not_banned, new_correlation_id, pseudonymous_ip, request_ip, require_rate_limit, validate_public_url
+from app.security import (
+    audit_security_event,
+    check_not_banned,
+    is_scanner_probe,
+    new_correlation_id,
+    pseudonymous_ip,
+    request_ip,
+    require_rate_limit,
+    validate_public_url,
+)
 from app.spend import reserve_spend, settle_spend
 from app.store import (
     claim_next_pending_extract_for_user,
@@ -91,7 +100,15 @@ async def lifespan(_app: FastAPI):
         reset_db()
 
 
-app = FastAPI(title="ReciApp API", version="1.3.0", lifespan=lifespan)
+_PRODUCTION = settings.environment.lower() in {"production", "prod"}
+app = FastAPI(
+    title="ReciApp API",
+    version="1.3.0",
+    lifespan=lifespan,
+    docs_url=None if _PRODUCTION else "/docs",
+    redoc_url=None if _PRODUCTION else "/redoc",
+    openapi_url=None if _PRODUCTION else "/openapi.json",
+)
 logger = logging.getLogger(__name__)
 app.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=4)
 app.add_middleware(
@@ -265,6 +282,11 @@ async def request_metrics(request: Request, call_next):
     request.state.correlation_id = correlation_id
     content_length = request.headers.get("content-length")
     is_probe = request.url.path in {"/health", "/ready"}
+    if is_scanner_probe(request.url.path):
+        response = JSONResponse(status_code=403, content={"detail": "Forbidden"})
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        return response
     response = None
     user_id = _bearer_user_id(request)
     if not is_probe and request.url.path.startswith("/v1/"):
@@ -332,6 +354,9 @@ async def request_metrics(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    forwarded_proto = (request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip().lower()
+    if request.url.scheme == "https" or forwarded_proto == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     if request.url.path.startswith("/dashboard"):
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "

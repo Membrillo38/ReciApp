@@ -25,4 +25,4 @@ ENV TRUSTED_PROXY_IPS=127.0.0.1
 
 HEALTHCHECK CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"
 
-CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips="${TRUSTED_PROXY_IPS}"
+CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips="${TRUSTED_PROXY_IPS}" --no-server-header

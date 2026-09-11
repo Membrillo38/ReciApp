@@ -304,3 +304,55 @@ def safe_compare(left: str | None, right: str | None) -> bool:
 
 def new_correlation_id() -> str:
     return secrets.token_urlsafe(12)
+
+
+_SCANNER_EXACT = frozenset(
+    {
+        "/backup.zip",
+        "/backup.tar.gz",
+        "/backup.sql",
+        "/database.sql",
+        "/dump.sql",
+        "/docker-compose.yml",
+        "/phpinfo.php",
+        "/config.php",
+        "/server.key",
+        "/secrets.json",
+        "/xmlrpc.php",
+        "/wp-config.php",
+        "/wp-login.php",
+        "/.npmrc",
+        "/.bash_history",
+    }
+)
+_SCANNER_PREFIXES = (
+    "/.env",
+    "/.git",
+    "/.ssh",
+    "/.svn",
+    "/.vscode",
+    "/.ds_store",
+    "/wp-admin",
+    "/wp-content",
+    "/wp-includes",
+    "/xmlrpc.php",
+    "/actuator",
+    "/storage/logs",
+    "/server.key",
+    "/phpinfo",
+    "/vendor/phpunit",
+    "/telescope",
+    "/debug/default",
+)
+
+
+def is_scanner_probe(path: str) -> bool:
+    """Cheap path check for mass scanners. Never matches /v1 or /health."""
+    raw = (path or "").split("?", 1)[0].lower()
+    if raw in {"/health", "/ready", "/ping"} or raw.startswith("/v1/") or raw.startswith("/dashboard"):
+        return False
+    if raw.startswith("/.well-known/"):
+        return False
+    if raw in _SCANNER_EXACT:
+        return True
+    return any(raw == prefix or raw.startswith(prefix + "/") or raw.startswith(prefix + ".") for prefix in _SCANNER_PREFIXES)

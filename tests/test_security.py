@@ -65,6 +65,20 @@ def test_request_ip_honors_xff_from_trusted_client(monkeypatch):
     assert security.request_ip(request) == "1.1.1.1"
 
 
+def test_scanner_probe_paths():
+    assert security.is_scanner_probe("/.env")
+    assert security.is_scanner_probe("/.env.production")
+    assert security.is_scanner_probe("/.git/config")
+    assert security.is_scanner_probe("/wp-admin/setup-config.php")
+    assert security.is_scanner_probe("/backup.sql")
+    assert security.is_scanner_probe("/actuator/health")
+    assert not security.is_scanner_probe("/health")
+    assert not security.is_scanner_probe("/ready")
+    assert not security.is_scanner_probe("/v1/me")
+    assert not security.is_scanner_probe("/dashboard")
+    assert not security.is_scanner_probe("/.well-known/acme-challenge/x")
+
+
 def test_ban_ladder_escalates(monkeypatch):
     now = 1_000.0
     monkeypatch.setattr(security.time, "monotonic", lambda: now)

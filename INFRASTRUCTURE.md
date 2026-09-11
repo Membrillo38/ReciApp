@@ -6,8 +6,8 @@ Production host: `ubuntu@51.255.43.100` (Ubuntu 24.04, 4 vCPU, 8 GB RAM, 75 GB N
 
 ```
 Internet
-  |  22/tcp SSH (pubkey only)
-  |  80/443 Coolify Traefik (recipe-backend HTTPS)
+  |  22/tcp SSH (pubkey only; Fail2ban)
+  |  80/443 Coolify Traefik (recipe-backend HTTPS; probe paths 403)
   v
 VPS
   ├── Tailscale (100.123.33.15) — admin panels only

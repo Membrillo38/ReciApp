@@ -5,8 +5,9 @@
 - Pubkey only (`AuthenticationMethods publickey`)
 - `PasswordAuthentication no` (fixed cloud-init first-wins via `/etc/ssh/sshd_config.d/50-cloud-init.conf` + `99-hardening.conf`)
 - Root password login disabled (`PermitRootLogin prohibit-password`; root account locked)
-- Fail2ban jail `sshd` enabled
-- Verify before tightening: second SSH session with pubkey; keep an open session while reloading `sshd`
+- Fail2ban jails: `sshd`, `reciapp-probes` (scanner paths in Traefik access log), `recidive`
+- Verify before tightening: second SSH session with pubkey (Tailscale `100.123.33.15` works); keep an open session while reloading `sshd`
+- Public TCP/22 stays open on purpose so Tailscale downtime cannot lock out the host
 
 ## Firewall
 
@@ -14,7 +15,9 @@
 - Docker bypass mitigation: `DOCKER-USER` chain drops published container ports from public NIC except `80`/`443`
 - Persisted by systemd unit `reciapp-docker-user-firewall.service`
 - Coolify UI / Kuma / Netdata bound to Tailscale IP `100.123.33.15`, not `0.0.0.0`
-- Traefik dashboard host port `8080` removed from coolify-proxy
+- Public Coolify hostname (`coolify.*.sslip.io`) removed from Traefik; UI is Tailscale-only
+- Traefik dashboard disabled; access log JSON at `/data/coolify/proxy/access.log`
+- Scanner paths return 403 at Traefik (`deploy/traefik/reciapp-hardening.yaml`) before the API
 
 ## Docker hardening (Recipe Backend)
 

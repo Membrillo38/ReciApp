@@ -1,0 +1,42 @@
+# Traefik file provider. Blocks mass-scanner paths before they hit the API.
+# Does not touch /.well-known (ACME), /ping, /health, /ready, or /v1.
+http:
+  middlewares:
+    reciapp-sec-headers:
+      headers:
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        contentTypeNosniff: true
+        referrerPolicy: no-referrer
+        customFrameOptionsValue: DENY
+        permissionsPolicy: "camera=(), microphone=(), geolocation=()"
+        customResponseHeaders:
+          server: ""
+          X-Powered-By: ""
+    reciapp-probe-deny:
+      ipAllowList:
+        sourceRange:
+          - "255.255.255.255/32"
+  routers:
+    reciapp-probes-http:
+      rule: "PathRegexp(`(?i)^/(\\.env|\\.git|\\.ssh|\\.svn|\\.vscode|\\.npmrc|\\.bash_history|wp-admin|wp-login\\.php|wp-config\\.php|xmlrpc\\.php|phpinfo\\.php|config\\.php|backup\\.(zip|tar\\.gz|sql)|database\\.sql|dump\\.sql|docker-compose\\.yml|server\\.key|secrets\\.json|actuator|storage/logs)`)"
+      entryPoints:
+        - http
+      priority: 10000
+      middlewares:
+        - reciapp-probe-deny
+      service: reciapp-probe-blackhole
+    reciapp-probes-https:
+      rule: "PathRegexp(`(?i)^/(\\.env|\\.git|\\.ssh|\\.svn|\\.vscode|\\.npmrc|\\.bash_history|wp-admin|wp-login\\.php|wp-config\\.php|xmlrpc\\.php|phpinfo\\.php|config\\.php|backup\\.(zip|tar\\.gz|sql)|database\\.sql|dump\\.sql|docker-compose\\.yml|server\\.key|secrets\\.json|actuator|storage/logs)`)"
+      entryPoints:
+        - https
+      priority: 10000
+      middlewares:
+        - reciapp-probe-deny
+      service: reciapp-probe-blackhole
+      tls: {}
+  services:
+    reciapp-probe-blackhole:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:9"
