@@ -247,6 +247,73 @@ def list_usage(limit: int = 100) -> list[dict]:
     return fetch_all("select * from usage_events order by created_at desc limit %s", (limit,))
 
 
+def dashboard_threats() -> dict:
+    snapshot_row = fetch_one(
+        """
+        select metadata, created_at
+          from security_events
+         where event = 'fail2ban_snapshot'
+         order by created_at desc
+         limit 1
+        """
+    ) or {}
+    snapshot = snapshot_row.get("metadata") or {}
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+    jails = snapshot.get("jails") if isinstance(snapshot.get("jails"), dict) else {}
+    banned: list[dict] = []
+    seen: set[str] = set()
+    currently_banned = 0
+    currently_failed = 0
+    total_banned = 0
+    total_failed = 0
+    for name, jail in jails.items():
+        if not isinstance(jail, dict):
+            continue
+        currently_banned += int(jail.get("currently_banned") or 0)
+        currently_failed += int(jail.get("currently_failed") or 0)
+        total_banned += int(jail.get("total_banned") or 0)
+        total_failed += int(jail.get("total_failed") or 0)
+        for ip in jail.get("banned_ips") or []:
+            text = str(ip).strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            banned.append({"ip": text, "jail": name})
+    events = fetch_all(
+        """
+        select created_at, event, ip, metadata
+          from security_events
+         where event <> 'fail2ban_snapshot'
+         order by created_at desc
+         limit 150
+        """
+    )
+    http_hits = fetch_all(
+        """
+        select created_at, method, path, status_code, ip
+          from api_request_logs
+         where status_code = any(%s)
+         order by created_at desc
+         limit 120
+        """,
+        ([401, 403, 429, 503],),
+    )
+    ssh_recent = snapshot.get("ssh_recent") if isinstance(snapshot.get("ssh_recent"), list) else []
+    return {
+        "snapshot_at": snapshot_row.get("created_at"),
+        "currently_banned": currently_banned,
+        "currently_failed": currently_failed,
+        "total_banned": total_banned,
+        "total_failed": total_failed,
+        "jails": jails,
+        "banned": banned,
+        "ssh_recent": ssh_recent[:60],
+        "events": events,
+        "http_hits": http_hits,
+    }
+
+
 def log_request(
     *,
     method: str,

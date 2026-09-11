@@ -1,0 +1,2 @@
+# Dump Fail2ban/SSH snapshot into Postgres every minute for /dashboard/threats
+* * * * * root /usr/bin/python3 /usr/local/sbin/reciapp-dump-threats.py >/dev/null 2>>/var/log/reciapp-threats.log

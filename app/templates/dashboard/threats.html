@@ -1,0 +1,122 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Amenazas · ReciApp{% endblock %}
+{% block content %}
+<h1>Amenazas</h1>
+<p class="muted">Fail2ban, SSH y probes HTTP. Snapshot host: {{ t.snapshot_at or 'aún no' }}</p>
+
+<div class="grid">
+  <div class="card">
+    <div class="label">IPs baneadas ahora</div>
+    <div class="value">{{ t.currently_banned }}</div>
+    <div class="muted">histórico {{ t.total_banned }}</div>
+  </div>
+  <div class="card">
+    <div class="label">Intentos fallidos ahora</div>
+    <div class="value">{{ t.currently_failed }}</div>
+    <div class="muted">histórico {{ t.total_failed }}</div>
+  </div>
+  <div class="card">
+    <div class="label">Jails</div>
+    <div class="value">{{ t.jails|length }}</div>
+    <div class="muted">{% for name in t.jails %}{{ name }}{% if not loop.last %} · {% endif %}{% else %}—{% endfor %}</div>
+  </div>
+  <div class="card">
+    <div class="label">Eventos API</div>
+    <div class="value">{{ t.events|length }}</div>
+    <div class="muted">probes, rate limit, audit</div>
+  </div>
+</div>
+
+<h2>IPs bloqueadas</h2>
+<div class="card">
+  <table>
+    <thead><tr><th>IP</th><th>Jail</th></tr></thead>
+    <tbody>
+      {% for row in t.banned %}
+      <tr>
+        <td>{{ row.ip }}</td>
+        <td class="muted">{{ row.jail }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="2" class="muted">Nadie baneado ahora</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h2>Estado por jail</h2>
+<div class="card">
+  <table>
+    <thead><tr><th>Jail</th><th>Failed ahora</th><th>Failed total</th><th>Ban ahora</th><th>Ban total</th></tr></thead>
+    <tbody>
+      {% for name, jail in t.jails.items() %}
+      <tr>
+        <td>{{ name }}</td>
+        <td>{{ jail.currently_failed }}</td>
+        <td>{{ jail.total_failed }}</td>
+        <td class="{% if jail.currently_banned %}bad{% endif %}">{{ jail.currently_banned }}</td>
+        <td>{{ jail.total_banned }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="muted">Sin snapshot Fail2ban. Cron host aún no corre.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h2>Intentos SSH</h2>
+<div class="card">
+  <table>
+    <thead><tr><th>Cuándo</th><th>Log</th></tr></thead>
+    <tbody>
+      {% for row in t.ssh_recent %}
+      <tr>
+        <td class="muted">{{ row.t or '—' }}</td>
+        <td style="white-space:normal; max-width:720px;">{{ row.line }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="2" class="muted">Sin líneas SSH recientes</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h2>HTTP 401 / 403 / 429 / 503</h2>
+<div class="card">
+  <table>
+    <thead><tr><th>Cuándo</th><th>Status</th><th>Método</th><th>Path</th><th>IP</th></tr></thead>
+    <tbody>
+      {% for r in t.http_hits %}
+      <tr>
+        <td class="muted">{{ r.created_at }}</td>
+        <td class="bad">{{ r.status_code }}</td>
+        <td>{{ r.method }}</td>
+        <td>{{ r.path }}</td>
+        <td class="muted">{{ r.ip or '—' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="muted">Sin hits de abuso en logs API</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h2>Eventos de seguridad</h2>
+<div class="card">
+  <table>
+    <thead><tr><th>Cuándo</th><th>Evento</th><th>IP</th><th>Detalle</th></tr></thead>
+    <tbody>
+      {% for e in t.events %}
+      <tr>
+        <td class="muted">{{ e.created_at }}</td>
+        <td>{{ e.event }}</td>
+        <td class="muted">{{ e.metadata.ip if e.metadata and e.metadata.ip else (e.ip or '—') }}</td>
+        <td class="muted" style="white-space:normal; max-width:480px;">{{ e.metadata }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="muted">Sin eventos</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

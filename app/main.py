@@ -52,6 +52,7 @@ from app.job_guard import claim as claim_job, release as release_job, try_claim 
 from app.localization import normalize_language
 from app.security import (
     audit_security_event,
+    allow_rate_limit,
     check_not_banned,
     is_scanner_probe,
     new_correlation_id,
@@ -283,6 +284,13 @@ async def request_metrics(request: Request, call_next):
     content_length = request.headers.get("content-length")
     is_probe = request.url.path in {"/health", "/ready"}
     if is_scanner_probe(request.url.path):
+        client_ip = request_ip(request)
+        if allow_rate_limit(f"scanner-log:{client_ip}", limit=30, window_seconds=3600):
+            audit_security_event(
+                event="scanner_probe",
+                request=request,
+                metadata={"path": request.url.path[:200], "ip": client_ip},
+            )
         response = JSONResponse(status_code=403, content={"detail": "Forbidden"})
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"

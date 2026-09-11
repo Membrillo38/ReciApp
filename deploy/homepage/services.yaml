@@ -1,11 +1,18 @@
 - ReciApp:
     - Dashboard:
         href: https://51-255-43-100.sslip.io/dashboard
-        description: Logs, costes y jobs
+        description: Logs, costes, jobs y amenazas
         icon: mdi-chart-box
         server: local
         container: m6kbwmrfcknunjrnxbbsllca-164736609156
         showStats: true
+    - Amenazas:
+        href: https://51-255-43-100.sslip.io/dashboard/threats
+        description: IPs baneadas e intentos SSH
+        icon: mdi-shield-alert
+        server: local
+        container: m6kbwmrfcknunjrnxbbsllca-164736609156
+        showStats: false
     - API:
         href: https://51-255-43-100.sslip.io/ready
         description: Salud producción

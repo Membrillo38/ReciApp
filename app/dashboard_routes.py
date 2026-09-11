@@ -6,7 +6,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from app.dashboard_stats import dashboard_overview, list_usage
+from app.dashboard_stats import dashboard_overview, dashboard_threats, list_usage
 from app.db import fetch_all
 from app.store import list_jobs, list_live_queue_jobs, list_profiles, list_recipes
 
@@ -91,4 +91,12 @@ def requests_page(request: Request):
     return templates.TemplateResponse(
         "dashboard/requests.html",
         _ctx(request, "requests", requests=rows),
+    )
+
+
+@router.get("/threats", response_class=HTMLResponse)
+def threats_page(request: Request):
+    return templates.TemplateResponse(
+        "dashboard/threats.html",
+        _ctx(request, "threats", t=dashboard_threats()),
     )

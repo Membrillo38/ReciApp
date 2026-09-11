@@ -148,3 +148,59 @@ def test_dashboard_overview_sums_job_costs_including_failures():
     assert overview["cost_usd_week"] == 0.0225
     assert overview["db_size_pretty"] == "12 MB"
     assert overview["app_size_pretty"] == "200 kB"
+
+
+def test_dashboard_threats_flattens_fail2ban_snapshot():
+    from app import dashboard_stats
+
+    def fake_fetch_one(sql, params=None):
+        return {
+            "created_at": "2026-09-11T08:00:00+00:00",
+            "metadata": {
+                "jails": {
+                    "sshd": {
+                        "currently_failed": 2,
+                        "total_failed": 10,
+                        "currently_banned": 1,
+                        "total_banned": 4,
+                        "banned_ips": ["203.0.113.9"],
+                    },
+                    "reciapp-probes": {
+                        "currently_failed": 1,
+                        "total_failed": 5,
+                        "currently_banned": 1,
+                        "total_banned": 2,
+                        "banned_ips": ["203.0.113.9", "198.51.100.7"],
+                    },
+                },
+                "ssh_recent": [{"t": "2026-09-11", "line": "Failed publickey"}],
+            },
+        }
+
+    def fake_fetch_all(sql, params=None):
+        if "from security_events" in sql:
+            return [
+                {
+                    "created_at": "2026-09-11T08:01:00+00:00",
+                    "event": "scanner_probe",
+                    "ip": "sha256:abc",
+                    "metadata": {"path": "/.env", "ip": "198.51.100.7"},
+                }
+            ]
+        return [{"created_at": "t", "method": "GET", "path": "/v1/me", "status_code": 401, "ip": "hash"}]
+
+    original_one = dashboard_stats.fetch_one
+    original_all = dashboard_stats.fetch_all
+    dashboard_stats.fetch_one = fake_fetch_one
+    dashboard_stats.fetch_all = fake_fetch_all
+    try:
+        threats = dashboard_stats.dashboard_threats()
+    finally:
+        dashboard_stats.fetch_one = original_one
+        dashboard_stats.fetch_all = original_all
+
+    assert threats["currently_banned"] == 2
+    assert threats["currently_failed"] == 3
+    assert {row["ip"] for row in threats["banned"]} == {"203.0.113.9", "198.51.100.7"}
+    assert threats["events"][0]["event"] == "scanner_probe"
+    assert threats["http_hits"][0]["status_code"] == 401
