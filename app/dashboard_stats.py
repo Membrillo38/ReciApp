@@ -77,6 +77,10 @@ def _postgres_footprint() -> dict:
         "db_name": "",
         "db_size_pretty": "—",
         "db_size_bytes": 0,
+        "app_size_pretty": "—",
+        "app_size_bytes": 0,
+        "catalog_size_pretty": "—",
+        "catalog_size_bytes": 0,
         "cluster_size_pretty": "—",
         "cluster_size_bytes": 0,
         "tables": [],
@@ -84,10 +88,21 @@ def _postgres_footprint() -> dict:
     try:
         size = fetch_one(
             """
+            with app as (
+              select coalesce(sum(pg_total_relation_size(c.oid)), 0)::bigint as app_bytes
+                from pg_class c
+                join pg_namespace n on n.oid = c.relnamespace
+               where n.nspname not in ('pg_catalog', 'information_schema', 'pg_toast')
+                 and c.relkind in ('r', 'm', 'p')
+            )
             select
               current_database() as db_name,
               pg_size_pretty(pg_database_size(current_database())) as db_pretty,
               pg_database_size(current_database())::bigint as db_bytes,
+              pg_size_pretty(app.app_bytes) as app_pretty,
+              app.app_bytes,
+              pg_size_pretty(pg_database_size(current_database()) - app.app_bytes) as catalog_pretty,
+              (pg_database_size(current_database()) - app.app_bytes)::bigint as catalog_bytes,
               (
                 select pg_size_pretty(sum(pg_database_size(datname)))
                   from pg_database
@@ -98,6 +113,7 @@ def _postgres_footprint() -> dict:
                   from pg_database
                  where datistemplate = false
               ) as cluster_bytes
+              from app
             """
         ) or {}
         tables = fetch_all(
@@ -116,10 +132,19 @@ def _postgres_footprint() -> dict:
         )
     except Exception:
         return empty
+    db_bytes = int(size.get("db_bytes") or 0)
+    app_bytes = int(size.get("app_bytes") or 0)
+    catalog_bytes = int(size.get("catalog_bytes") or 0)
+    if catalog_bytes < 0:
+        catalog_bytes = 0
     return {
         "db_name": str(size.get("db_name") or ""),
         "db_size_pretty": str(size.get("db_pretty") or "—"),
-        "db_size_bytes": int(size.get("db_bytes") or 0),
+        "db_size_bytes": db_bytes,
+        "app_size_pretty": str(size.get("app_pretty") or "—"),
+        "app_size_bytes": app_bytes,
+        "catalog_size_pretty": str(size.get("catalog_pretty") or "—"),
+        "catalog_size_bytes": catalog_bytes,
         "cluster_size_pretty": str(size.get("cluster_pretty") or "—"),
         "cluster_size_bytes": int(size.get("cluster_bytes") or 0),
         "tables": tables,

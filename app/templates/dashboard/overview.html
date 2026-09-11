@@ -82,9 +82,19 @@
 <h2>Postgres</h2>
 <div class="grid">
   <div class="card">
+    <div class="label">Datos de app</div>
+    <div class="value">{{ o.app_size_pretty }}</div>
+    <div class="muted">tablas public + indexes + TOAST · {{ o.app_size_bytes }} bytes</div>
+  </div>
+  <div class="card">
+    <div class="label">Catálogo Postgres</div>
+    <div class="value">{{ o.catalog_size_pretty }}</div>
+    <div class="muted">pg_catalog vacío ya pesa ~8 MB. No son recetas.</div>
+  </div>
+  <div class="card">
     <div class="label">Database {{ o.db_name }}</div>
     <div class="value">{{ o.db_size_pretty }}</div>
-    <div class="muted">{{ o.db_size_bytes }} bytes · data + indexes + TOAST</div>
+    <div class="muted">{{ o.db_size_bytes }} bytes · app + catálogo</div>
   </div>
   <div class="card">
     <div class="label">Cluster (todas las DBs)</div>

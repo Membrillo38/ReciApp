@@ -117,6 +117,10 @@ def test_dashboard_overview_sums_job_costs_including_failures():
                 "db_name": "reciapp",
                 "db_pretty": "12 MB",
                 "db_bytes": 12_582_912,
+                "app_pretty": "200 kB",
+                "app_bytes": 204_800,
+                "catalog_pretty": "11 MB",
+                "catalog_bytes": 12_378_112,
                 "cluster_pretty": "20 MB",
                 "cluster_bytes": 20_971_520,
             }
@@ -143,3 +147,4 @@ def test_dashboard_overview_sums_job_costs_including_failures():
     assert overview["cost_cents_week"] == 2.25
     assert overview["cost_usd_week"] == 0.0225
     assert overview["db_size_pretty"] == "12 MB"
+    assert overview["app_size_pretty"] == "200 kB"
