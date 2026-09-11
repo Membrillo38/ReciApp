@@ -20,6 +20,7 @@ from app.extract import (
     select_best_cover_path,
     select_spread_frame_indexes,
 )
+from app.db import db_context
 from app.models import JobStatus, Platform, Recipe
 from app.platforms import detect_platform
 from app.quota import record_usage
@@ -114,6 +115,11 @@ def _safe_job_error(error: ExtractError) -> str:
 
 
 def run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, language_code: str) -> None:
+    with db_context(actor="service"):
+        _run_extract_job(job_id, user_id, url, url_norm, language_code)
+
+
+def _run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, language_code: str) -> None:
     if settings.maintenance_mode:
         # Keep the durable job pending; release only the process-local slot.
         # Operators must drain already-running jobs before backup/reset.
@@ -527,6 +533,11 @@ def _mark_job_failed(job_id: UUID, error: str, *, cost_cents: float = 0.0) -> No
 
 
 def run_translation_job(job_id: UUID, user_id: UUID, recipe_id: UUID, language_code: str) -> None:
+    with db_context(actor="service"):
+        _run_translation_job(job_id, user_id, recipe_id, language_code)
+
+
+def _run_translation_job(job_id: UUID, user_id: UUID, recipe_id: UUID, language_code: str) -> None:
     if settings.maintenance_mode:
         # Keep the durable job pending; release only the process-local slot.
         # Operators must drain already-running jobs before backup/reset.

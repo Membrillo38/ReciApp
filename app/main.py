@@ -24,7 +24,7 @@ from app.apple_notifications import process_signed_notification
 from app.config import settings
 from app.dashboard_routes import router as dashboard_router
 from app.dashboard_stats import log_request
-from app.db import execute_returning, fetch_all, get_pool, probe_postgres, reset_db
+from app.db import db_context, db_context_for_request, execute_returning, fetch_all, get_pool, probe_postgres, reset_db
 from app.models import (
     AdminUserCreate,
     AdminUserPatch,
@@ -297,6 +297,15 @@ async def request_metrics(request: Request, call_next):
         return response
     response = None
     user_id = _bearer_user_id(request)
+    actor, rls_user_id = db_context_for_request(request.url.path, user_id)
+    with db_context(actor=actor, user_id=rls_user_id):
+        return await _finish_request_metrics(
+            request, call_next, start, correlation_id, content_length, is_probe, user_id
+        )
+
+
+async def _finish_request_metrics(request, call_next, start, correlation_id, content_length, is_probe, user_id):
+    response = None
     if not is_probe and request.url.path.startswith("/v1/"):
         try:
             check_not_banned(request, user_id=user_id)

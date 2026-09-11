@@ -6,5 +6,11 @@ Apply the bootstrap schema to a fresh self-hosted PostgreSQL database:
 psql "$DATABASE_URL" -f migrations/001_init.sql
 ```
 
-`001_init.sql` is the first migration and should run before any future numbered migrations.
-It is the schema for the self-hosted PostgreSQL database.
+Apply in order:
+
+```sh
+psql "$DATABASE_URL" -f migrations/001_init.sql
+psql "$DATABASE_URL" -f migrations/002_row_level_security.sql
+```
+
+`001_init.sql` is the bootstrap schema. `002_row_level_security.sql` forces RLS on app tables. The API sets `app.actor` and `app.user_id` per transaction.

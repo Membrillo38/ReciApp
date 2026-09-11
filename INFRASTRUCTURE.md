@@ -96,7 +96,7 @@ See `.env.example`. Critical production keys live under `/etc/reciapp/secrets/` 
 
 - Image: `postgres:16-alpine`
 - Data: `/var/lib/reciapp/postgres`
-- Schema: `migrations/001_init.sql` (self-hosted; no Supabase `auth.users`)
+- Schema: `migrations/001_init.sql` then `migrations/002_row_level_security.sql` (self-hosted; no Supabase `auth.users`)
 - Verify: `sudo docker exec reciapp-postgres pg_isready -U reciapp -d reciapp`
 
 ## Backups

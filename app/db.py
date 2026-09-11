@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from contextvars import ContextVar
 from threading import Lock
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
@@ -14,6 +15,8 @@ from app.config import settings
 
 _pool: ConnectionPool | None = None
 _pool_lock = Lock()
+_db_actor: ContextVar[str] = ContextVar("reciapp_db_actor", default="")
+_db_user_id: ContextVar[str] = ContextVar("reciapp_db_user_id", default="")
 
 
 def _adapt(value: Any) -> Any:
@@ -46,8 +49,35 @@ def get_pool() -> ConnectionPool:
 
 
 @contextmanager
+def db_context(*, actor: str, user_id: str = "") -> Iterator[None]:
+    actor_token = _db_actor.set(actor)
+    user_token = _db_user_id.set(user_id)
+    try:
+        yield
+    finally:
+        _db_actor.reset(actor_token)
+        _db_user_id.reset(user_token)
+
+
+def db_context_for_request(path: str, user_id: str | None) -> tuple[str, str]:
+    """Map an HTTP path to RLS GUC values. Empty actor is fail-closed."""
+    if path.startswith("/dashboard") or path.startswith("/v1/admin") or path.startswith("/v1/webhooks"):
+        return "service", ""
+    if path.startswith("/v1/auth/"):
+        return "auth", user_id or ""
+    if user_id:
+        return "user", user_id
+    return "", ""
+
+
+@contextmanager
 def get_conn():
     with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "select set_config('app.actor', %s, true), set_config('app.user_id', %s, true)",
+                (_db_actor.get(), _db_user_id.get()),
+            )
         yield conn
 
 

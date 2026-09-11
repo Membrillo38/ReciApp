@@ -13,7 +13,7 @@ from threading import Event
 from uuid import UUID
 
 from app.config import settings
-from app.db import fetch_one, get_pool, reset_db
+from app.db import db_context, fetch_one, get_pool, reset_db
 from app.pipeline import run_extract_job, run_translation_job
 
 logger = logging.getLogger(__name__)
@@ -72,21 +72,22 @@ def main() -> None:
     signal.signal(signal.SIGINT, _handle_signal)
     logger.info("worker started poll_seconds=%s lease_seconds=%s", settings.worker_poll_seconds, settings.worker_lease_seconds)
     try:
-        while not _stop.is_set():
-            try:
-                row = _claim_next_job()
-                if row:
-                    _run_claimed_job(row)
-                else:
-                    _stop.wait(max(0.5, min(settings.worker_poll_seconds, 60.0)))
-            except Exception as exc:
-                # A transient database/network issue must not kill the worker. Do
-                # not log exception text because providers can echo source data.
-                logger.error(
-                    "worker poll or job dispatch failed error_type=%s",
-                    type(exc).__name__,
-                )
-                _stop.wait(max(1.0, min(settings.worker_poll_seconds, 60.0)))
+        with db_context(actor="service"):
+            while not _stop.is_set():
+                try:
+                    row = _claim_next_job()
+                    if row:
+                        _run_claimed_job(row)
+                    else:
+                        _stop.wait(max(0.5, min(settings.worker_poll_seconds, 60.0)))
+                except Exception as exc:
+                    # A transient database/network issue must not kill the worker. Do
+                    # not log exception text because providers can echo source data.
+                    logger.error(
+                        "worker poll or job dispatch failed error_type=%s",
+                        type(exc).__name__,
+                    )
+                    _stop.wait(max(1.0, min(settings.worker_poll_seconds, 60.0)))
     finally:
         reset_db()
 
