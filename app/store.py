@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 from uuid import UUID
@@ -550,9 +550,3 @@ def anonymize_user_data(user_id: UUID) -> None:
         except Exception:
             # Keep account deletion compatible during the additive migration rollout.
             continue
-
-
-def week_start_utc() -> datetime:
-    now = datetime.now(timezone.utc)
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    return start - timedelta(days=start.weekday())

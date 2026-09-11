@@ -78,7 +78,7 @@ El servidor acepta URLs públicas de TikTok, YouTube, Instagram y Facebook. Desc
 - Ante error transitorio al consultar un job, ofrece reanudar ese ID. No vuelvas a crear una extracción automáticamente.
 - Una receta fallida puede aparecer en el payload de una traducción: comprueba primero `status`, después `recipe`.
 - Pegar o compartir **varios enlaces** debe encolar todos (cap 20). No marques un share como procesado hasta que `POST /v1/extract` cree el job (o cache hit).
-- Free plan: el 2.º miss nuevo puede devolver 403 `FREE_WEEKLY_LIMIT` (paywall); los jobs ya aceptados siguen. Cache hit no gasta cupo.
+- Free plan: el 11.º miss nuevo del año civil (UTC) puede devolver 403 `FREE_WEEKLY_LIMIT` (paywall; tope 10 recetas/año); los jobs ya aceptados siguen. Cache hit no gasta cupo.
 
 El proceso web ejecuta las tareas con `BackgroundTasks`. Un reinicio puede interrumpirlas. El servidor expira jobs antiguos. `WORKER_ENABLED=false` hasta que un worker local esté autorizado.
 

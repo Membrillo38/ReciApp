@@ -9,7 +9,9 @@ from fastapi import HTTPException
 from app.auth import AuthUser
 from app.db import execute, fetch_one
 from app.limits import resolve_user_limits
-from app.store import week_start_utc
+
+# Product cap for non-Pro. DB free_weekly_limit is legacy; this is the ceiling.
+FREE_YEARLY_LIMIT = 10
 
 
 @dataclass
@@ -29,8 +31,13 @@ def _month_start_utc(now: datetime | None = None) -> datetime:
     return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
 
+def _year_start_utc(now: datetime | None = None) -> datetime:
+    now = now or datetime.now(timezone.utc)
+    return now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
 def get_quota(user: AuthUser) -> QuotaStatus:
-    week_start = week_start_utc()
+    year_start = _year_start_utc()
     month_start = _month_start_utc()
 
     row = fetch_one(
@@ -43,12 +50,17 @@ def get_quota(user: AuthUser) -> QuotaStatus:
         (user.id,),
     ) or {}
     limits = resolve_user_limits(row)
+    free_limit = FREE_YEARLY_LIMIT
 
-    week = fetch_one(
-        "select count(*) as count from usage_events where user_id = %s and created_at >= %s",
-        (user.id, week_start),
+    year = fetch_one(
+        """
+        select count(*) as count
+          from usage_events
+         where user_id = %s and kind = 'extract_miss' and created_at >= %s
+        """,
+        (user.id, year_start),
     )
-    free_used = int((week or {}).get("count") or 0)
+    free_used = int((year or {}).get("count") or 0)
 
     month = fetch_one(
         """
@@ -63,8 +75,8 @@ def get_quota(user: AuthUser) -> QuotaStatus:
     return QuotaStatus(
         is_pro=user.is_pro,
         free_used_this_week=free_used,
-        free_limit=limits.free_weekly_limit,
-        free_remaining=max(limits.free_weekly_limit - free_used, 0),
+        free_limit=free_limit,
+        free_remaining=max(free_limit - free_used, 0),
         pro_cost_cents_this_month=pro_cost,
         pro_budget_cents=limits.pro_budget_cents,
         pro_remaining_cents=max(limits.pro_budget_cents - pro_cost, 0),
@@ -81,7 +93,7 @@ def assert_can_extract(user: AuthUser, *, cache_hit: bool) -> None:
                 status_code=403,
                 detail={
                     "code": "FREE_WEEKLY_LIMIT",
-                    "message": f"Free plan: {q.free_limit} recipe(s) per week. Upgrade to Pro.",
+                    "message": f"Free plan: {q.free_limit} recipe(s) per year. Upgrade to Pro.",
                     "free_used_this_week": q.free_used_this_week,
                     "free_limit": q.free_limit,
                 },

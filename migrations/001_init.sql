@@ -112,7 +112,7 @@ create table public.api_request_logs (
 
 create table public.app_settings (
   id integer primary key default 1 check (id = 1),
-  free_weekly_limit integer not null default 1,
+  free_weekly_limit integer not null default 10,
   pro_margin_ratio numeric(5, 4) not null default 0.20,
   default_pro_monthly_price_cents integer not null default 499,
   updated_at timestamptz not null default now()
@@ -450,7 +450,7 @@ insert into public.app_settings (
   pro_margin_ratio,
   default_pro_monthly_price_cents
 )
-values (1, 1, 0.20, 499)
+values (1, 10, 0.20, 499)
 on conflict (id) do nothing;
 
 revoke all on table public.api_request_logs from public;
