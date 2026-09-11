@@ -1,0 +1,2 @@
+# Telegram if ReciApp stays down >= 5 minutes
+* * * * * root /usr/bin/flock -n /var/lib/reciapp/watchdog.lock /usr/local/sbin/reciapp-watchdog-telegram.sh >/dev/null 2>>/var/log/reciapp-watchdog.log

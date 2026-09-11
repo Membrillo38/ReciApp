@@ -127,10 +127,11 @@ Monthly: restore latest daily dump into a throwaway container on `reciapp-intern
 ## Monitoring
 
 - Uptime Kuma: `http://100.123.33.15:3001` — add monitors for `https://51-255-43-100.sslip.io/health`, `/ready`, and TCP check to `reciapp-postgres:5432` from an internal probe if desired.
+- Telegram watchdog: cron every minute (`deploy/watchdog-telegram.sh`). Alerts if `/health`, `/ready`, Postgres, Redis, Traefik or the API container stay down ≥ 5 minutes. Tokens in `/etc/reciapp/secrets/telegram_*`.
 - Netdata: `http://100.123.33.15:19999` — CPU/RAM/disk/containers.
 - Fail2ban: `sudo fail2ban-client status sshd`
 
-Telegram VPS Reporter: not deployed yet (needs bot token + authorized user id).
+Telegram watchdog: cron on the VPS (`deploy/watchdog-telegram.sh`). Alerts after 5 minutes down.
 
 ## Maintenance
 
