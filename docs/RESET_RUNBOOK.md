@@ -6,7 +6,7 @@ Status: prepared only. Nothing in this runbook was executed against production. 
 
 This procedure deletes all ReciApp user, recipe, job, usage, subscription-event and Auth runtime data. It preserves `public.app_settings`, database schema and migration history, Auth provider/OAuth client definitions and Storage. It refuses nonempty Storage because Storage objects must be removed through the Storage API, never by deleting `storage.objects` rows.
 
-The operator must keep maintenance and every external writer frozen continuously from preflight through backup, rehearsal approval and reset. A FastAPI `MAINTENANCE_MODE=true` flag alone is insufficient: Supabase Auth signup/session refresh, direct Data API clients, database cron, Render workers, queued/background requests and every service-role client can still write. Do not begin until all in-flight external requests have drained. Maintenance does not cancel requests already running.
+The operator must keep maintenance and every writer frozen from preflight through backup, rehearsal approval and reset. `MAINTENANCE_MODE=true` alone is not enough: workers, cron and queued requests can still write. Drain in-flight requests first.
 
 Never pass passwords, database URLs, service keys, access tokens or backup passwords as command arguments. Use a restrictive PostgreSQL service file or `PGHOST`, `PGUSER`, `PGDATABASE`, `PGPASSWORD` and `PGSSLMODE=verify-full` in the operator environment. Command output and receipts must contain counts, hashes and request IDs only.
 
@@ -18,14 +18,14 @@ Preserved database state includes:
 
 - `public.app_settings` and all schema objects, functions, RLS policies and migration records.
 - `auth.instances`, `auth.oauth_clients`, SAML/SSO provider definitions and `auth.schema_migrations` when present.
-- Supabase migration history under `supabase_migrations`.
+- Public schema objects and `public.app_settings`.
 - Storage schema/metadata only when object count is zero.
 
-Auth runtime deletion accounts for users, identities, sessions, refresh tokens, one-time tokens, MFA state, flow state, OAuth authorizations/consents/codes/sessions, SAML relay state, hook payloads and Auth audit entries when those tables exist. Auth provider dashboard settings, redirect/site URLs, Apple provider keys, external OAuth secrets, Render environment variables and project-level configuration are external dependencies: export their names/settings separately and verify them after rehearsal. Do not put secret values in receipts.
+Apple provider keys, OAuth secrets and VPS environment variables are external. Export names separately. Do not put secret values in receipts.
 
 ## 1. Deployment gate
 
-Before this runbook can be used, deploy the reviewed backend change to every web/worker service and verify both `/health` and authenticated `/ready`. Configure `SUPABASE_EXPECTED_HOST` exactly. Confirm Render has no old instance or worker still accepting writes. This task intentionally did not deploy.
+Before this runbook can be used, deploy the reviewed backend to the VPS and verify `/health` and authenticated `/ready`. Confirm no extra writer still accepts writes.
 
 ## 2. Freeze evidence
 
@@ -33,8 +33,8 @@ Create a mode `0600` JSON file outside the repository. Use the exact production 
 
 ```json
 {
-  "target_ref": "nzimdcjxgklopythnpfi",
-  "target_host": "db.nzimdcjxgklopythnpfi.supabase.co",
+  "target_ref": "reciapp-postgres",
+  "target_host": "reciapp-postgres",
   "all_backend_instances_maintenance": true,
   "background_workers_stopped": true,
   "auth_signups_disabled": true,
@@ -48,22 +48,22 @@ Create a mode `0600` JSON file outside the repository. Use the exact production 
 }
 ```
 
-Attach operator evidence for every boolean: Render service list/config, zero running background requests, worker stopped, Supabase Auth signup/provider controls, paused cron jobs, revoked or stopped direct writers, and inventory of service-role clients. The file must be no older than 30 minutes. Keep the freeze active; do not edit the evidence file after preflight.
+Attach operator evidence for every boolean: VPS services in maintenance, zero running background requests, worker stopped, paused cron, and no extra writers. The file must be no older than 30 minutes.
 
 ## 3. Read-only preflight
 
 Select PostgreSQL 17 tools and a TLS service configuration, then run:
 
 ```bash
-export PGHOST=db.nzimdcjxgklopythnpfi.supabase.co
+export PGHOST=reciapp-postgres
 export PGUSER=postgres
 export PGDATABASE=postgres
 export PGSSLMODE=verify-full
 export PGSERVICE=reciapp-production
 
 python3 scripts/reset_preflight.py \
-  --target-ref nzimdcjxgklopythnpfi \
-  --target-host db.nzimdcjxgklopythnpfi.supabase.co \
+  --target-ref reciapp-postgres \
+  --target-host reciapp-postgres \
   --writer-evidence /secure/operator/writer-freeze.json \
   --output /secure/operator/preflight.json
 ```
@@ -76,8 +76,8 @@ The Keychain item must already exist. These scripts never create or update it. D
 
 ```bash
 python3 scripts/reset_backup.py \
-  --target-ref nzimdcjxgklopythnpfi \
-  --target-host db.nzimdcjxgklopythnpfi.supabase.co \
+  --target-ref reciapp-postgres \
+  --target-host reciapp-postgres \
   --writer-evidence /secure/operator/writer-freeze.json \
   --preflight /secure/operator/preflight.json \
   --keychain-service ReciApp-Reset-Backup \
@@ -96,8 +96,8 @@ export PGDATABASE=reciapp_reset_rehearsal
 export RECIAPP_DISPOSABLE_MARKER=<unique-32-or-more-alphanumeric-marker>
 
 python3 scripts/reset_rehearsal.py \
-  --source-ref nzimdcjxgklopythnpfi \
-  --source-host db.nzimdcjxgklopythnpfi.supabase.co \
+  --source-ref reciapp-postgres \
+  --source-host reciapp-postgres \
   --rehearsal-host disposable-db.internal \
   --rehearsal-database reciapp_reset_rehearsal \
   --encrypted-backup "$HOME/Documents/ReciApp Backups/reciapp-....tar.enc" \
@@ -125,8 +125,8 @@ Return PostgreSQL environment variables to production. Default invocation perfor
 
 ```bash
 python3 scripts/reset_execute.py \
-  --target-ref nzimdcjxgklopythnpfi \
-  --target-host db.nzimdcjxgklopythnpfi.supabase.co \
+  --target-ref reciapp-postgres \
+  --target-host reciapp-postgres \
   --writer-evidence /secure/operator/writer-freeze.json \
   --preflight /secure/operator/preflight.json \
   --backup-receipt "$HOME/Documents/ReciApp Backups/reciapp-....tar.enc.receipt.json" \
@@ -136,7 +136,7 @@ python3 scripts/reset_execute.py \
 For a separately approved destructive run, add both `--execute` and the exact confirmation printed from the backup digest:
 
 ```text
---confirm RESET:nzimdcjxgklopythnpfi:<64-character-encrypted-backup-sha256>
+--confirm RESET:reciapp-postgres:<64-character-encrypted-backup-sha256>
 ```
 
 The executor rechecks receipt integrity and chain, target identity, current writer freeze, table inventory, zero jobs/leases, empty Storage, approved public/Auth counts and preserved fingerprints. Inside the reset transaction it locks every deletion table, rechecks every count against the approved preflight before the first `DELETE`, deletes exact allowlisted rows, proves every target table is empty and rechecks preserved settings/Auth config/migration fingerprints before commit. Any post-backup row aborts reset. A database error aborts the transaction. Treat a lost client connection after commit begins as ambiguous: inspect counts and transaction outcome manually. Never retry reset automatically.
@@ -147,9 +147,9 @@ Keep all writers frozen. Verify exact target counts are zero and preserved finge
 
 ```bash
 read -rs RECIAPP_ACCESS_TOKEN && export RECIAPP_ACCESS_TOKEN
-export RECIAPP_EXPECTED_API_HOST=reciapp-4ih5.onrender.com
+export RECIAPP_EXPECTED_API_HOST=51-255-43-100.sslip.io
 python3 scripts/authenticated_readiness.py \
-  --base-url https://reciapp-4ih5.onrender.com \
+  --base-url https://51-255-43-100.sslip.io \
   --cycles 100
 ```
 

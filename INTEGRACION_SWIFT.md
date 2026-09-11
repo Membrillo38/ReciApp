@@ -4,7 +4,7 @@ Esta guía describe el contrato del servidor y cómo conectarlo a una app SwiftU
 
 ## 1. Configuración
 
-- API: `https://reciapp-4ih5.onrender.com`
+- API: `https://51-255-43-100.sslip.io`
 - Autenticación de la API: `Authorization: Bearer <access_token del backend>`.
 - Nunca incluyas `service_role`, `API_KEY` administrativa, OpenAI ni secretos de webhooks en la app.
 
@@ -80,7 +80,7 @@ El servidor acepta URLs públicas de TikTok, YouTube, Instagram y Facebook. Desc
 - Pegar o compartir **varios enlaces** debe encolar todos (cap 20). No marques un share como procesado hasta que `POST /v1/extract` cree el job (o cache hit).
 - Free plan: el 2.º miss nuevo puede devolver 403 `FREE_WEEKLY_LIMIT` (paywall); los jobs ya aceptados siguen. Cache hit no gasta cupo.
 
-Render Free ejecuta las tareas con `BackgroundTasks` dentro del proceso web. Un reinicio puede interrumpirlas. El servidor expira jobs antiguos; no existe garantía de ejecución durable en este despliegue. `render.worker.yaml` está deliberadamente vacío y `WORKER_ENABLED=false` debe mantenerse mientras no exista un worker autorizado y operativo.
+El proceso web ejecuta las tareas con `BackgroundTasks`. Un reinicio puede interrumpirlas. El servidor expira jobs antiguos. `WORKER_ENABLED=false` hasta que un worker local esté autorizado.
 
 ## 5. Errores y suscripciones
 
@@ -122,9 +122,9 @@ Comparte URL e idioma mediante App Group `group.com.membri.reciapp`; habilítalo
 Para verificar el backend con una sesión de prueba existente, configura `RECIAPP_ACCESS_TOKEN` mediante un mecanismo local seguro y ejecuta:
 
 ```bash
-export RECIAPP_EXPECTED_API_HOST=reciapp-4ih5.onrender.com
+export RECIAPP_EXPECTED_API_HOST=51-255-43-100.sslip.io
 python scripts/authenticated_readiness.py \
-  --base-url https://reciapp-4ih5.onrender.com --cycles 100
+  --base-url https://51-255-43-100.sslip.io --cycles 100
 ```
 
 El script solo imprime métricas y estados; comprueba 100 ciclos de biblioteca/perfil y exige p95 inferior a 800 ms. `/health` y `/ready` son comprobaciones públicas: no prueban por sí mismas que login, extracción y facturación funcionen de extremo a extremo.

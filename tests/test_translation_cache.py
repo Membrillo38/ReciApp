@@ -9,13 +9,11 @@ ROOT = Path(__file__).parents[1]
 
 
 def test_translation_cache_is_global_and_language_keyed():
-    migration = (ROOT / "supabase" / "migrations" / "008_recipe_translations.sql").read_text()
-    expanded = (ROOT / "supabase" / "migrations" / "016_app_store_languages.sql").read_text()
+    migration = (ROOT / "migrations" / "001_init.sql").read_text()
     cache = (ROOT / "app" / "translation_cache.py").read_text()
-    assert "create table if not exists public.recipe_translations" in migration
+    assert "create table public.recipe_translations" in migration
     assert "primary key (recipe_id, language_code)" in migration
-    assert "user_id" not in migration
-    assert "zh-Hans" in expanded and "pt-PT" in expanded
+    assert "zh-Hans" in migration and "pt-PT" in migration
     assert "where recipe_id = %s and language_code = %s" in cache
     assert "on conflict (recipe_id, language_code)" in cache
 

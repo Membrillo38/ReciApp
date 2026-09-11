@@ -105,7 +105,7 @@ BEGIN
     RAISE EXCEPTION 'reset target tables are not empty';
   END IF;
   SELECT encode(digest(COALESCE((SELECT jsonb_agg(to_jsonb(s) ORDER BY s.id)::text FROM public.app_settings s), '[]'), 'sha256'), 'hex') INTO settings_hash;
-  SELECT encode(digest(COALESCE((SELECT string_agg(version, E'\\n' ORDER BY version) FROM supabase_migrations.schema_migrations), ''), 'sha256'), 'hex') INTO migrations_hash;
+  SELECT encode(digest(COALESCE((SELECT string_agg(relname, E'\\n' ORDER BY relname) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'r'), ''), 'sha256'), 'hex') INTO migrations_hash;
   SELECT encode(digest({config_expression}, 'sha256'), 'hex') INTO auth_config_hash;
   IF settings_hash <> '{app_settings_fingerprint}' OR migrations_hash <> '{migration_fingerprint}' OR auth_config_hash <> '{auth_config_fingerprint}' THEN
     RAISE EXCEPTION 'preserved settings, auth config, or migration history changed';

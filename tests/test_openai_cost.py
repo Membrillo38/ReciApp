@@ -112,6 +112,16 @@ def test_dashboard_overview_sums_job_costs_including_failures():
         return []
 
     def fake_fetch_one(sql, params=None):
+        if "pg_database_size" in sql:
+            return {
+                "db_name": "reciapp",
+                "db_pretty": "12 MB",
+                "db_bytes": 12_582_912,
+                "cluster_pretty": "20 MB",
+                "cluster_bytes": 20_971_520,
+            }
+        if "sum(cost_cents)" in sql:
+            return {"total": 2.25}
         return {"count": 0}
 
     original_fetch_all = dashboard_stats.fetch_all
@@ -132,3 +142,4 @@ def test_dashboard_overview_sums_job_costs_including_failures():
 
     assert overview["cost_cents_week"] == 2.25
     assert overview["cost_usd_week"] == 0.0225
+    assert overview["db_size_pretty"] == "12 MB"

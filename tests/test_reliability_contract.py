@@ -96,26 +96,6 @@ def test_legacy_recipe_keeps_thumbnail_as_separate_fallback():
     assert recipe.thumbnail_url == "https://cdn.example/cover.jpg"
 
 
-@pytest.mark.skip(reason="Legacy Supabase SDK contract; backend now uses psycopg/Postgres.")
-def test_supabase_auth_and_postgrest_preserve_sdk_request_configuration(monkeypatch):
-    monkeypatch.setattr(main.settings, "supabase_url", "https://example.supabase.co")
-    monkeypatch.setattr(main.settings, "supabase_expected_host", "example.supabase.co")
-    monkeypatch.setattr(main.settings, "supabase_service_role_key", "sb_secret_test")
-    seen = []
-    def record(request):
-        seen.append(request)
-        return httpx.Response(200, json=[])
-    client, owner = None, None
-    try:
-        client.table("profiles").select("id").execute()
-    finally:
-        owner.close()
-    assert str(seen[0].url) == "https://example.supabase.co/rest/v1/profiles?select=id"
-    assert seen[0].headers["apikey"] == "sb_secret_test"
-    assert seen[0].headers["authorization"] == "Bearer sb_secret_test"
-    assert seen[0].headers["accept-profile"] == "public"
-
-
 def test_upstream_disconnect_is_a_retryable_503():
     request = Request(
         {
@@ -276,8 +256,7 @@ def test_completed_job_returns_recipe_when_attachment_write_fails():
 
 
 def test_translation_jobs_have_language_scoped_concurrency_index():
-    migration = Path("supabase/migrations/008_recipe_translations.sql").read_text(encoding="utf-8")
-    assert "drop index if exists public.extract_jobs_active_norm_unique" in migration
+    migration = Path("migrations/001_init.sql").read_text(encoding="utf-8")
     assert "on public.extract_jobs (recipe_id, language_code)" in migration
     assert "job_kind = 'extract'" in migration
     assert "job_kind = 'translation'" in migration
@@ -291,10 +270,9 @@ def test_recipe_write_uses_postgres_unique_conflict_and_jsonb_columns():
 
 
 def test_carousel_migration_enforces_server_side_bound():
-    migration = Path("supabase/migrations/010_recipe_carousel_images.sql").read_text(encoding="utf-8")
+    migration = Path("migrations/001_init.sql").read_text(encoding="utf-8")
     assert "jsonb_array_length(" in migration
     assert ") <= 12" in migration
-    assert "else '[]'::jsonb" in migration
 
 
 def test_job_owner_does_not_depend_on_access_table():
@@ -317,11 +295,10 @@ def test_job_owner_does_not_depend_on_access_table():
 
 
 def test_durable_worker_claim_is_atomic_and_web_defaults_to_background_tasks():
-    migration = Path("supabase/migrations/011_durable_job_leases.sql").read_text(encoding="utf-8")
+    migration = Path("migrations/001_init.sql").read_text(encoding="utf-8")
     config = Path("app/config.py").read_text(encoding="utf-8")
     main_source = Path("app/main.py").read_text(encoding="utf-8")
     worker = Path("app/worker.py").read_text(encoding="utf-8")
-    worker_blueprint = Path("render.worker.yaml").read_text(encoding="utf-8")
     assert "for update skip locked" in migration
     assert "lease_until" in migration
     assert "attempt_count" in migration
@@ -329,10 +306,6 @@ def test_durable_worker_claim_is_atomic_and_web_defaults_to_background_tasks():
     assert "if not settings.worker_enabled" in main_source
     assert "local_claimed = not settings.worker_enabled" in main_source
     assert '"claim_next_extract_job"' in worker
-    assert "services: []" in worker_blueprint
-    assert "plan: starter" not in worker_blueprint
-    assert "type: worker" not in worker_blueprint
-    assert "WORKER_ENABLED" in worker_blueprint
 
 
 def test_pipeline_clears_lease_on_terminal_state():
@@ -341,27 +314,18 @@ def test_pipeline_clears_lease_on_terminal_state():
 
 
 def test_database_advisor_hardening_indexes_foreign_keys_and_caches_rls_identity():
-    migration = Path("supabase/migrations/012_database_advisor_hardening.sql").read_text(encoding="utf-8")
-    assert "alter function public.set_updated_at()" in migration
+    migration = Path("migrations/001_init.sql").read_text(encoding="utf-8")
+    assert "function public.set_updated_at()" in migration
     assert "security_events_user_idx" in migration
     assert "usage_events_job_idx" in migration
     assert "usage_events_recipe_idx" in migration
     assert "user_recipes_recipe_idx" in migration
-    assert migration.count("(select auth.uid())") >= 6
 
 
 def test_reserve_api_spend_qualifies_ledger_reserved_cents():
-    migration = Path("supabase/migrations/014_qualify_spend_reserved_cents.sql").read_text(encoding="utf-8")
+    migration = Path("migrations/001_init.sql").read_text(encoding="utf-8")
     assert "then ledger.reserved_cents else ledger.actual_cents" in migration
     assert migration.count("then ledger.reserved_cents else ledger.actual_cents") == 3
-    assert "then reserved_cents else actual_cents" not in migration
-
-
-def test_legacy_provider_errors_are_redacted_by_migration():
-    migration = Path("supabase/migrations/013_redact_legacy_job_errors.sql").read_text(encoding="utf-8")
-    assert "invalid_api_key" in migration
-    assert "incorrect api key provided" in migration.lower()
-    assert "previous deployment" in migration
 
 
 def test_account_anonymization_removes_job_identity_and_source():

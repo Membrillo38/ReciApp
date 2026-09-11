@@ -95,10 +95,13 @@ def validate_receipt_integrity(receipt: dict[str, Any]) -> None:
 
 
 def validate_target(target_ref: str, target_host: str) -> None:
-    if not re.fullmatch(r"[a-z0-9]{20}", target_ref):
-        raise ResetGuardError("Target project ref must be exactly 20 lowercase letters or digits")
-    allowed_hosts = {f"db.{target_ref}.supabase.co", f"{target_ref}.supabase.co"}
-    if target_host not in allowed_hosts:
+    if not re.fullmatch(r"[a-z0-9]([a-z0-9.-]{0,61}[a-z0-9])?", target_ref):
+        raise ResetGuardError("Target ref must be a hostname label")
+    blocked = ("supabase.co", "supabase.com", "onrender.com", "render.com")
+    host = target_host.lower()
+    if any(part in host for part in blocked):
+        raise ResetGuardError("Target host must be self-hosted Postgres")
+    if target_host != target_ref:
         raise ResetGuardError("Target host does not match the explicit project ref")
 
 
@@ -154,8 +157,8 @@ def validate_table_inventory(inventory: dict[str, list[str]]) -> None:
     missing_public = expected_public - public
     unknown_public = public - expected_public
     expected_auth = set(AUTH_DELETE_TABLES) | set(AUTH_PRESERVE_TABLES)
-    missing_auth = {"users", "identities", "sessions", "refresh_tokens"} - auth
-    unknown_auth = auth - expected_auth
+    missing_auth = ({"users", "identities", "sessions", "refresh_tokens"} - auth) if auth else set()
+    unknown_auth = (auth - expected_auth) if auth else set()
     if missing_public or unknown_public or missing_auth or unknown_auth:
         raise ResetGuardError(
             "Unreviewed table inventory: "

@@ -90,10 +90,8 @@ def main() -> int:
             "preflight_receipt_sha256": preflight["receipt_sha256"],
             "snapshot": preflight["snapshot"],
             "external_dependencies_required": [
-                "Supabase Auth provider/site/redirect settings export",
                 "OAuth secrets and Apple provider keys inventory",
-                "Storage object export when Storage is nonempty",
-                "Render environment and writer inventory",
+                "VPS environment and writer inventory",
             ],
         }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         for path in (db_dump, roles_dump, manifest):

@@ -3,10 +3,9 @@
 # and repeated polling. Never prints tokens, transcripts, or provider payloads.
 set -euo pipefail
 
-API="${API:-https://reciapp-4ih5.onrender.com}"
+API="${API:-https://51-255-43-100.sslip.io}"
 API_KEY="${API_KEY:?Set API_KEY}"
-SUPABASE_URL="${SUPABASE_URL:-https://nzimdcjxgklopythnpfi.supabase.co}"
-SUPABASE_ANON="${SUPABASE_ANON:?Set SUPABASE_ANON}"
+AUTH_JWT_SECRET="${AUTH_JWT_SECRET:?Set AUTH_JWT_SECRET}"
 REPEATS="${REPEATS:-2}"
 # Backend allows 10-minute media processing; keep a small margin.
 POLL_ATTEMPTS="${POLL_ATTEMPTS:-330}"
@@ -85,16 +84,22 @@ run_case() {
 echo "health=$(curl -fsS --retry 3 --retry-delay 1 --retry-all-errors --max-time 20 "$API/health" | json_value status)"
 
 EMAIL="e2e-matrix-$(date +%s)@reciapp.test"
-PASSWORD="$(openssl rand -base64 18)"
-curl -fsS --retry 3 --retry-delay 1 --retry-all-errors --max-time 30 -X POST "$API/v1/admin/users" \
+CREATED=$(curl -fsS --retry 3 --retry-delay 1 --retry-all-errors --max-time 30 -X POST "$API/v1/admin/users" \
   -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  -d "$(python3 -c 'import json,sys; print(json.dumps({"email":sys.argv[1],"password":sys.argv[2],"display_name":"E2E Matrix"}))' "$EMAIL" "$PASSWORD")" \
-  >/dev/null
-
-TOKEN=$(curl -fsS --retry 3 --retry-delay 1 --retry-all-errors --max-time 30 -X POST "$SUPABASE_URL/auth/v1/token?grant_type=password" \
-  -H "apikey: $SUPABASE_ANON" -H "Content-Type: application/json" \
-  -d "$(python3 -c 'import json,sys; print(json.dumps({"email":sys.argv[1],"password":sys.argv[2]}))' "$EMAIL" "$PASSWORD")" \
-  | json_value access_token)
+  -d "$(python3 -c 'import json,sys; print(json.dumps({"email":sys.argv[1],"display_name":"E2E Matrix"}))' "$EMAIL")")
+TOKEN=$(CREATED="$CREATED" EMAIL="$EMAIL" AUTH_JWT_SECRET="$AUTH_JWT_SECRET" python3 -c '
+import json, os, time, jwt
+user_id = json.loads(os.environ["CREATED"])["items"][0]["id"]
+now = int(time.time())
+print(jwt.encode({
+    "sub": user_id,
+    "email": os.environ["EMAIL"],
+    "iss": "reciapp-api",
+    "aud": "reciapp-ios",
+    "iat": now,
+    "exp": now + 3600,
+}, os.environ["AUTH_JWT_SECRET"], algorithm="HS256"))
+')
 [ -n "$TOKEN" ]
 
 for url in "${URLS[@]}"; do

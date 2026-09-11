@@ -84,7 +84,7 @@ SELECT json_build_object(
 {auth_pairs}
   ),
   'active_jobs', (SELECT count(*) FROM public.extract_jobs WHERE status IN ('pending', 'processing') OR lease_until > now()),
-  'storage_objects', (SELECT count(*) FROM storage.objects),
+  'storage_objects', (SELECT CASE WHEN to_regclass('storage.objects') IS NULL THEN 0 ELSE (SELECT count(*) FROM storage.objects) END),
   'app_settings_fingerprint', encode(digest(COALESCE((SELECT jsonb_agg(to_jsonb(s) ORDER BY s.id)::text FROM public.app_settings s), '[]'), 'sha256'), 'hex'),
   'schema_fingerprint', encode(digest(
     COALESCE((SELECT string_agg(table_schema || '.' || table_name || '.' || column_name || ':' || data_type || ':' || is_nullable || ':' || COALESCE(column_default, ''), E'\\n' ORDER BY table_schema, table_name, ordinal_position) FROM information_schema.columns WHERE table_schema IN ('public','auth')), '') ||
@@ -93,7 +93,7 @@ SELECT json_build_object(
     COALESCE((SELECT string_agg(schemaname || '.' || tablename || ':' || policyname || ':' || COALESCE(qual, '') || ':' || COALESCE(with_check, ''), E'\\n' ORDER BY schemaname, tablename, policyname) FROM pg_policies WHERE schemaname IN ('public','auth')), '') ||
     COALESCE((SELECT string_agg(extname || ':' || extversion, E'\\n' ORDER BY extname) FROM pg_extension), ''),
     'sha256'), 'hex'),
-  'migration_fingerprint', encode(digest(COALESCE((SELECT string_agg(version, E'\\n' ORDER BY version) FROM supabase_migrations.schema_migrations), ''), 'sha256'), 'hex')
+  'migration_fingerprint', encode(digest(COALESCE((SELECT string_agg(relname, E'\\n' ORDER BY relname) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'r'), ''), 'sha256'), 'hex')
   , 'auth_config_fingerprint', encode(digest({config_expression}, 'sha256'), 'hex')
 )::text;
 COMMIT;

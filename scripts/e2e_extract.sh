@@ -2,12 +2,11 @@
 # E2E smoke: admin user → JWT → extract → poll job
 set -euo pipefail
 
-API="${API:-https://reciapp-4ih5.onrender.com}"
+API="${API:-https://51-255-43-100.sslip.io}"
 URL="${1:-https://vm.tiktok.com/ZGdQJr1J4/}"
 LANGUAGE="${LANGUAGE:-en-US}"
 API_KEY="${API_KEY:?Set API_KEY}"
-SUPABASE_URL="${SUPABASE_URL:-https://nzimdcjxgklopythnpfi.supabase.co}"
-SUPABASE_ANON="${SUPABASE_ANON:-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im56aW1kY2p4Z2tsb3B5dGhucGZpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgzNjE1ODksImV4cCI6MjEwMzkzNzU4OX0._7_828Cs63M7tWLT83DYmtpAYP_8ptDg2Gr_4hRdzGM}"
+AUTH_JWT_SECRET="${AUTH_JWT_SECRET:?Set AUTH_JWT_SECRET}"
 
 EMAIL="e2e-$(date +%s)@reciapp.test"
 PASS="$(openssl rand -base64 18)"
@@ -17,15 +16,25 @@ curl -fsS --retry 3 --retry-delay 1 --retry-all-errors --max-time 20 "$API/healt
 echo
 
 echo "== create user =="
-curl -fsS --retry 3 --retry-delay 1 --retry-all-errors --max-time 30 -X POST "$API/v1/admin/users" \
+CREATED=$(curl -fsS --retry 3 --retry-delay 1 --retry-all-errors --max-time 30 -X POST "$API/v1/admin/users" \
   -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  -d "{\"email\":\"$EMAIL\",\"password\":\"$PASS\",\"display_name\":\"E2E\"}" | python3 -m json.tool
+  -d "{\"email\":\"$EMAIL\",\"display_name\":\"E2E\"}")
+echo "$CREATED" | python3 -m json.tool
 
-echo "== login =="
-TOKEN=$(curl -fsS --retry 3 --retry-delay 1 --retry-all-errors --max-time 30 -X POST "$SUPABASE_URL/auth/v1/token?grant_type=password" \
-  -H "apikey: $SUPABASE_ANON" -H "Content-Type: application/json" \
-  -d "{\"email\":\"$EMAIL\",\"password\":\"$PASS\"}" \
-  | python3 -c "import json,sys; print(json.load(sys.stdin)['access_token'])")
+echo "== mint jwt =="
+TOKEN=$(CREATED="$CREATED" EMAIL="$EMAIL" AUTH_JWT_SECRET="$AUTH_JWT_SECRET" python3 -c '
+import json, os, time, jwt
+user_id = json.loads(os.environ["CREATED"])["items"][0]["id"]
+now = int(time.time())
+print(jwt.encode({
+    "sub": user_id,
+    "email": os.environ["EMAIL"],
+    "iss": "reciapp-api",
+    "aud": "reciapp-ios",
+    "iat": now,
+    "exp": now + 3600,
+}, os.environ["AUTH_JWT_SECRET"], algorithm="HS256"))
+')
 echo "token len ${#TOKEN}"
 
 echo "== me =="

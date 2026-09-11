@@ -1,6 +1,0 @@
-# Worker activation is excluded by this project's no-paid-services constraint.
-# This inert file deliberately defines no deployable Render worker service.
-# Keep WORKER_ENABLED=false on the free web service; it uses BackgroundTasks.
-# Durable worker code remains available for separately authorized local recovery.
-# Before reopening imports after maintenance, reconcile pending jobs/reservations.
-services: []

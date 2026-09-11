@@ -79,6 +79,33 @@
   <div class="card"><div class="label">Jobs (7d)</div><div class="value">{{ o.jobs_week }}</div><div class="muted">{{ o.cache_hits_week }} hits · {{ o.cache_misses_week }} miss · {{ o.failed_week }} fail</div></div>
 </div>
 
+<h2>Postgres</h2>
+<div class="grid">
+  <div class="card">
+    <div class="label">Database {{ o.db_name }}</div>
+    <div class="value">{{ o.db_size_pretty }}</div>
+    <div class="muted">{{ o.db_size_bytes }} bytes · data + indexes + TOAST</div>
+  </div>
+  <div class="card">
+    <div class="label">Cluster (todas las DBs)</div>
+    <div class="value">{{ o.cluster_size_pretty }}</div>
+    <div class="muted">{{ o.cluster_size_bytes }} bytes · sin WAL ni volumen Docker</div>
+  </div>
+</div>
+{% if o.tables %}
+<div class="card" style="margin-bottom:1.75rem;">
+  <div class="label">Tablas más pesadas</div>
+  <table>
+    <thead><tr><th>Relation</th><th>Size</th></tr></thead>
+    <tbody>
+      {% for t in o.tables %}
+      <tr><td>{{ t.name }}</td><td>{{ t.pretty }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
 <h2>Spend alerts</h2>
 <div class="card">
   {% if o.spend_alerts %}

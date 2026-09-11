@@ -72,6 +72,60 @@ def _request_stats(since) -> dict:
     }
 
 
+def _postgres_footprint() -> dict:
+    empty = {
+        "db_name": "",
+        "db_size_pretty": "—",
+        "db_size_bytes": 0,
+        "cluster_size_pretty": "—",
+        "cluster_size_bytes": 0,
+        "tables": [],
+    }
+    try:
+        size = fetch_one(
+            """
+            select
+              current_database() as db_name,
+              pg_size_pretty(pg_database_size(current_database())) as db_pretty,
+              pg_database_size(current_database())::bigint as db_bytes,
+              (
+                select pg_size_pretty(sum(pg_database_size(datname)))
+                  from pg_database
+                 where datistemplate = false
+              ) as cluster_pretty,
+              (
+                select sum(pg_database_size(datname))::bigint
+                  from pg_database
+                 where datistemplate = false
+              ) as cluster_bytes
+            """
+        ) or {}
+        tables = fetch_all(
+            """
+            select
+              n.nspname || '.' || c.relname as name,
+              pg_size_pretty(pg_total_relation_size(c.oid)) as pretty,
+              pg_total_relation_size(c.oid)::bigint as bytes
+              from pg_class c
+              join pg_namespace n on n.oid = c.relnamespace
+             where n.nspname not in ('pg_catalog', 'information_schema')
+               and c.relkind in ('r', 'm', 'p')
+             order by pg_total_relation_size(c.oid) desc
+             limit 12
+            """
+        )
+    except Exception:
+        return empty
+    return {
+        "db_name": str(size.get("db_name") or ""),
+        "db_size_pretty": str(size.get("db_pretty") or "—"),
+        "db_size_bytes": int(size.get("db_bytes") or 0),
+        "cluster_size_pretty": str(size.get("cluster_pretty") or "—"),
+        "cluster_size_bytes": int(size.get("cluster_bytes") or 0),
+        "tables": tables,
+    }
+
+
 def dashboard_overview() -> dict:
     day = datetime.now(timezone.utc) - timedelta(days=1)
     week = datetime.now(timezone.utc) - timedelta(days=7)
@@ -125,6 +179,7 @@ def dashboard_overview() -> dict:
     api_month = _request_stats(month)
 
     defaults = get_app_defaults()
+    pg = _postgres_footprint()
     return {
         "users_total": len(active_users),
         "users_pro": len(pro_users),
@@ -159,6 +214,7 @@ def dashboard_overview() -> dict:
         ),
         "margin_pct": int(defaults.pro_margin_ratio * 100),
         "spend_alerts": spend_alerts,
+        **pg,
     }
 
 

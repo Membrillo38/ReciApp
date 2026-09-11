@@ -19,8 +19,8 @@ import reset_approve_rehearsal
 import reset_rehearsal
 
 
-TARGET_REF = "nzimdcjxgklopythnpfi"
-TARGET_HOST = f"db.{TARGET_REF}.supabase.co"
+TARGET_REF = "reciapp-postgres"
+TARGET_HOST = "reciapp-postgres"
 
 
 def writer_evidence(**overrides):
