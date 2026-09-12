@@ -553,13 +553,15 @@ def release_deleted_apple_identity(*, apple_sub: str, email: str | None) -> None
 
 
 def soft_delete_profile(user_id: UUID) -> None:
+    """Close the account but keep apple_sub so delete+recreate cannot reset free quota."""
     execute(
         """
         update profiles
            set deleted_at = coalesce(deleted_at, %s),
                email = null,
-               apple_sub = null,
-               display_name = null
+               display_name = null,
+               is_pro = false,
+               pro_expires_at = null
          where id = %s
         """,
         (datetime.now(timezone.utc), user_id),
@@ -607,7 +609,7 @@ def delete_apple_refresh_token(user_id: UUID) -> None:
 
 
 def anonymize_user_data(user_id: UUID) -> None:
-    """Remove personal request data before the auth profile is deleted."""
+    """Remove personal library/request data. Keep usage_events for free-quota continuity."""
     try:
         execute("delete from user_recipes where user_id = %s", (user_id,))
     except Exception:
@@ -622,7 +624,6 @@ def anonymize_user_data(user_id: UUID) -> None:
                 "error": None,
             },
         ),
-        ("usage_events", {"user_id": None}),
         ("api_spend_ledger", {"user_id": None}),
         ("security_events", {"user_id": None}),
     )

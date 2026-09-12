@@ -10,7 +10,7 @@ from app.main import admin_delete_user, delete_me, revoke_stored_apple_authoriza
 import app.main as main
 
 
-def test_soft_delete_clears_apple_identity(monkeypatch):
+def test_soft_delete_keeps_apple_sub_for_quota(monkeypatch):
     captured = {}
 
     def fake_execute(sql, params=None):
@@ -20,12 +20,13 @@ def test_soft_delete_clears_apple_identity(monkeypatch):
 
     monkeypatch.setattr(store, "execute", fake_execute)
     store.soft_delete_profile(uuid4())
-    assert "apple_sub = null" in captured["sql"]
+    assert "apple_sub = null" not in captured["sql"]
     assert "email = null" in captured["sql"]
+    assert "is_pro = false" in captured["sql"]
     assert "deleted_at = coalesce(deleted_at, %s)" in captured["sql"]
 
 
-def test_anonymize_deletes_user_library(monkeypatch):
+def test_anonymize_deletes_user_library_but_keeps_usage(monkeypatch):
     sqls = []
 
     def fake_execute(sql, params=None):
@@ -36,6 +37,7 @@ def test_anonymize_deletes_user_library(monkeypatch):
     monkeypatch.setattr(store, "execute_returning", lambda *args, **kwargs: {"user_id": None})
     store.anonymize_user_data(uuid4())
     assert any("delete from user_recipes" in sql for sql in sqls)
+    assert not any("usage_events" in sql for sql in sqls)
 
 
 def test_delete_me_revokes_apple_then_tokens_then_soft_delete():
@@ -50,30 +52,14 @@ def test_delete_me_revokes_apple_then_tokens_then_soft_delete():
     assert callable(delete_me) and callable(admin_delete_user) and callable(revoke_all_refresh_tokens)
 
 
-def test_release_deleted_apple_identity_only_touches_closed_accounts(monkeypatch):
-    captured = []
-
-    def fake_execute(sql, params=None):
-        captured.append({"sql": " ".join(sql.split()), "params": params})
-        return 1
-
-    monkeypatch.setattr(store, "execute", fake_execute)
-    store.release_deleted_apple_identity(apple_sub="apple-sub", email="user@example.com")
-    assert "deleted_at is not null" in captured[0]["sql"]
-    assert "or email = %s" in captured[0]["sql"]
-    assert captured[0]["params"] == ("apple-sub", "user@example.com")
-
-    store.release_deleted_apple_identity(apple_sub="apple-sub", email=None)
-    assert "apple_sub = %s" in captured[1]["sql"]
-    assert "or email" not in captured[1]["sql"]
-    assert captured[1]["params"] == ("apple-sub",)
-
-def test_auth_apple_releases_deleted_identity_before_insert():
+def test_auth_apple_reactivates_closed_profile_for_same_apple_sub():
     source = open("app/main.py", encoding="utf-8").read()
     upsert = source.split("def _upsert_apple_profile", 1)[1].split("def _persist_apple_authorization_code", 1)[0]
     body = source.split("def auth_apple", 1)[1].split("def auth_refresh", 1)[0]
     assert "insert into profiles" in upsert
-    assert body.index("release_deleted_apple_identity") < body.index("_upsert_apple_profile")
+    assert "deleted_at = null" in upsert
+    assert "where profiles.deleted_at is null" not in upsert
+    assert "release_deleted_apple_identity" not in body
     assert "authorization_code" in body
 
 

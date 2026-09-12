@@ -25,7 +25,6 @@ from app.apple_auth import (
 )
 from app.cache import reset_cache
 from app.auth import (
-    ACCOUNT_DELETED,
     ACCOUNT_UNAVAILABLE,
     AuthUser,
     account_error,
@@ -95,7 +94,6 @@ from app.store import (
     recipe_public_from_row,
     save_user_recipe,
     soft_delete_profile,
-    release_deleted_apple_identity,
     anonymize_user_data,
     delete_apple_refresh_token,
     get_apple_refresh_token_ciphertext,
@@ -521,14 +519,15 @@ async def apple_webhook(request: Request) -> JSONResponse:
 
 
 def _upsert_apple_profile(apple, display_name: str | None) -> dict | None:
+    """Create or reactivate the profile for this Apple subject (same id keeps free quota)."""
     return execute_returning(
         """
         insert into profiles (email, apple_sub, display_name)
         values (%s, %s, %s)
         on conflict (apple_sub) do update
-           set email = coalesce(profiles.email, excluded.email),
-               display_name = coalesce(profiles.display_name, excluded.display_name)
-         where profiles.deleted_at is null
+           set email = coalesce(excluded.email, profiles.email),
+               display_name = coalesce(excluded.display_name, profiles.display_name),
+               deleted_at = null
         returning id, email, display_name, is_pro, pro_expires_at, deleted_at
         """,
         (apple.email, apple.apple_sub, display_name),
@@ -590,16 +589,10 @@ def auth_apple(request: Request, body: AuthAppleRequest) -> AuthTokenResponse:
         raise HTTPException(status_code=401, detail="Invalid Apple identity token") from exc
     display_name = (body.full_name or "").strip()[:200] or None
     try:
-        release_deleted_apple_identity(apple_sub=apple.apple_sub, email=apple.email)
         row = _upsert_apple_profile(apple, display_name)
-        if not row or row.get("deleted_at"):
-            release_deleted_apple_identity(apple_sub=apple.apple_sub, email=apple.email)
-            row = _upsert_apple_profile(apple, display_name)
     except Exception as exc:
         logger.warning("apple profile upsert failed error_type=%s", type(exc).__name__)
         raise HTTPException(status_code=503, detail="Authentication temporarily unavailable", headers={"Retry-After": "1"}) from exc
-    if row and row.get("deleted_at"):
-        raise account_error(ACCOUNT_DELETED, "Account deleted")
     if not row:
         raise account_error(ACCOUNT_UNAVAILABLE, "Account unavailable")
     user_id = UUID(str(row["id"]))

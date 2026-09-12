@@ -25,5 +25,5 @@
 ## Data lifecycle and recovery
 
 - Encrypted Postgres backups on the VPS (`~/Desktop/Server/deploy/postgres-backup.sh`). Test restore on a disposable database.
-- Account deletion revokes the stored Apple refresh token (`POST https://appleid.apple.com/auth/revoke`), deletes user-owned rows, revokes app refresh tokens and closes the profile. `apple_sub` is cleared so the same Apple subject can create a new account. A second `DELETE /v1/me` is idempotent. Closed sessions return `ACCOUNT_DELETED` or `ACCOUNT_UNAVAILABLE`.
+- Account deletion revokes the stored Apple refresh token (`POST https://appleid.apple.com/auth/revoke`), deletes recipes/library data, revokes app refresh tokens and soft-closes the profile. `apple_sub` is kept so the same Apple ID reactivates the same profile and cannot reset the free yearly recipe quota by delete+recreate. `usage_events` stay attached for quota. A second `DELETE /v1/me` is idempotent. Closed sessions return `ACCOUNT_DELETED` or `ACCOUNT_UNAVAILABLE`.
 - Accounts that signed in before an Apple refresh token was stored cannot be revoked at Apple; keep the iOS manual-recovery path until those sessions age out.
