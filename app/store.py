@@ -554,6 +554,46 @@ def soft_delete_profile(user_id: UUID) -> None:
     )
 
 
+def upsert_apple_refresh_token(user_id: UUID, ciphertext: str) -> None:
+    execute(
+        """
+        insert into auth_provider_tokens (user_id, provider, token_ciphertext)
+        values (%s, 'apple', %s)
+        on conflict (user_id, provider) do update
+           set token_ciphertext = excluded.token_ciphertext
+        """,
+        (user_id, ciphertext),
+    )
+
+
+def get_apple_refresh_token_ciphertext(user_id: UUID) -> str | None:
+    row = fetch_one(
+        """
+        select token_ciphertext
+          from auth_provider_tokens
+         where user_id = %s
+           and provider = 'apple'
+         limit 1
+        """,
+        (user_id,),
+    )
+    if not row:
+        return None
+    value = str(row.get("token_ciphertext") or "").strip()
+    return value or None
+
+
+def delete_apple_refresh_token(user_id: UUID) -> None:
+    execute(
+        """
+        delete from auth_provider_tokens
+         where user_id = %s
+           and provider = 'apple'
+        """,
+        (user_id,),
+    )
+
+
 def anonymize_user_data(user_id: UUID) -> None:
     """Remove personal request data before the auth profile is deleted."""
     try:

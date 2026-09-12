@@ -13,6 +13,10 @@ def test_rls_migration_forces_policies_and_fail_closed_helpers():
     assert "create policy extract_jobs_select" in migration
     assert "create policy extract_jobs_update" in migration
     assert "create policy auth_refresh_tokens_self" in migration
+    provider = Path("migrations/004_apple_provider_tokens.sql").read_text(encoding="utf-8")
+    assert "force row level security" in provider
+    assert "create policy auth_provider_tokens_self" in provider
+    assert "create policy auth_provider_tokens_auth" in provider
     assert "app.actor" in migration
     assert "app.user_id" in migration
     assert "perform set_config('app.actor', 'service', true)" in migration

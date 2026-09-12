@@ -29,9 +29,9 @@ uvicorn app.main:app --reload --port 8000
 
 ## Deploy
 
-This repo is the API image (`Dockerfile`). VPS host ops (Traefik, Homepage, Fail2ban, compose) live in sibling `~/Server`.
+This repo is the API image (`Dockerfile`). VPS host ops (Traefik, Homepage, Fail2ban, compose) live in sibling `~/Desktop/Server`.
 
-Schema: `psql "$DATABASE_URL" -f migrations/001_init.sql` then `migrations/002_row_level_security.sql`. Health: `/health`. Ready: `/ready`.
+Schema: `psql "$DATABASE_URL" -f migrations/001_init.sql` then `002_row_level_security.sql`, `003_free_yearly_limit.sql` and `004_apple_provider_tokens.sql`. Health: `/health`. Ready: `/ready`.
 
 For a bounded recipe verification matrix, set `API_KEY` and `AUTH_JWT_SECRET` and run `scripts/e2e_matrix.sh`.
 

@@ -26,10 +26,17 @@ let api = ReciAppAPI { refresh in
 Para Sign in with Apple, activa la capability. Genera un nonce aleatorio para cada intento; envía su SHA-256 a Apple y el nonce original al backend junto al ID token. No reutilices un nonce ni uses el authorization code como ID token.
 
 ```swift
-// appleIDToken y rawNonce proceden del flujo Apple completado.
-let body = ["identity_token": appleIDToken, "nonce": rawNonce, "full_name": fullName]
+// appleIDToken, authorizationCode y rawNonce proceden del flujo Apple completado.
+let body: [String: String] = [
+    "identity_token": appleIDToken,
+    "nonce": rawNonce,
+    "full_name": fullName,
+    "authorization_code": authorizationCode // opcional hasta que este backend esté desplegado
+]
 // Envía body a POST /v1/auth/apple y guarda la sesión devuelta en Keychain.
 ```
+
+`POST /v1/auth/apple` acepta `authorization_code` opcional además de `identity_token`, `nonce` y `full_name`. No envíes el code hasta que el backend que lo acepta esté en producción: una validación estricta anterior podría romper el login. Después del deploy, envía `ASAuthorizationAppleIDCredential.authorizationCode` para que el servidor intercambie y guarde cifrado el refresh token de Apple. El login sigue siendo válido si el code falta o el intercambio falla.
 
 `POST /v1/auth/apple` devuelve `access_token`, `refresh_token`, `token_type`, `expires_in` y `user`. Renueva con `POST /v1/auth/refresh`; cierra con `POST /v1/auth/logout` de forma best-effort y borra Keychain siempre. No registres tokens, contraseñas ni cuerpos de respuestas privadas.
 
@@ -91,6 +98,8 @@ La propiedad JSON `detail` puede ser texto, un objeto con `code` y `message`, o 
 | 401 | Renovar sesión una vez; después solicitar login. |
 | 403 `FREE_WEEKLY_LIMIT` | Presentar paywall. |
 | 403 `PRO_FAIR_USE_LIMIT` | Mostrar límite temporal de uso. |
+| 403 `ACCOUNT_DELETED` | Cuenta cerrada. Cerrar sesión, borrar cachés y mostrar login. No reutilizar el JWT. |
+| 403 `ACCOUNT_UNAVAILABLE` | Perfil ausente o no usable. Cerrar sesión y volver a Sign in with Apple. |
 | Otro 403 | Mostrar falta de acceso; no abrir paywall automáticamente. |
 | 404 | Job/receta inexistente o eliminada. |
 | 413 / 422 | Corregir entrada; no repetir sin cambios. |
@@ -106,7 +115,7 @@ Para Superwall, configura la clave pública del proyecto, identifica al usuario 
 
 Comparte URL e idioma mediante App Group `group.com.membri.reciapp`; habilítalo en ambos targets y sus perfiles de firma. La Share Extension debe encolar **todos** los adjuntos compatibles (no solo el primero) y abrir la app una vez. Conserva enlaces recibidos sin sesión hasta terminar login. Deduplica entregas para no lanzar dos POST. La app principal debe crear el job y guardar su ID; la extensión no debe depender de ejecutar una extracción larga. Si llega un segundo share mientras importa, encola y haz `POST /v1/extract` (quedará `pending`); no descartes el delivery.
 
-`removeRecipe(id:)` elimina la asociación del usuario, no la caché global. `deleteAccount()` solicita eliminar la cuenta; después del éxito, cierra sesión y borra cachés locales. Presenta confirmación explícita en la UI para borrar la cuenta. Actualmente el servidor bloquea primero el perfil y puede devolver éxito aunque el proveedor Auth falle al eliminar su registro; la eliminación completa en ese caso requiere revisión operativa. No afirmes en la UI una eliminación física instantánea de todos los sistemas.
+`removeRecipe(id:)` elimina la asociación del usuario, no la caché global. `deleteAccount()` solicita eliminar la cuenta; después del éxito, cierra sesión y borra cachés locales. Presenta confirmación explícita en la UI para borrar la cuenta. El servidor revoca el refresh token de Apple si lo tiene, borra recetas y tokens de la app, y libera `apple_sub` para que el mismo Apple ID pueda crear una cuenta nueva. Un segundo `DELETE /v1/me` con el mismo JWT es idempotente (`ok: true`). Cuentas antiguas sin token de Apple guardado no pueden revocarse en Apple: conserva el fallback de recuperación manual hasta que esas sesiones caduquen.
 
 ## 7. Pruebas de aceptación de la app
 

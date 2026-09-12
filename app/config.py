@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     apple_root_ca_pem: str = ""
     apple_bundle_id: str = "com.membri.reciapp"
     apple_environment: str = "Production"
+    apple_team_id: str = ""
+    apple_key_id: str = ""
+    apple_private_key: str = Field(default="", repr=False)
+    apple_token_encryption_key: str = Field(default="", repr=False)
     trusted_proxy_ips: str = ""
     rate_limit_per_ip_per_minute: int = 90
     rate_limit_per_user_per_minute: int = 60

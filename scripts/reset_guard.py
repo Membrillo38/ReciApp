@@ -26,6 +26,7 @@ PUBLIC_DELETE_TABLES = (
     "extract_jobs",
     "recipe_translations",
     "recipes",
+    "auth_provider_tokens",
     "profiles",
 )
 PUBLIC_PRESERVE_TABLES = ("app_settings",)

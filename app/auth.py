@@ -13,6 +13,13 @@ from app.security import audit_security_event, safe_compare
 
 _bearer = HTTPBearer(auto_error=False)
 
+ACCOUNT_DELETED = "ACCOUNT_DELETED"
+ACCOUNT_UNAVAILABLE = "ACCOUNT_UNAVAILABLE"
+
+
+def account_error(code: str, message: str, status_code: int = 403) -> HTTPException:
+    return HTTPException(status_code=status_code, detail={"code": code, "message": message})
+
 
 @dataclass
 class AuthUser:
@@ -33,9 +40,29 @@ def require_api_key(request: Request, x_api_key: str | None = Header(default=Non
     audit_security_event(event="admin_api_key_accepted", request=request)
 
 
-def current_user(
-    creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
-) -> AuthUser:
+def _auth_user_from_row(uid: UUID, row: dict, claims_email: str | None) -> AuthUser:
+    return AuthUser(
+        id=uid,
+        email=row.get("email") or claims_email,
+        display_name=row.get("display_name"),
+        is_pro=bool(row.get("is_pro")),
+        pro_expires_at=str(row["pro_expires_at"]) if row.get("pro_expires_at") else None,
+    )
+
+
+def _load_profile(uid: UUID) -> dict | None:
+    return fetch_one(
+        """
+        select id, email, display_name, is_pro, pro_expires_at, deleted_at
+          from profiles
+         where id = %s
+         limit 1
+        """,
+        (uid,),
+    )
+
+
+def _bearer_claims(creds: HTTPAuthorizationCredentials | None) -> tuple[UUID, str | None]:
     if not creds or creds.scheme.lower() != "bearer":
         raise HTTPException(status_code=401, detail="Missing Bearer token")
     if not settings.auth_jwt_secret:
@@ -54,28 +81,34 @@ def current_user(
         raise HTTPException(status_code=401, detail="Invalid token") from None
     except (ValueError, TypeError):
         raise HTTPException(status_code=401, detail="Invalid token") from None
+    email = claims.get("email")
+    return uid, str(email) if email else None
 
+
+def current_user(
+    creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
+) -> AuthUser:
+    uid, claims_email = _bearer_claims(creds)
     try:
-        row = fetch_one(
-            """
-            select id, email, display_name, is_pro, pro_expires_at, deleted_at
-              from profiles
-             where id = %s
-             limit 1
-            """,
-            (uid,),
-        )
+        row = _load_profile(uid)
     except Exception:
         raise HTTPException(status_code=503, detail="Authentication temporarily unavailable", headers={"Retry-After": "1"}) from None
     if not row:
-        raise HTTPException(status_code=403, detail="Account unavailable")
+        raise account_error(ACCOUNT_UNAVAILABLE, "Account unavailable")
     if row.get("deleted_at"):
-        raise HTTPException(status_code=403, detail="Account deleted")
+        raise account_error(ACCOUNT_DELETED, "Account deleted")
+    return _auth_user_from_row(uid, row, claims_email)
 
-    return AuthUser(
-        id=uid,
-        email=row.get("email") or claims.get("email"),
-        display_name=row.get("display_name"),
-        is_pro=bool(row.get("is_pro")),
-        pro_expires_at=str(row["pro_expires_at"]) if row.get("pro_expires_at") else None,
-    )
+
+def current_user_allow_closed(
+    creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
+) -> AuthUser:
+    """JWT owner for DELETE /v1/me, including missing or already-closed profiles."""
+    uid, claims_email = _bearer_claims(creds)
+    try:
+        row = _load_profile(uid)
+    except Exception:
+        raise HTTPException(status_code=503, detail="Authentication temporarily unavailable", headers={"Retry-After": "1"}) from None
+    if not row or row.get("deleted_at"):
+        return AuthUser(id=uid, email=None, display_name=None, is_pro=False, pro_expires_at=None)
+    return _auth_user_from_row(uid, row, claims_email)

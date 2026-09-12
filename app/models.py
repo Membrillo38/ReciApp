@@ -164,6 +164,7 @@ class AuthAppleRequest(BaseModel):
     identity_token: str
     nonce: str | None = None
     full_name: str | None = None
+    authorization_code: str | None = Field(default=None, max_length=2048)
 
 
 class AuthRefreshRequest(BaseModel):

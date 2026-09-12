@@ -16,9 +16,23 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.gzip import GZipMiddleware
 
-from app.apple_auth import verify_apple_identity_token
+from app.apple_auth import (
+    decrypt_apple_refresh_token,
+    encrypt_apple_refresh_token,
+    exchange_apple_authorization_code,
+    revoke_apple_refresh_token,
+    verify_apple_identity_token,
+)
 from app.cache import reset_cache
-from app.auth import AuthUser, current_user, require_api_key
+from app.auth import (
+    ACCOUNT_DELETED,
+    ACCOUNT_UNAVAILABLE,
+    AuthUser,
+    account_error,
+    current_user,
+    current_user_allow_closed,
+    require_api_key,
+)
 from app.auth_tokens import create_access_token, create_refresh_token, revoke_all_refresh_tokens, revoke_refresh_token, rotate_refresh_token
 from app.apple_notifications import process_signed_notification
 from app.config import settings
@@ -83,6 +97,9 @@ from app.store import (
     soft_delete_profile,
     release_deleted_apple_identity,
     anonymize_user_data,
+    delete_apple_refresh_token,
+    get_apple_refresh_token_ciphertext,
+    upsert_apple_refresh_token,
     update_job,
     user_can_access_job,
     user_owns_recipe,
@@ -503,17 +520,8 @@ async def apple_webhook(request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
-@app.post("/v1/auth/apple", response_model=AuthTokenResponse)
-def auth_apple(request: Request, body: AuthAppleRequest) -> AuthTokenResponse:
-    require_writes_enabled()
-    _require_auth_secret()
-    try:
-        apple = verify_apple_identity_token(body.identity_token, nonce=body.nonce)
-    except Exception as exc:
-        raise HTTPException(status_code=401, detail="Invalid Apple identity token") from exc
-    display_name = (body.full_name or "").strip()[:200] or None
-    release_deleted_apple_identity(apple_sub=apple.apple_sub, email=apple.email)
-    row = execute_returning(
+def _upsert_apple_profile(apple, display_name: str | None) -> dict | None:
+    return execute_returning(
         """
         insert into profiles (email, apple_sub, display_name)
         values (%s, %s, %s)
@@ -525,9 +533,73 @@ def auth_apple(request: Request, body: AuthAppleRequest) -> AuthTokenResponse:
         """,
         (apple.email, apple.apple_sub, display_name),
     )
+
+
+def _persist_apple_authorization_code(user_id: UUID, authorization_code: str | None, apple_sub: str) -> None:
+    code = (authorization_code or "").strip()
+    if not code:
+        return
+    refresh = exchange_apple_authorization_code(code, expected_sub=apple_sub)
+    if not refresh:
+        return
+    try:
+        upsert_apple_refresh_token(user_id, encrypt_apple_refresh_token(refresh))
+    except Exception as exc:
+        logger.warning("apple refresh token persist failed error_type=%s", type(exc).__name__)
+
+
+def revoke_stored_apple_authorization(user_id: UUID) -> None:
+    try:
+        ciphertext = get_apple_refresh_token_ciphertext(user_id)
+    except Exception as exc:
+        logger.warning("apple refresh token load failed error_type=%s", type(exc).__name__)
+        return
+    if not ciphertext:
+        return
+    try:
+        refresh = decrypt_apple_refresh_token(ciphertext)
+    except Exception as exc:
+        logger.warning("apple refresh token decrypt failed error_type=%s", type(exc).__name__)
+        try:
+            delete_apple_refresh_token(user_id)
+        except Exception:
+            pass
+        return
+    if not revoke_apple_refresh_token(refresh):
+        return
+    try:
+        delete_apple_refresh_token(user_id)
+    except Exception as exc:
+        logger.warning("apple refresh token delete failed error_type=%s", type(exc).__name__)
+
+
+def _purge_account(user_id: UUID) -> None:
+    revoke_stored_apple_authorization(user_id)
+    anonymize_user_data(user_id)
+    revoke_all_refresh_tokens(user_id)
+    soft_delete_profile(user_id)
+
+
+@app.post("/v1/auth/apple", response_model=AuthTokenResponse)
+def auth_apple(request: Request, body: AuthAppleRequest) -> AuthTokenResponse:
+    require_writes_enabled()
+    _require_auth_secret()
+    try:
+        apple = verify_apple_identity_token(body.identity_token, nonce=body.nonce)
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail="Invalid Apple identity token") from exc
+    display_name = (body.full_name or "").strip()[:200] or None
+    release_deleted_apple_identity(apple_sub=apple.apple_sub, email=apple.email)
+    row = _upsert_apple_profile(apple, display_name)
     if not row or row.get("deleted_at"):
-        raise HTTPException(status_code=403, detail="Account unavailable")
+        release_deleted_apple_identity(apple_sub=apple.apple_sub, email=apple.email)
+        row = _upsert_apple_profile(apple, display_name)
+    if row and row.get("deleted_at"):
+        raise account_error(ACCOUNT_DELETED, "Account deleted")
+    if not row:
+        raise account_error(ACCOUNT_UNAVAILABLE, "Account unavailable")
     user_id = UUID(str(row["id"]))
+    _persist_apple_authorization_code(user_id, body.authorization_code, apple.apple_sub)
     return AuthTokenResponse(
         access_token=create_access_token(user_id, row.get("email")),
         refresh_token=create_refresh_token(
@@ -575,10 +647,8 @@ def me(user: AuthUser = Depends(current_user)) -> MeResponse:
 
 
 @app.delete("/v1/me", response_model=OkResponse)
-def delete_me(user: AuthUser = Depends(current_user)) -> OkResponse:
-    anonymize_user_data(user.id)
-    revoke_all_refresh_tokens(user.id)
-    soft_delete_profile(user.id)
+def delete_me(user: AuthUser = Depends(current_user_allow_closed)) -> OkResponse:
+    _purge_account(user.id)
     return OkResponse()
 
 
@@ -956,9 +1026,7 @@ def admin_patch_user(request: Request, user_id: UUID, body: AdminUserPatch):
 
 @app.delete("/v1/admin/users/{user_id}", response_model=OkResponse, dependencies=[Depends(require_api_key)])
 def admin_delete_user(request: Request, user_id: UUID) -> OkResponse:
-    anonymize_user_data(user_id)
-    revoke_all_refresh_tokens(user_id)
-    soft_delete_profile(user_id)
+    _purge_account(user_id)
     audit_security_event(event="admin_user_deleted", request=request, user_id=str(user_id))
     return OkResponse()
 
