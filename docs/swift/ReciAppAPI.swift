@@ -133,7 +133,7 @@ actor ReciAppAPI {
             try Task.checkCancellation()
             var request = URLRequest(url: components.url!)
             request.httpMethod = method
-            request.timeoutInterval = 90 // Allow a Render Free cold start.
+            request.timeoutInterval = 90 // Extract/poll can run long on the VPS.
             request.httpBody = body
             request.setValue("application/json", forHTTPHeaderField: "Accept")
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")

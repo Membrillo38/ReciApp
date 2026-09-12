@@ -10,7 +10,12 @@ from psycopg.errors import UniqueViolation
 
 from app.config import settings
 from app.db import execute_returning, fetch_one
-from app.limits import get_app_defaults, price_cents_from_superwall, proceeds_cents_from_superwall
+from app.limits import (
+    get_app_defaults,
+    monthly_price_cents_from_superwall,
+    period_price_cents_from_superwall,
+    proceeds_cents_from_superwall,
+)
 
 _UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
@@ -211,27 +216,59 @@ def _apply_superwall_event(payload: dict, event_id: str | None = None) -> dict:
     if isinstance(expires_ms, (int, float)) and expires_ms > 0:
         expires_iso = datetime.fromtimestamp(expires_ms / 1000.0, tz=timezone.utc).isoformat()
     defaults = get_app_defaults()
-    price_cents = price_cents_from_superwall(data)
+    period_price_cents = period_price_cents_from_superwall(data)
+    monthly_price_cents = monthly_price_cents_from_superwall(data)
     proceeds_cents = proceeds_cents_from_superwall(data)
     update: dict = {
         "subscription_event_at": event_at.isoformat(),
         "subscription_event_id": resolved_event_id,
         "subscription_product_id": data.get("productId") or data.get("productIdentifier"),
         "subscription_currency": data.get("currency") or data.get("currencyCode"),
-        "subscription_price_cents": price_cents,
+        "subscription_price_cents": period_price_cents,
     }
     if proceeds_cents:
         update["subscription_proceeds_cents"] = proceeds_cents
 
+    now = datetime.now(timezone.utc)
+    expired = False
+    if expires_iso:
+        try:
+            expired = datetime.fromisoformat(expires_iso) <= now
+        except ValueError:
+            expired = False
+
     if event_name in _PRO_ON:
-        update.update({"is_pro": True, "pro_expires_at": expires_iso, "pro_monthly_price_cents": price_cents or defaults.default_pro_monthly_price_cents})
+        update.update(
+            {
+                "is_pro": True,
+                "pro_expires_at": expires_iso,
+                "pro_monthly_price_cents": monthly_price_cents or defaults.default_pro_monthly_price_cents,
+            }
+        )
     elif event_name in _PRO_OFF:
-        update.update({"is_pro": False, "pro_expires_at": expires_iso or datetime.now(timezone.utc).isoformat(), "pro_monthly_price_cents": None, "free_weekly_limit": defaults.free_weekly_limit})
+        update.update(
+            {
+                "is_pro": False,
+                "pro_expires_at": expires_iso or now.isoformat(),
+                "pro_monthly_price_cents": None,
+                "free_weekly_limit": defaults.free_weekly_limit,
+            }
+        )
+    elif expired:
+        # Cancellation / billing_issue / pause past expirationAt: revoke.
+        update.update(
+            {
+                "is_pro": False,
+                "pro_expires_at": expires_iso,
+                "pro_monthly_price_cents": None,
+                "free_weekly_limit": defaults.free_weekly_limit,
+            }
+        )
     else:
-        # Cancellation, billing issue and pause retain access until expiry.
+        # Still inside paid window (cancel-at-period-end, grace, pause).
         update.update({"is_pro": True, "pro_expires_at": expires_iso})
-        if price_cents:
-            update["pro_monthly_price_cents"] = price_cents
+        if monthly_price_cents:
+            update["pro_monthly_price_cents"] = monthly_price_cents
 
     # Compare-and-set prevents an old delivery from overwriting a concurrent
     # newer event. The deletion predicate also handles deletion after our read.

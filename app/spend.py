@@ -8,6 +8,7 @@ from fastapi import HTTPException
 
 from app.config import settings
 from app.db import execute, fetch_one
+from app.limits import resolve_user_limits
 
 
 @dataclass(frozen=True)
@@ -21,11 +22,28 @@ def _numeric(value: float | int | Decimal) -> Decimal:
     return value if isinstance(value, Decimal) else Decimal(str(value))
 
 
+def _user_monthly_budget_cents(user_id: UUID) -> float:
+    """Pro fair-use budget caps OpenAI; free users keep the env hard ceiling."""
+    row = fetch_one(
+        """
+        select is_pro, pro_monthly_price_cents, pro_margin_ratio, free_weekly_limit
+          from profiles
+         where id = %s
+         limit 1
+        """,
+        (user_id,),
+    )
+    if not row or not row.get("is_pro"):
+        return float(settings.user_monthly_budget_cents)
+    return float(resolve_user_limits(row).pro_budget_cents)
+
+
 def reserve_spend(*, user_id: UUID, job_id: UUID) -> SpendReservation:
     """Atomically reserve worst-case spend in Postgres; fail closed if unavailable."""
     if not settings.billing_guard_enabled:
         raise HTTPException(status_code=503, detail="Usage protection is disabled")
     try:
+        user_budget = _user_monthly_budget_cents(user_id)
         row = fetch_one(
             "select * from reserve_api_spend(%s, %s, %s, %s, %s, %s)",
             (
@@ -34,9 +52,11 @@ def reserve_spend(*, user_id: UUID, job_id: UUID) -> SpendReservation:
                 _numeric(settings.max_job_cost_cents),
                 _numeric(settings.daily_api_budget_cents),
                 _numeric(settings.monthly_api_budget_cents),
-                _numeric(settings.user_monthly_budget_cents),
+                _numeric(user_budget),
             ),
         )
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Usage protection unavailable") from exc
 

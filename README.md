@@ -31,7 +31,7 @@ uvicorn app.main:app --reload --port 8000
 
 This repo is the API image (`Dockerfile`). VPS host ops (Traefik, Homepage, Fail2ban, compose) live in sibling `~/Desktop/Server`.
 
-Schema: `psql "$DATABASE_URL" -f migrations/001_init.sql` then `002_row_level_security.sql`, `003_free_yearly_limit.sql` and `004_apple_provider_tokens.sql`. Health: `/health`. Ready: `/ready`.
+Schema: `psql "$DATABASE_URL" -f migrations/001_init.sql` then `002_row_level_security.sql`, `003_free_yearly_limit.sql`, `004_apple_provider_tokens.sql` and `005_pro_monthly_default.sql`. Health: `/health`. Ready: `/ready`.
 
 For a bounded recipe verification matrix, set `API_KEY` and `AUTH_JWT_SECRET` and run `scripts/e2e_matrix.sh`.
 
@@ -40,7 +40,7 @@ For a bounded recipe verification matrix, set `API_KEY` and `AUTH_JWT_SECRET` an
 | Plan | Limit |
 |------|-------|
 | Free | 1 import / week (UTC) |
-| Pro | Cache misses until monthly cost ≥ budget (`profiles.pro_monthly_price_cents × (1 - margin)`). Defaults in `app_settings` ($4.99 → ~$3.99). Superwall webhook sets price per user on subscribe. |
+| Pro | Cache misses until monthly cost ≥ budget (`profiles.pro_monthly_price_cents × (1 - margin)`). Webhook monthlyizes weekly×52/12 and yearly÷12 into that field. Defaults in `app_settings`. |
 
 ## Verification
 

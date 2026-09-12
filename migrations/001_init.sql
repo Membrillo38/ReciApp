@@ -114,7 +114,7 @@ create table public.app_settings (
   id integer primary key default 1 check (id = 1),
   free_weekly_limit integer not null default 10,
   pro_margin_ratio numeric(5, 4) not null default 0.20,
-  default_pro_monthly_price_cents integer not null default 499,
+  default_pro_monthly_price_cents integer not null default 4329,
   updated_at timestamptz not null default now()
 );
 
