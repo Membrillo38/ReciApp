@@ -61,8 +61,11 @@ def test_release_deleted_apple_identity_only_touches_closed_accounts(monkeypatch
     monkeypatch.setattr(store, "execute", fake_execute)
     store.release_deleted_apple_identity(apple_sub="apple-sub", email="user@example.com")
     assert "deleted_at is not null" in captured["sql"]
+    assert "%s::text is not null" in captured["sql"]
     assert captured["params"] == ("apple-sub", "user@example.com", "user@example.com")
 
+    store.release_deleted_apple_identity(apple_sub="apple-sub", email=None)
+    assert captured["params"] == ("apple-sub", None, None)
 
 def test_auth_apple_releases_deleted_identity_before_insert():
     source = open("app/main.py", encoding="utf-8").read()

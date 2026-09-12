@@ -533,7 +533,7 @@ def release_deleted_apple_identity(*, apple_sub: str, email: str | None) -> None
          where deleted_at is not null
            and (
                 apple_sub = %s
-                or (%s is not null and email = %s)
+                or (%s::text is not null and email = %s::text)
            )
         """,
         (apple_sub, email, email),
