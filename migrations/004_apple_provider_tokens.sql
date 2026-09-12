@@ -1,7 +1,7 @@
 -- Encrypted Sign in with Apple refresh tokens for account-deletion revocation.
--- Apply after 001_init.sql, 002_row_level_security.sql and 003_free_yearly_limit.sql.
+-- Apply after 001_init.sql (and ideally 002_row_level_security.sql + 003_free_yearly_limit.sql).
 
-create table public.auth_provider_tokens (
+create table if not exists public.auth_provider_tokens (
   user_id uuid not null references public.profiles (id) on delete cascade,
   provider text not null,
   token_ciphertext text not null,
@@ -11,25 +11,43 @@ create table public.auth_provider_tokens (
   constraint auth_provider_tokens_provider_check check (provider = 'apple')
 );
 
+drop trigger if exists auth_provider_tokens_set_updated_at on public.auth_provider_tokens;
 create trigger auth_provider_tokens_set_updated_at
   before update on public.auth_provider_tokens
   for each row execute procedure public.set_updated_at();
 
-alter table public.auth_provider_tokens enable row level security;
-alter table public.auth_provider_tokens force row level security;
-
-drop policy if exists reciapp_service on public.auth_provider_tokens;
-create policy reciapp_service on public.auth_provider_tokens
-  using (public.app_is_service())
-  with check (public.app_is_service());
-
-create policy auth_provider_tokens_auth on public.auth_provider_tokens
-  using (public.app_is_auth())
-  with check (public.app_is_auth());
-
-create policy auth_provider_tokens_self on public.auth_provider_tokens
-  using (user_id = public.app_user_id())
-  with check (user_id = public.app_user_id());
+-- RLS only when migration 002 helpers exist. Current prod role bypasses RLS anyway.
+do $$
+begin
+  if to_regprocedure('public.app_is_service()') is not null
+     and to_regprocedure('public.app_is_auth()') is not null
+     and to_regprocedure('public.app_user_id()') is not null then
+    execute 'alter table public.auth_provider_tokens enable row level security';
+    execute 'alter table public.auth_provider_tokens force row level security';
+    execute 'drop policy if exists reciapp_service on public.auth_provider_tokens';
+    execute $p$
+      create policy reciapp_service on public.auth_provider_tokens
+        using (public.app_is_service())
+        with check (public.app_is_service())
+    $p$;
+    execute 'drop policy if exists auth_provider_tokens_auth on public.auth_provider_tokens';
+    execute $p$
+      create policy auth_provider_tokens_auth on public.auth_provider_tokens
+        using (public.app_is_auth())
+        with check (public.app_is_auth())
+    $p$;
+    execute 'drop policy if exists auth_provider_tokens_self on public.auth_provider_tokens';
+    execute $p$
+      create policy auth_provider_tokens_self on public.auth_provider_tokens
+        using (user_id = public.app_user_id())
+        with check (user_id = public.app_user_id())
+    $p$;
+  else
+    execute 'alter table public.auth_provider_tokens no force row level security';
+    execute 'alter table public.auth_provider_tokens disable row level security';
+  end if;
+end;
+$$;
 
 revoke all on table public.auth_provider_tokens from public;
 
