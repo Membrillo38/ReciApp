@@ -525,18 +525,30 @@ def list_profiles(limit: int = 100) -> list[dict]:
 
 def release_deleted_apple_identity(*, apple_sub: str, email: str | None) -> None:
     """Free Apple/email unique keys on closed accounts so Sign in with Apple can create a new profile."""
+    if email:
+        execute(
+            """
+            update profiles
+               set apple_sub = null,
+                   email = null
+             where deleted_at is not null
+               and (
+                    apple_sub = %s
+                    or email = %s
+               )
+            """,
+            (apple_sub, email),
+        )
+        return
     execute(
         """
         update profiles
            set apple_sub = null,
                email = null
          where deleted_at is not null
-           and (
-                apple_sub = %s
-                or (%s::text is not null and email = %s::text)
-           )
+           and apple_sub = %s
         """,
-        (apple_sub, email, email),
+        (apple_sub,),
     )
 
 

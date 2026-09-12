@@ -589,27 +589,35 @@ def auth_apple(request: Request, body: AuthAppleRequest) -> AuthTokenResponse:
     except Exception as exc:
         raise HTTPException(status_code=401, detail="Invalid Apple identity token") from exc
     display_name = (body.full_name or "").strip()[:200] or None
-    release_deleted_apple_identity(apple_sub=apple.apple_sub, email=apple.email)
-    row = _upsert_apple_profile(apple, display_name)
-    if not row or row.get("deleted_at"):
+    try:
         release_deleted_apple_identity(apple_sub=apple.apple_sub, email=apple.email)
         row = _upsert_apple_profile(apple, display_name)
+        if not row or row.get("deleted_at"):
+            release_deleted_apple_identity(apple_sub=apple.apple_sub, email=apple.email)
+            row = _upsert_apple_profile(apple, display_name)
+    except Exception as exc:
+        logger.warning("apple profile upsert failed error_type=%s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Authentication temporarily unavailable", headers={"Retry-After": "1"}) from exc
     if row and row.get("deleted_at"):
         raise account_error(ACCOUNT_DELETED, "Account deleted")
     if not row:
         raise account_error(ACCOUNT_UNAVAILABLE, "Account unavailable")
     user_id = UUID(str(row["id"]))
     _persist_apple_authorization_code(user_id, body.authorization_code, apple.apple_sub)
-    return AuthTokenResponse(
-        access_token=create_access_token(user_id, row.get("email")),
-        refresh_token=create_refresh_token(
-            user_id,
-            user_agent=request.headers.get("user-agent"),
-            ip_hash=pseudonymous_ip(request_ip(request)),
-        ),
-        expires_in=settings.auth_access_token_ttl_seconds,
-        user=_auth_user_response(row),
-    )
+    try:
+        return AuthTokenResponse(
+            access_token=create_access_token(user_id, row.get("email")),
+            refresh_token=create_refresh_token(
+                user_id,
+                user_agent=request.headers.get("user-agent"),
+                ip_hash=pseudonymous_ip(request_ip(request)),
+            ),
+            expires_in=settings.auth_access_token_ttl_seconds,
+            user=_auth_user_response(row),
+        )
+    except Exception as exc:
+        logger.warning("apple session issue failed error_type=%s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Authentication temporarily unavailable", headers={"Retry-After": "1"}) from exc
 
 
 @app.post("/v1/auth/refresh", response_model=AuthTokenResponse)

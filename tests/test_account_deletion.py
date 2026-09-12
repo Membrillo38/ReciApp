@@ -51,21 +51,22 @@ def test_delete_me_revokes_apple_then_tokens_then_soft_delete():
 
 
 def test_release_deleted_apple_identity_only_touches_closed_accounts(monkeypatch):
-    captured = {}
+    captured = []
 
     def fake_execute(sql, params=None):
-        captured["sql"] = " ".join(sql.split())
-        captured["params"] = params
+        captured.append({"sql": " ".join(sql.split()), "params": params})
         return 1
 
     monkeypatch.setattr(store, "execute", fake_execute)
     store.release_deleted_apple_identity(apple_sub="apple-sub", email="user@example.com")
-    assert "deleted_at is not null" in captured["sql"]
-    assert "%s::text is not null" in captured["sql"]
-    assert captured["params"] == ("apple-sub", "user@example.com", "user@example.com")
+    assert "deleted_at is not null" in captured[0]["sql"]
+    assert "or email = %s" in captured[0]["sql"]
+    assert captured[0]["params"] == ("apple-sub", "user@example.com")
 
     store.release_deleted_apple_identity(apple_sub="apple-sub", email=None)
-    assert captured["params"] == ("apple-sub", None, None)
+    assert "apple_sub = %s" in captured[1]["sql"]
+    assert "or email" not in captured[1]["sql"]
+    assert captured[1]["params"] == ("apple-sub",)
 
 def test_auth_apple_releases_deleted_identity_before_insert():
     source = open("app/main.py", encoding="utf-8").read()
