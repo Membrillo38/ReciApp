@@ -97,3 +97,15 @@ def revoke_refresh_token(raw: str) -> None:
         """,
         (_hash(raw),),
     )
+
+
+def revoke_all_refresh_tokens(user_id: UUID) -> None:
+    execute(
+        """
+        update auth_refresh_tokens
+           set revoked_at = now()
+         where user_id = %s
+           and revoked_at is null
+        """,
+        (user_id,),
+    )

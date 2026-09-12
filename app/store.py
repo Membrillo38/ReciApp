@@ -524,11 +524,25 @@ def list_profiles(limit: int = 100) -> list[dict]:
 
 
 def soft_delete_profile(user_id: UUID) -> None:
-    execute("update profiles set deleted_at = %s where id = %s", (datetime.now(timezone.utc), user_id))
+    execute(
+        """
+        update profiles
+           set deleted_at = coalesce(deleted_at, %s),
+               email = null,
+               apple_sub = null,
+               display_name = null
+         where id = %s
+        """,
+        (datetime.now(timezone.utc), user_id),
+    )
 
 
 def anonymize_user_data(user_id: UUID) -> None:
     """Remove personal request data before the auth profile is deleted."""
+    try:
+        execute("delete from user_recipes where user_id = %s", (user_id,))
+    except Exception:
+        pass
     operations = (
         (
             "extract_jobs",

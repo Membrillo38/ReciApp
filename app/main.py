@@ -19,7 +19,7 @@ from starlette.middleware.gzip import GZipMiddleware
 from app.apple_auth import verify_apple_identity_token
 from app.cache import reset_cache
 from app.auth import AuthUser, current_user, require_api_key
-from app.auth_tokens import create_access_token, create_refresh_token, revoke_refresh_token, rotate_refresh_token
+from app.auth_tokens import create_access_token, create_refresh_token, revoke_all_refresh_tokens, revoke_refresh_token, rotate_refresh_token
 from app.apple_notifications import process_signed_notification
 from app.config import settings
 from app.dashboard_routes import router as dashboard_router
@@ -575,6 +575,7 @@ def me(user: AuthUser = Depends(current_user)) -> MeResponse:
 @app.delete("/v1/me", response_model=OkResponse)
 def delete_me(user: AuthUser = Depends(current_user)) -> OkResponse:
     anonymize_user_data(user.id)
+    revoke_all_refresh_tokens(user.id)
     soft_delete_profile(user.id)
     return OkResponse()
 
@@ -954,6 +955,7 @@ def admin_patch_user(request: Request, user_id: UUID, body: AdminUserPatch):
 @app.delete("/v1/admin/users/{user_id}", response_model=OkResponse, dependencies=[Depends(require_api_key)])
 def admin_delete_user(request: Request, user_id: UUID) -> OkResponse:
     anonymize_user_data(user_id)
+    revoke_all_refresh_tokens(user_id)
     soft_delete_profile(user_id)
     audit_security_event(event="admin_user_deleted", request=request, user_id=str(user_id))
     return OkResponse()
