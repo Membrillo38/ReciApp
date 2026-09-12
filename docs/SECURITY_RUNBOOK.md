@@ -22,5 +22,5 @@
 
 ## Data lifecycle and recovery
 
-- Encrypted Postgres backups on the VPS (`deploy/postgres-backup.sh`). Test restore on a disposable database.
+- Encrypted Postgres backups on the VPS (`~/Server/deploy/postgres-backup.sh`). Test restore on a disposable database.
 - Account deletion revokes the profile and leaves only the minimum redacted billing/audit record.
