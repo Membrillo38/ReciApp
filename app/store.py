@@ -523,6 +523,23 @@ def list_profiles(limit: int = 100) -> list[dict]:
     return fetch_all("select * from profiles where deleted_at is null order by created_at desc limit %s", (limit,))
 
 
+def release_deleted_apple_identity(*, apple_sub: str, email: str | None) -> None:
+    """Free Apple/email unique keys on closed accounts so Sign in with Apple can create a new profile."""
+    execute(
+        """
+        update profiles
+           set apple_sub = null,
+               email = null
+         where deleted_at is not null
+           and (
+                apple_sub = %s
+                or (%s is not null and email = %s)
+           )
+        """,
+        (apple_sub, email, email),
+    )
+
+
 def soft_delete_profile(user_id: UUID) -> None:
     execute(
         """

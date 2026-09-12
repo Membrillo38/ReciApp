@@ -81,6 +81,7 @@ from app.store import (
     recipe_public_from_row,
     save_user_recipe,
     soft_delete_profile,
+    release_deleted_apple_identity,
     anonymize_user_data,
     update_job,
     user_can_access_job,
@@ -511,6 +512,7 @@ def auth_apple(request: Request, body: AuthAppleRequest) -> AuthTokenResponse:
     except Exception as exc:
         raise HTTPException(status_code=401, detail="Invalid Apple identity token") from exc
     display_name = (body.full_name or "").strip()[:200] or None
+    release_deleted_apple_identity(apple_sub=apple.apple_sub, email=apple.email)
     row = execute_returning(
         """
         insert into profiles (email, apple_sub, display_name)

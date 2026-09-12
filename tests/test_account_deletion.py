@@ -40,3 +40,21 @@ def test_delete_me_revokes_tokens_before_soft_delete():
     assert delete_body.index("revoke_all_refresh_tokens") < delete_body.index("soft_delete_profile")
     assert "revoke_all_refresh_tokens" in source.split("def admin_delete_user", 1)[1].split("def admin_list_recipes", 1)[0]
     assert callable(delete_me) and callable(admin_delete_user) and callable(revoke_all_refresh_tokens)
+
+def test_release_deleted_apple_identity_only_touches_closed_accounts(monkeypatch):
+    captured = {}
+
+    def fake_execute(sql, params=None):
+        captured["sql"] = " ".join(sql.split())
+        captured["params"] = params
+        return 1
+
+    monkeypatch.setattr(store, "execute", fake_execute)
+    store.release_deleted_apple_identity(apple_sub="apple-sub", email="user@example.com")
+    assert "deleted_at is not null" in captured["sql"]
+    assert captured["params"] == ("apple-sub", "user@example.com", "user@example.com")
+
+
+def test_auth_apple_releases_deleted_identity_before_insert():
+    body = open("app/main.py", encoding="utf-8").read().split("def auth_apple", 1)[1].split("def auth_refresh", 1)[0]
+    assert body.index("release_deleted_apple_identity") < body.index("insert into profiles")
