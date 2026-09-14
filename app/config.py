@@ -57,7 +57,13 @@ class Settings(BaseSettings):
     daily_api_budget_cents: float = 1000.0
     monthly_api_budget_cents: float = 5000.0
     user_monthly_budget_cents: float = 500.0
-    max_job_cost_cents: float = 100.0
+    max_job_cost_cents: float = 50.0
+    # Skip paid OpenAI STT when local whisper already returned enough speech.
+    local_stt_min_chars: int = 80
+    # Hard ceiling on vision OCR frames per job (last resort).
+    max_vision_frames: int = 12
+    ocr_slide_max_tokens: int = 400
+    ocr_overlay_max_tokens: int = 800
     max_concurrent_jobs: int = 8
     # Process slots (extract + translation). Serial extract starts are gated in
     # extract_recipe via user_has_processing_extract, not this counter alone.

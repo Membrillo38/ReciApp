@@ -25,6 +25,17 @@ from app.models import JobStatus, Platform, Recipe
 from app.platforms import detect_platform
 from app.quota import record_usage
 from app.job_guard import release as release_job, try_claim as try_claim_job
+from app.job_errors import (
+    EXTRACTION_RETRYABLE,
+    INCOMPLETE_CAROUSEL,
+    NO_RECIPE_TEXT,
+    RECIPE_NO_INGREDIENTS,
+    RECIPE_NO_METHOD,
+    SOURCE_BOUND,
+    UNSUPPORTED_URL,
+    VIDEO_TOO_LONG,
+    canonicalize_job_error,
+)
 from app.localization import normalize_language
 from app.spend import settle_spend
 from app.recipe_builder import (
@@ -53,16 +64,16 @@ from app.translation_cache import (
 from app.tiktok_slides import SlideInfo, fetch_tiktok_slides
 from app.transcript import (
     local_transcript,
-    ocr_slides,
+    ocr_one_slide,
     ocr_video_frames,
     whisper_transcript,
     youtube_transcript,
 )
 
 logger = logging.getLogger(__name__)
-_RETRYABLE_EXTRACTION_ERROR = "Extraction temporarily failed. Retry the import."
-_FIRST_VISION_PASS = 12
-_VISION_BATCH = 8
+_RETRYABLE_EXTRACTION_ERROR = EXTRACTION_RETRYABLE
+_FIRST_VISION_PASS = 4
+_VISION_BATCH = 4
 _COVER_BUCKET_KEY_LEN = 40
 
 
@@ -108,9 +119,23 @@ def _safe_job_error(error: ExtractError) -> str:
         "Recipe output failed validation",
         "Translated recipe output failed validation",
         "Recipe not found for translation",
+        RECIPE_NO_INGREDIENTS,
+        RECIPE_NO_METHOD,
     )
-    if message.startswith(safe_prefixes):
-        return message[:300]
+    if message.startswith(safe_prefixes) or message in {
+        RECIPE_UNDETERMINED_ERROR,
+        RECIPE_INCOMPLETE_ERROR,
+        LINK_IN_BIO_ERROR,
+        RECIPE_NO_INGREDIENTS,
+        RECIPE_NO_METHOD,
+        UNSUPPORTED_URL,
+        VIDEO_TOO_LONG,
+        INCOMPLETE_CAROUSEL,
+        NO_RECIPE_TEXT,
+        SOURCE_BOUND,
+        EXTRACTION_RETRYABLE,
+    }:
+        return canonicalize_job_error(message)[:300]
     return _RETRYABLE_EXTRACTION_ERROR
 
 
@@ -138,7 +163,7 @@ def _run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langu
             logger.info("extract stage=platform job_id=%s platform=%s", job_id, platform.value)
             update_job(job_id, progress=15)
             if platform == Platform.unknown:
-                raise ExtractError("Unsupported URL. Use TikTok, YouTube, Instagram or Facebook.")
+                raise ExtractError(UNSUPPORTED_URL)
 
             slide_info: SlideInfo | None = None
             if platform == Platform.tiktok:
@@ -151,38 +176,90 @@ def _run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langu
                 )
                 update_job(job_id, progress=30)
                 if slide_info is None and "/photo/" in (urlparse(url).path or "").lower():
-                    raise ExtractError(
-                        "Incomplete TikTok carousel: complete slide hydration was unavailable"
-                    )
+                    raise ExtractError(INCOMPLETE_CAROUSEL)
 
             recipe: Recipe | None
+            reject_reasons: list[str] = []
             if slide_info and slide_info.image_urls:
                 if slide_info.incomplete_reason:
-                    raise ExtractError(f"Incomplete TikTok carousel: {slide_info.incomplete_reason}")
+                    raise ExtractError(INCOMPLETE_CAROUSEL)
+                # Caption / bio first — never OCR when recipe points off-app.
                 reject_link_in_bio(slide_info.title, slide_info.description)
 
                 def record_slide_attempt() -> None:
                     nonlocal slide_count
                     slide_count += 1
 
-                slide_text = ocr_slides(slide_info, on_attempt=record_slide_attempt)
-                reject_link_in_bio(slide_info.title, slide_info.description, slide_text)
-                update_job(job_id, progress=60)
-                recipe = build_recipe(
-                    platform=platform,
-                    source_url=url,
-                    title=slide_info.title,
-                    description=slide_info.description,
-                    author=slide_info.author,
-                    thumbnail_url=slide_info.image_urls[0],
-                    carousel_image_urls=slide_info.image_urls,
-                    transcript=None,
-                    slide_text=slide_text,
-                    language_code=language_code,
-                    require_complete=True,
-                )
+                slide_text: str | None = None
+                recipe = None
+                if any(
+                    text and text.strip()
+                    for text in (slide_info.title, slide_info.description)
+                ):
+                    recipe = build_recipe(
+                        platform=platform,
+                        source_url=url,
+                        title=slide_info.title,
+                        description=slide_info.description,
+                        author=slide_info.author,
+                        thumbnail_url=slide_info.image_urls[0],
+                        carousel_image_urls=slide_info.image_urls,
+                        transcript=None,
+                        slide_text=None,
+                        language_code=language_code,
+                        require_complete=True,
+                        reject_reasons=reject_reasons,
+                    )
+
+                # OCR last resort: one slide at a time, stop when complete.
                 if recipe is None:
-                    raise ExtractError(RECIPE_INCOMPLETE_ERROR)
+                    parts: list[str] = []
+                    failures: list[int] = []
+                    for idx, image_url in enumerate(slide_info.image_urls, start=1):
+                        try:
+                            chunk = ocr_one_slide(
+                                image_url=image_url,
+                                slide_index=idx,
+                                on_attempt=record_slide_attempt,
+                            )
+                        except ExtractError:
+                            failures.append(idx)
+                            continue
+                        if chunk.strip():
+                            parts.append(chunk.strip())
+                        slide_text = "\n\n".join(parts) if parts else None
+                        reject_link_in_bio(
+                            slide_info.title, slide_info.description, slide_text
+                        )
+                        update_job(job_id, progress=min(30 + idx * 5, 80))
+                        recipe = build_recipe(
+                            platform=platform,
+                            source_url=url,
+                            title=slide_info.title,
+                            description=slide_info.description,
+                            author=slide_info.author,
+                            thumbnail_url=slide_info.image_urls[0],
+                            carousel_image_urls=slide_info.image_urls,
+                            transcript=None,
+                            slide_text=slide_text,
+                            language_code=language_code,
+                            require_complete=True,
+                            reject_reasons=reject_reasons,
+                        )
+                        if recipe is not None:
+                            break
+                    if recipe is None:
+                        if failures and not parts:
+                            indexes = ",".join(str(i) for i in failures)
+                            raise ExtractError(
+                                f"Incomplete TikTok carousel: unreadable slides {indexes}"
+                            )
+                        if failures and parts:
+                            raise ExtractError(INCOMPLETE_CAROUSEL)
+                        raise ExtractError(
+                            reject_reasons[-1] if reject_reasons else RECIPE_INCOMPLETE_ERROR
+                        )
+                update_job(job_id, progress=60)
             else:
                 media = fetch_media_info(url)
                 logger.info(
@@ -224,6 +301,7 @@ def _run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langu
                         slide_text=current_visual or None,
                         language_code=language_code,
                         require_complete=True,
+                        reject_reasons=reject_reasons,
                     )
 
                 # Stage 1: description / metadata / captions only.
@@ -254,7 +332,14 @@ def _run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langu
                                 len(spoken_local),
                             )
 
-                    if recipe is None and audio_path is not None:
+                    # OpenAI STT only when local whisper gave little/no speech.
+                    local_chars = len((spoken_local or "").strip())
+                    need_openai_stt = (
+                        recipe is None
+                        and audio_path is not None
+                        and local_chars < settings.local_stt_min_chars
+                    )
+                    if need_openai_stt:
                         try:
                             spoken = whisper_transcript(
                                 audio_path,
@@ -276,21 +361,24 @@ def _run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langu
                                 platform.value,
                                 type(exc).__name__,
                             )
+                    elif recipe is None and audio_path is not None and local_chars >= settings.local_stt_min_chars:
+                        logger.info(
+                            "extract stage=openai_transcribe_skipped job_id=%s local_chars=%d",
+                            job_id,
+                            local_chars,
+                        )
 
                 update_job(job_id, progress=60)
 
-                # Stage 4: visual analysis last resort.
+                # Stage 4: visual OCR last resort only.
                 if recipe is None:
                     reject_link_in_bio(media.title, media.description, transcript, video_text)
-                    remaining_budget = max(
-                        settings.max_job_cost_cents - meter.cents,
-                        settings.cost_ocr_cents_per_slide,
-                    )
+                    remaining_budget = max(settings.max_job_cost_cents - meter.cents, 0.0)
                     max_frames = max(
                         1,
                         min(
                             int(remaining_budget // max(settings.cost_ocr_cents_per_slide, 0.01)),
-                            48,
+                            settings.max_vision_frames,
                         ),
                     )
                     try:
@@ -320,7 +408,7 @@ def _run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langu
                         text.strip() for text in (media.title, media.description, video_text or "")
                     ):
                         raise ExtractError(RECIPE_UNDETERMINED_ERROR)
-                    raise ExtractError(RECIPE_INCOMPLETE_ERROR)
+                    raise ExtractError(reject_reasons[-1] if reject_reasons else RECIPE_INCOMPLETE_ERROR)
 
                 cover_url = choose_video_cover_url(media)
                 if cover_url:
@@ -524,7 +612,7 @@ def _mark_job_failed(job_id: UUID, error: str, *, cost_cents: float = 0.0) -> No
             status=JobStatus.failed.value,
             progress=0,
             lease_until=None,
-            error=error[:1000],
+            error=canonicalize_job_error(error)[:1000],
             cost_cents=cost_cents,
         )
     except Exception:

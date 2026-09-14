@@ -5,7 +5,7 @@ Backend: extract recipes from TikTok / YouTube / Instagram / Facebook.
 - **Cache** by normalized URL (no duplicate OpenAI calls)
 - **Postgres** on the VPS (users, recipes, usage)
 - **Free:** 1 recipe / week
-- **Pro:** unlimited with fair-use (keep ≥20% margin)
+- **Pro:** unlimited with fair-use (keep ≥40% margin)
 - **Admin:** `/dashboard` — users, recipes, jobs, usage, Postgres size
 
 ## Stack

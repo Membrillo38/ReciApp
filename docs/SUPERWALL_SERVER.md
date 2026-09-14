@@ -31,7 +31,7 @@ Target packaging: **yearly (default CTA) + weekly (anchor)**.
 
 Apple: **one list price per product ID**. Real price A/B = **clone SKUs** (e.g. `reciapp_wk_699`, `reciapp_wk_999`, `reciapp_an_3499_3trial`, `reciapp_an_4999_3trial`) and let Superwall assign arms. Server does not need a deploy when you change which arm wins — webhook writes whatever `price` Apple/Superwall send.
 
-Server fair-use: `subscription_price_cents` stores the **period** list price; `pro_monthly_price_cents` stores **monthlyized** revenue (`weekly × 52/12`, `yearly ÷ 12`). OpenAI budget = that monthly figure × (1 − margin). Cancellation / billing_issue past `expirationAt` revoke Pro.
+Server fair-use: `subscription_price_cents` stores the **period** list price; `pro_monthly_price_cents` stores **monthlyized** revenue (`weekly × 52/12`, `yearly ÷ 12`). OpenAI budget = that monthly figure × (1 − margin); default margin is **40%**. Cancellation / billing_issue past `expirationAt` revoke Pro.
 
 ## 1. App Store Connect (same product IDs as Superwall)
 

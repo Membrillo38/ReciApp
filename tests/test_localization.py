@@ -54,16 +54,21 @@ def test_recipe_prompt_requires_target_language():
     prompt = build_recipe_prompt("German", "{}")
     assert "in German" in prompt
     assert "title, description, ingredient names" in prompt
+    assert "to taste" in prompt
+    assert "Never use '-', '—'" in prompt
 
 
 def test_fallback_recipe_copy_is_localized():
-    from app.localization import OPTIONAL_SECTION_NAMES
+    from app.localization import OPTIONAL_SECTION_NAMES, TO_TASTE_QUANTITIES, to_taste_quantity
 
     assert untitled_recipe_name("ja") == "無題のレシピ"
     assert ingredient_section_name("fr-FR") == "Ingrédients"
+    assert to_taste_quantity("es-ES") == "al gusto"
+    assert to_taste_quantity("it") == "q.b."
     assert set(SUPPORTED_LANGUAGE_CODES) == set(UNTITLED_RECIPE_NAMES)
     assert set(SUPPORTED_LANGUAGE_CODES) == set(INGREDIENT_SECTION_NAMES)
     assert set(SUPPORTED_LANGUAGE_CODES) == set(OPTIONAL_SECTION_NAMES)
+    assert set(SUPPORTED_LANGUAGE_CODES) == set(TO_TASTE_QUANTITIES)
 
 
 @pytest.mark.skipif(not Path("IosAPP/ReciApp").is_dir(), reason="Ignored iOS sources unavailable in backend-only checkout")

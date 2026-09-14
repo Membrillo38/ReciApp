@@ -62,6 +62,7 @@ from app.models import (
 from app.pipeline import run_extract_job, run_translation_job
 from app.quota import assert_can_extract, get_quota, record_usage
 from app.job_guard import claim as claim_job, release as release_job, try_claim as try_claim_job
+from app.job_errors import STALE_JOB, localize_job_error
 from app.localization import normalize_language
 from app.security import (
     audit_security_event,
@@ -137,7 +138,7 @@ app.add_middleware(
 )
 app.include_router(dashboard_router)
 
-_STALE_JOB_ERROR = "Job expired before completion. Retry the import."
+_STALE_JOB_ERROR = STALE_JOB
 
 
 def _as_uuid(value: object) -> UUID:
@@ -943,7 +944,7 @@ def get_job_status(
         cache_hit=bool(row.get("cache_hit")),
         recipe=recipe,
         recipe_id=_as_uuid(row["recipe_id"]) if row.get("recipe_id") else None,
-        error=row.get("error"),
+        error=localize_job_error(row.get("error"), language) if row.get("error") else None,
         progress=int(row.get("progress") or 0),
         next_job_id=next_job_id,
     )

@@ -10,23 +10,34 @@ from pydantic import ValidationError
 from app.config import settings
 from app.costing import estimate_miss_cost_cents, record_chat_usage
 from app.extract import ExtractError
+from app.job_errors import (
+    LINK_IN_BIO,
+    RECIPE_INCOMPLETE,
+    RECIPE_NO_INGREDIENTS,
+    RECIPE_NO_METHOD,
+    RECIPE_UNDETERMINED,
+)
 from app.localization import (
     build_recipe_prompt,
     ingredient_section_name,
     language_name,
     normalize_language,
     optional_section_name,
+    to_taste_quantity,
     untitled_recipe_name,
 )
 from app.models import Ingredient, IngredientSection, Platform, Recipe, RecipeTip, Step
 
 logger = logging.getLogger(__name__)
 
-RECIPE_UNDETERMINED_ERROR = "Could not determine a recipe from this video."
-RECIPE_INCOMPLETE_ERROR = "Could not extract a complete recipe from this video."
-LINK_IN_BIO_ERROR = "Recipe link in bio. Open the creator profile bio for the full recipe."
+# Back-compat aliases for imports across pipeline/tests.
+RECIPE_UNDETERMINED_ERROR = RECIPE_UNDETERMINED
+RECIPE_INCOMPLETE_ERROR = RECIPE_INCOMPLETE
+RECIPE_NO_INGREDIENTS_ERROR = RECIPE_NO_INGREDIENTS
+RECIPE_NO_METHOD_ERROR = RECIPE_NO_METHOD
+LINK_IN_BIO_ERROR = LINK_IN_BIO
 _MIN_RECIPE_CONFIDENCE = 0.7
-_BLANK_VALUES = {"", "null", "none", "n/a", "nil", "undefined", "-"}
+_BLANK_VALUES = {"", "null", "none", "n/a", "nil", "undefined", "-", "—", "–", "−", "--", "---"}
 _TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
 _OPTIONAL_MARKER_RE = re.compile(
     r"(?i)(?:\s*[\(\[]\s*)?(?:optional|opcional(?:es)?|optionnel(?:le)?|opzionale|opcjonalnie)"
@@ -207,12 +218,20 @@ def build_recipe(
     language_code: str = "en-US",
     carousel_image_urls: list[str] | None = None,
     require_complete: bool = True,
+    reject_reasons: list[str] | None = None,
 ) -> Recipe | None:
     if not settings.openai_api_key:
         raise ExtractError("OPENAI_API_KEY is not configured")
 
     language_code = normalize_language(language_code)
     target_language = language_name(language_code)
+
+    def _reject(reason: str) -> None:
+        if reject_reasons is None:
+            return
+        reject_reasons.clear()
+        reject_reasons.append(reason)
+
     payload = {
         "platform": platform.value,
         "title": title,
@@ -255,7 +274,17 @@ def build_recipe(
         for section in ingredient_sections
         for ingredient in section.ingredients
     ]
-    if not ingredient_sections or not steps or confidence < _MIN_RECIPE_CONFIDENCE:
+    if not ingredient_sections and not steps:
+        _reject(RECIPE_UNDETERMINED_ERROR)
+        return None
+    if not ingredient_sections:
+        _reject(RECIPE_NO_INGREDIENTS_ERROR)
+        return None
+    if not steps:
+        _reject(RECIPE_NO_METHOD_ERROR)
+        return None
+    if confidence < _MIN_RECIPE_CONFIDENCE:
+        _reject(RECIPE_INCOMPLETE_ERROR)
         return None
     try:
         recipe = Recipe(
@@ -280,12 +309,20 @@ def build_recipe(
             language_code=language_code,
         )
     except (KeyError, TypeError, ValueError, ValidationError):
+        _reject(RECIPE_INCOMPLETE_ERROR)
         return None
     if require_complete and not recipe_is_complete(
         recipe,
         is_complete=is_complete,
         blocking_gaps=blocking_gaps,
     ):
+        gap_blob = " ".join(material_blocking_gaps(blocking_gaps)).lower()
+        if any(token in gap_blob for token in ("ingredient", "ingrediente", "zutaten", "matériau", "material")):
+            _reject(RECIPE_NO_INGREDIENTS_ERROR)
+        elif any(token in gap_blob for token in ("step", "method", "paso", "étape", "anweisung", "istruzione")):
+            _reject(RECIPE_NO_METHOD_ERROR)
+        else:
+            _reject(RECIPE_INCOMPLETE_ERROR)
         return None
     return recipe
 
@@ -410,11 +447,17 @@ def power_up_ingredient_sections(
     language_code = normalize_language(language_code)
     default_title = ingredient_section_name(language_code)
     optional_title = optional_section_name(language_code)
+    taste = to_taste_quantity(language_code)
 
     rebuilt: list[IngredientSection] = []
     current_title = default_title
     current: list[Ingredient] = []
     optional_bucket: list[Ingredient] = []
+
+    def _with_taste(ingredient: Ingredient) -> Ingredient:
+        if ingredient.quantity or ingredient.unit:
+            return ingredient
+        return Ingredient(name=ingredient.name, quantity=taste, unit=None)
 
     def flush_current() -> None:
         nonlocal current
@@ -454,6 +497,7 @@ def power_up_ingredient_sections(
             cleaned, marked_optional = _strip_optional_marker(ingredient)
             if not cleaned.name.strip():
                 continue
+            cleaned = _with_taste(cleaned)
             if route_all_optional or marked_optional:
                 optional_bucket.append(cleaned)
             else:
@@ -626,6 +670,11 @@ def translate_recipe(recipe: Recipe, target_language_code: str) -> Recipe:
         raise ExtractError("Translated recipe output failed validation") from exc
 
 
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    name = type(exc).__name__
+    return name == "RateLimitError" or "RateLimit" in name
+
+
 def _request_structured_recipe(messages: list[dict]) -> dict:
     client = OpenAI(api_key=settings.openai_api_key)
     last_error: Exception | None = None
@@ -648,6 +697,9 @@ def _request_structured_recipe(messages: list[dict]) -> dict:
         except Exception as exc:
             logger.warning("recipe_model attempt=%d error_type=%s", attempt + 1, type(exc).__name__)
             last_error = exc
+            # Rate limits burn money on retries; fail closed after one shot.
+            if _is_rate_limit_error(exc):
+                break
             continue
         record_chat_usage(
             response,

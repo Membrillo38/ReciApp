@@ -214,6 +214,60 @@ INGREDIENT_SECTION_NAMES: dict[str, str] = {
     "vi": "Nguyên liệu",
 }
 
+# Shown when a spice/sauce/ingredient has no stated amount (never "-" / "—").
+TO_TASTE_QUANTITIES: dict[str, str] = {
+    "ar": "حسب الرغبة",
+    "bn": "স্বাদমতো",
+    "ca": "al gust",
+    "zh-Hans": "适量",
+    "zh-Hant": "適量",
+    "hr": "po ukusu",
+    "cs": "dle chuti",
+    "da": "efter smag",
+    "nl": "naar smaak",
+    "en-AU": "to taste",
+    "en-CA": "to taste",
+    "en-GB": "to taste",
+    "en-US": "to taste",
+    "fi": "maun mukaan",
+    "fr-FR": "selon le goût",
+    "fr-CA": "au goût",
+    "de": "nach Geschmack",
+    "el": "κατά βούληση",
+    "gu": "સ્વાદ અનુસાર",
+    "he": "לפי הטעם",
+    "hi": "स्वादानुसार",
+    "hu": "ízlés szerint",
+    "id": "secukupnya",
+    "it": "q.b.",
+    "ja": "適量",
+    "kn": "ರುಚಿಗೆ ತಕ್ಕಂತೆ",
+    "ko": "기호에 따라",
+    "ms": "secukup rasa",
+    "ml": "രുചിക്കനുസരിച്ച്",
+    "mr": "चवीनुसार",
+    "nb": "etter smak",
+    "or": "ସ୍ୱାଦ ଅନୁସାରେ",
+    "pl": "do smaku",
+    "pt-BR": "a gosto",
+    "pt-PT": "a gosto",
+    "pa": "ਸਵਾਦ ਅਨੁਸਾਰ",
+    "ro": "după gust",
+    "ru": "по вкусу",
+    "sk": "podľa chuti",
+    "sl": "po okusu",
+    "es-MX": "al gusto",
+    "es-ES": "al gusto",
+    "sv": "efter smak",
+    "ta": "சுவைக்கேற்ப",
+    "te": "రుచికి తగ్గట్టు",
+    "th": "ตามชอบ",
+    "tr": "damak tadına göre",
+    "uk": "за смаком",
+    "ur": "ذائقے کے مطابق",
+    "vi": "vừa ăn",
+}
+
 OPTIONAL_SECTION_NAMES: dict[str, str] = {
     "ar": "اختياري",
     "bn": "ঐচ্ছিক",
@@ -411,6 +465,10 @@ def optional_section_name(code: str) -> str:
     return OPTIONAL_SECTION_NAMES[normalize_language(code)]
 
 
+def to_taste_quantity(code: str) -> str:
+    return TO_TASTE_QUANTITIES[normalize_language(code)]
+
+
 def build_recipe_prompt(target_language: str, source_json: str) -> str:
     return (
         "Turn the following social video content into a structured cooking recipe.\n"
@@ -420,8 +478,12 @@ def build_recipe_prompt(target_language: str, source_json: str) -> str:
         "Merge ALL evidence: description, metadata, captions/subtitles, spoken transcript, and "
         "on-screen visual notes. Prefer precise overlay quantities when the same ingredient appears "
         "in multiple sources. Do not drop spoken-only or overlay-only ingredients.\n"
-        "If quantities are missing from the evidence, set quantity/unit null and list the field in "
-        "missing_fields. Missing quantities alone do NOT make the recipe incomplete.\n"
+        "If a spice, seasoning, sauce, garnish, or other ingredient has no stated amount, set "
+        f"quantity to the localized equivalent of 'to taste' in {target_language} (for example "
+        "'al gusto', 'q.b.', 'nach Geschmack') and unit null. Never use '-', '—', '–', 'n/a', or "
+        "similar placeholders for missing amounts. If a main ingredient amount is truly unknown, "
+        "also use that localized 'to taste' quantity rather than null. Missing quantities alone "
+        "do NOT make the recipe incomplete; still list them in missing_fields when helpful.\n"
         "Group ingredients into the distinct components or headings present in the source, such as "
         "'Parmesan Chicken', 'Creamy Sauce', 'Dough', 'Filling', or the localized equivalent of "
         "'Optional'. Keep each ingredient in its original component; do not merge separate "

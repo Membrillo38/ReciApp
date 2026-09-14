@@ -139,7 +139,7 @@ def _ocr_image(
                 ],
             }
         ],
-        max_tokens=500,
+        max_tokens=settings.ocr_slide_max_tokens,
     )
     record_chat_usage(
         response,
@@ -159,6 +159,45 @@ def _ocr_image(
     return chunk
 
 
+def ocr_one_slide(
+    *,
+    image_url: str,
+    slide_index: int,
+    on_attempt: Callable[[], None] | None = None,
+) -> str:
+    """OCR a single carousel slide. Raises ExtractError on hard failure."""
+    if not settings.openai_api_key:
+        raise ExtractError("OPENAI_API_KEY is not configured")
+    client = OpenAI(api_key=settings.openai_api_key)
+    try:
+        b64 = download_image_b64(image_url)
+    except Exception as exc:
+        logger.warning(
+            "extract stage=ocr_slide_download slide_index=%d error_type=%s",
+            slide_index,
+            type(exc).__name__,
+        )
+        raise ExtractError(f"Incomplete TikTok carousel: unreadable slides {slide_index}") from exc
+    if not b64:
+        raise ExtractError(f"Incomplete TikTok carousel: unreadable slides {slide_index}")
+    try:
+        return _ocr_image(
+            client,
+            b64=b64,
+            label=f"Slide {slide_index}",
+            on_attempt=on_attempt,
+        )
+    except ExtractError:
+        raise
+    except Exception as exc:
+        logger.warning(
+            "extract stage=ocr_slide_model slide_index=%d error_type=%s",
+            slide_index,
+            type(exc).__name__,
+        )
+        raise ExtractError(f"Incomplete TikTok carousel: unreadable slides {slide_index}") from exc
+
+
 def ocr_slides(
     slides: SlideInfo,
     max_images: int = MAX_CAROUSEL_SLIDES,
@@ -168,7 +207,6 @@ def ocr_slides(
     if not settings.openai_api_key:
         raise ExtractError("OPENAI_API_KEY is not configured")
 
-    client = OpenAI(api_key=settings.openai_api_key)
     limit = min(max_images, MAX_CAROUSEL_SLIDES)
     if slides.incomplete_reason:
         raise ExtractError(f"Incomplete TikTok carousel: {slides.incomplete_reason}")
@@ -181,33 +219,10 @@ def ocr_slides(
 
     for idx, url in enumerate(slides.image_urls, start=1):
         try:
-            b64 = download_image_b64(url)
-        except Exception as exc:
-            logger.warning(
-                "extract stage=ocr_slide_download slide_index=%d error_type=%s",
-                idx,
-                type(exc).__name__,
-            )
-            failures.append(idx)
-            continue
-        if not b64:
-            failures.append(idx)
-            continue
-        try:
             parts.append(
-                _ocr_image(
-                    client,
-                    b64=b64,
-                    label=f"Slide {idx}",
-                    on_attempt=on_attempt,
-                )
+                ocr_one_slide(image_url=url, slide_index=idx, on_attempt=on_attempt)
             )
-        except Exception as exc:
-            logger.warning(
-                "extract stage=ocr_slide_model slide_index=%d error_type=%s",
-                idx,
-                type(exc).__name__,
-            )
+        except ExtractError:
             failures.append(idx)
 
     if failures:
@@ -262,7 +277,7 @@ def _ocr_overlay_batch(
     response = client.chat.completions.create(
         model=settings.vision_model,
         messages=[{"role": "user", "content": content}],
-        max_tokens=2000,
+        max_tokens=settings.ocr_overlay_max_tokens,
     )
     record_chat_usage(
         response,

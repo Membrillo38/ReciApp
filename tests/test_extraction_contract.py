@@ -728,15 +728,16 @@ def test_failed_carousel_ocr_settles_every_attempted_visual_cost(monkeypatch):
     slides = SlideInfo("Recipe", "", None, ["https://cdn.example/1.jpg"], total_image_count=1)
     monkeypatch.setattr(pipeline, "detect_platform", lambda url: Platform.tiktok)
     monkeypatch.setattr(pipeline, "fetch_tiktok_slides", lambda url: slides)
+    monkeypatch.setattr(pipeline, "build_recipe", lambda **kwargs: None)
 
-    def fail_ocr(info, *, on_attempt):
+    def fail_ocr(*, image_url, slide_index, on_attempt):
         on_attempt()
         meter = get_cost_meter()
         if meter is not None:
             meter.add_fallback(settings.cost_ocr_cents_per_slide, kind="ocr")
-        raise extract.ExtractError("Incomplete TikTok carousel: unreadable slides 1")
+        raise extract.ExtractError(f"Incomplete TikTok carousel: unreadable slides {slide_index}")
 
-    monkeypatch.setattr(pipeline, "ocr_slides", fail_ocr)
+    monkeypatch.setattr(pipeline, "ocr_one_slide", fail_ocr)
     monkeypatch.setattr(pipeline, "update_job", lambda *args, **kwargs: jobs.append(kwargs))
     monkeypatch.setattr(pipeline, "settle_spend", lambda **kwargs: settled.append(kwargs))
     monkeypatch.setattr(pipeline, "record_usage", lambda **kwargs: None)
@@ -746,7 +747,9 @@ def test_failed_carousel_ocr_settles_every_attempted_visual_cost(monkeypatch):
     pipeline.run_extract_job(uuid4(), uuid4(), "https://www.tiktok.com/@cook/photo/1", "tiktok:1", "en-US")
 
     assert jobs[-1]["status"] == "failed"
-    assert jobs[-1]["error"].startswith("Incomplete TikTok carousel:")
+    assert jobs[-1]["error"] == (
+        "This TikTok carousel is incomplete. Try another link or a full recipe video."
+    )
     assert settled[-1]["actual_cents"] == settings.cost_ocr_cents_per_slide
 
 
@@ -777,7 +780,9 @@ def test_photo_without_complete_slide_hydration_never_falls_back_to_video_metada
     )
 
     assert jobs[-1]["status"] == "failed"
-    assert jobs[-1]["error"].startswith("Incomplete TikTok carousel:")
+    assert jobs[-1]["error"] == (
+        "This TikTok carousel is incomplete. Try another link or a full recipe video."
+    )
     assert settled[-1]["actual_cents"] == 0
 
 
@@ -1045,7 +1050,7 @@ def test_provider_error_payload_is_not_saved_as_job_error():
 
 def test_supported_source_bound_is_an_actionable_job_error():
     error = extract.ExtractError("Recipe source text exceeds supported bound")
-    assert _safe_job_error(error) == "Recipe source text exceeds supported bound"
+    assert _safe_job_error(error) == "This recipe source is too large to process."
 
 
 def test_tiktok_metadata_fallback_is_available_when_ytdlp_json_is_invalid():
@@ -1259,13 +1264,35 @@ def test_recipe_builder_keeps_named_ingredient_with_null_quantity():
         )
     )
     assert recipe is not None
-    assert [(item.name, item.quantity) for item in recipe.ingredients] == [("pasta", None)]
+    assert [(item.name, item.quantity) for item in recipe.ingredients] == [("pasta", "to taste")]
 
 
 def test_undetermined_recipe_is_an_actionable_job_error():
     error = extract.ExtractError("Could not determine a recipe from this video.")
     assert _safe_job_error(error) == "Could not determine a recipe from this video."
 
+
+def test_blank_quantity_placeholders_become_to_taste():
+    from app.recipe_builder import _usable_ingredient_sections
+
+    sections = _usable_ingredient_sections(
+        [
+            {
+                "title": "Ingredients",
+                "ingredients": [
+                    {"name": "salt", "quantity": "—", "unit": None},
+                    {"name": "paprika", "quantity": "-", "unit": None},
+                    {"name": "flour", "quantity": "1", "unit": "cup"},
+                ],
+            }
+        ],
+        language_code="es-ES",
+    )
+    by_name = {item.name: item for section in sections for item in section.ingredients}
+    assert by_name["salt"].quantity == "al gusto"
+    assert by_name["paprika"].quantity == "al gusto"
+    assert by_name["flour"].quantity == "1"
+    assert by_name["flour"].unit == "cup"
 
 def test_overlay_sample_times_cover_sequential_ingredient_cards():
     times = extract.overlay_sample_times(148.3)
