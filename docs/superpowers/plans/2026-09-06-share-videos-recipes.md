@@ -1,3 +1,5 @@
+> **Hosting note:** ReciApp now runs on the **VPS (Coolify + Postgres)**. Ignore Supabase / Render steps in this archived document.
+
 # Share Videos to Recipes Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -17,7 +19,7 @@
 - Keep supported platforms TikTok, YouTube, Instagram, and Facebook.
 - Keep remote recipe data authoritative; only local import handoff state may be persisted.
 - Preserve existing unrelated working-tree changes.
-- Do not place API keys or Supabase service credentials in the extension.
+- Do not place API keys or Postgres service credentials in the extension.
 
 ### Task 1: Main-app share URL handoff
 

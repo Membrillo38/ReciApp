@@ -1,3 +1,5 @@
+> **Hosting note:** ReciApp now runs on the **VPS (Coolify + Postgres)**. Ignore Supabase / Render steps in this archived document.
+
 # ReciApp localization and AI language spec
 
 ## Goal

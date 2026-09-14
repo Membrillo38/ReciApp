@@ -1,3 +1,5 @@
+> **Hosting note:** ReciApp now runs on the **VPS (Coolify + Postgres)**. Ignore Supabase / Render steps in this archived document.
+
 # ReciApp Localization and AI Language Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -6,7 +8,7 @@
 
 **Architecture:** Add one shared iOS language registry and local persistence, inject its selected `Locale` at the app root, and keep localized copy in SwiftUI's standard localization path. Extend the extract request with a normalized language code; propagate it through extraction and shared translation jobs. Keep one base recipe per source URL and one global translation payload per recipe-language pair.
 
-**Tech Stack:** SwiftUI iOS 17, `@AppStorage`, `Locale`, Xcode String Catalog, FastAPI/Pydantic, OpenAI structured output, Supabase Postgres migration.
+**Tech Stack:** SwiftUI iOS 17, `@AppStorage`, `Locale`, Xcode String Catalog, FastAPI/Pydantic, OpenAI structured output, Postgres migration.
 
 **Spec:** `docs/superpowers/specs/2026-09-06-localization.md`
 
@@ -96,7 +98,7 @@
 - Modify: `app/pipeline.py`
 - Modify: `app/recipe_builder.py`
 - Modify: `app/store.py`
-- Create: `supabase/migrations/006_recipe_language.sql`
+- Create: `migrations/006_recipe_language.sql`
 - Test: `tests/test_localization.py`
 
 **Interfaces:**
@@ -129,7 +131,7 @@
 **Files:**
 - Verify: `IosAPP/ReciApp/**/*.swift`
 - Verify: `app/**/*.py`
-- Verify: `supabase/migrations/006_recipe_language.sql`
+- Verify: `migrations/006_recipe_language.sql`
 
 - [x] **Step 1: Run Python tests and static checks.**
 
@@ -147,4 +149,4 @@
 
 - [x] **Step 4: Report integration boundary.**
 
-  State clearly whether Supabase migration and authenticated server extraction were executed live; do not claim end-to-end AI proof from a local build alone.
+  State clearly whether Postgres migration and authenticated server extraction were executed live; do not claim end-to-end AI proof from a local build alone.

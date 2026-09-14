@@ -193,7 +193,7 @@ def process_signed_notification(signed_payload: str) -> dict:
             "status": "received",
         }):
             return {"ok": True, "skipped": "duplicate", "event_id": notification_id}
-        outcome = _apply_notification_to_profile(user_uuid, "apple:" + notification_id, event_at, update) if user_uuid else "no_supabase_user_id"
+        outcome = _apply_notification_to_profile(user_uuid, "apple:" + notification_id, event_at, update) if user_uuid else "no_user_id"
         _mark_notification(notification_id, "processed" if outcome in {"updated", "duplicate"} else "skipped")
     except Exception:
         try:

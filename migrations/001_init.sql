@@ -1,5 +1,5 @@
 -- ReciApp self-hosted PostgreSQL bootstrap schema.
--- This file consolidates the useful public objects from the legacy Supabase migrations.
+-- Bootstrap schema for ReciApp self-hosted Postgres on the VPS.
 
 create extension if not exists pgcrypto;
 

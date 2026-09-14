@@ -170,7 +170,7 @@ def test_ios_polling_covers_backend_media_timeout_with_margin():
 
 
 @pytest.mark.skipif(not Path("IosAPP/ReciApp").is_dir(), reason="Ignored iOS sources unavailable in backend-only checkout")
-def test_ios_warms_render_before_authenticated_requests():
+def test_ios_warms_backend_before_authenticated_requests():
     client = Path("IosAPP/ReciApp/Services/APIClient.swift").read_text(encoding="utf-8")
     view_model = Path("IosAPP/ReciApp/ViewModels/AppViewModel.swift").read_text(encoding="utf-8")
     app = Path("IosAPP/ReciApp/ReciAppApp.swift").read_text(encoding="utf-8")

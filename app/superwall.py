@@ -30,12 +30,24 @@ _PRO_STAYS_ON = {"cancellation", "billing_issue", "subscription_paused", "produc
 _SENSITIVE_KEYS = {"authorization", "access_token", "id_token", "password", "secret", "signature", "api_key", "apikey"}
 
 
-def extract_supabase_user_id(payload: dict) -> UUID | None:
+def extract_app_user_id(payload: dict) -> UUID | None:
+    """Resolve ReciApp user UUID from Superwall payload attributes / app user id.
+
+    Also accepts legacy `supabase_user_id` attribute keys from older iOS builds.
+    """
     data = payload.get("data") or {}
     candidates: list[str] = []
     attrs = data.get("userAttributes") or payload.get("userAttributes") or {}
     if isinstance(attrs, dict):
-        for key in ("supabase_user_id", "user_id", "supabaseUserId", "userId"):
+        for key in (
+            "user_id",
+            "userId",
+            "app_user_id",
+            "appUserId",
+            # Legacy Superwall attribute name from the old hosted Auth era.
+            "supabase_user_id",
+            "supabaseUserId",
+        ):
             if attrs.get(key):
                 candidates.append(str(attrs[key]))
     for key in ("originalAppUserId", "appUserId", "appAccountToken"):
@@ -156,7 +168,7 @@ def _apply_superwall_event(payload: dict, event_id: str | None = None) -> dict:
     if not resolved_event_id:
         raise ValueError("Webhook event id required")
     event_at = _event_datetime(payload)
-    user_id = extract_supabase_user_id(payload)
+    user_id = extract_app_user_id(payload)
     result = {
         "event": event_name,
         "user_id": str(user_id) if user_id else None,
@@ -181,8 +193,8 @@ def _apply_superwall_event(payload: dict, event_id: str | None = None) -> dict:
         result["skipped"] = "stale_event"
         return result
     if not user_id:
-        _mark_event(resolved_event_id, status="skipped", error="no_supabase_user_id")
-        result["skipped"] = "no_supabase_user_id"
+        _mark_event(resolved_event_id, status="skipped", error="no_user_id")
+        result["skipped"] = "no_user_id"
         return result
     if event_name not in _PRO_ON and event_name not in _PRO_OFF and event_name not in _PRO_STAYS_ON:
         _mark_event(resolved_event_id, status="skipped", error=f"unhandled_event:{event_name}")

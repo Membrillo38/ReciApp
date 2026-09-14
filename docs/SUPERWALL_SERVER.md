@@ -121,7 +121,7 @@ SUPERWALL_APPLICATION_ID=54783
 PUBLIC_API_BASE_URL=https://51-255-43-100.sslip.io
 ```
 
-Confirm the public URL is still `https://51-255-43-100.sslip.io`. If it changes, update the Superwall webhook URL (do not create a second endpoint). Old Render host `reciapp-4ih5.onrender.com` is dead — never point Superwall there.
+Confirm the public URL is still `https://51-255-43-100.sslip.io`. If it changes, update the Superwall webhook URL (do not create a second endpoint). Point Superwall only at the VPS Coolify host — never at any old hosted URL.
 
 ## 5. Smoke test
 

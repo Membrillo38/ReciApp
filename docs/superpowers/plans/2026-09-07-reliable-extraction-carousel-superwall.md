@@ -1,3 +1,5 @@
+> **Hosting note:** ReciApp now runs on the **VPS (Coolify + Postgres)**. Ignore Supabase / Render steps in this archived document.
+
 # Reliable Extraction, Carousels, and Superwall Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -6,7 +8,7 @@
 
 **Architecture:** Keep one canonical recipe cache row per normalized source URL. Make extraction and translation jobs idempotent, recoverable, and language-aware at their API boundary. Persist a bounded list of carousel image URLs with the recipe, render it through a native SwiftUI paging view, and keep subscription identity in one `SubscriptionService` owned by the authenticated app session.
 
-**Tech Stack:** FastAPI, Pydantic, Supabase/Postgres, OpenAI structured output, yt-dlp, SwiftUI iOS 17, Supabase Swift, SuperwallKit, `xcodebuild`, `xcrun simctl`.
+**Tech Stack:** FastAPI, Pydantic, Postgres, OpenAI structured output, yt-dlp, SwiftUI iOS 17, Apple Sign In / JWT client, SuperwallKit, `xcodebuild`, `xcrun simctl`.
 
 **Spec:** `docs/superpowers/specs/2026-09-07-reliable-extraction-carousel-superwall.md`
 
@@ -16,7 +18,7 @@
 - Keep one base recipe per `source_url_norm`; keep translations keyed by `(recipe_id, language_code)`.
 - Keep iOS deployment target `17.0` and bundle identifier `com.membri.reciapp`.
 - Never log credentials, raw transcripts, recipe text, or full server payloads.
-- No remote Supabase DDL in this rollout; verify existing migrations read-only.
+- No remote Postgres DDL in this rollout; verify existing migrations read-only.
 - No Liquid Glass, card/page borders, or strokes in the iOS UI.
 
 ---
@@ -65,7 +67,7 @@ Keep extraction jobs globally deduplicated by normalized source URL, but do not 
 
 - [ ] **Step 3: Recover unique recipe races.**
 
-In `upsert_recipe`, catch only the Supabase unique violation for `source_url_norm`, re-read `get_recipe_by_norm`, and return the existing row. Re-raise unrelated database errors. Ensure the winning recipe ID is used for `save_user_recipe`, job completion, and usage settlement.
+In `upsert_recipe`, catch only the Postgres unique violation for `source_url_norm`, re-read `get_recipe_by_norm`, and return the existing row. Re-raise unrelated database errors. Ensure the winning recipe ID is used for `save_user_recipe`, job completion, and usage settlement.
 
 - [ ] **Step 4: Make job completion and stale-job behavior deterministic.**
 
@@ -73,7 +75,7 @@ Add `created_at`/`updated_at` age checks in `get_job_status`. If a pending or pr
 
 - [ ] **Step 5: Add request-flow regression tests.**
 
-Cover cache hit, concurrent cache miss, different-language request during an active base job, non-owner access, storage outage, and stale job. Mock Supabase at the store boundary; assert no duplicate recipe insert and no duplicate `user_recipes` link.
+Cover cache hit, concurrent cache miss, different-language request during an active base job, non-owner access, storage outage, and stale job. Mock Postgres at the store boundary; assert no duplicate recipe insert and no duplicate `user_recipes` link.
 
 - [ ] **Step 6: Run backend verification.**
 
@@ -146,7 +148,7 @@ Run focused extraction tests, all backend test functions, compileall with `PYTHO
 ### Task 3: Persist and expose carousel images
 
 **Files:**
-- Create: `supabase/migrations/010_recipe_carousel_images.sql`
+- Create: `migrations/010_recipe_carousel_images.sql`
 - Modify: `app/models.py`
 - Modify: `app/tiktok_slides.py`
 - Modify: `app/store.py`
@@ -179,7 +181,7 @@ Expected: FAIL because database/model/client field does not exist.
 
 - [ ] **Step 2: Create additive migration file.**
 
-Use `supabase migration new recipe_carousel_images` if the CLI is available; otherwise write the exact reviewed migration file only after confirming no live DDL is being applied. Add `carousel_image_urls jsonb not null default '[]'::jsonb` to `public.recipes`, keep RLS unchanged, and add a JSON-array length check only if compatible with existing rows. Do not run `supabase db push` in this task.
+Use `supabase migration new recipe_carousel_images` if the CLI is available; otherwise write the exact reviewed migration file only after confirming no live DDL is being applied. Add `carousel_image_urls jsonb not null default '[]'::jsonb` to `public.recipes`, keep RLS unchanged, and add a JSON-array length check only if compatible with existing rows. Do not run `psql migration apply` in this task.
 
 - [ ] **Step 3: Store carousel URLs safely.**
 
@@ -195,7 +197,7 @@ Run focused tests, SQL text checks for additive column/default/RLS safety, compi
 
 ---
 
-### Task 4: Render carousel UI and stabilize iOS request lifecycle
+### Task 4: VPS carousel UI and stabilize iOS request lifecycle
 
 **Files:**
 - Create: `IosAPP/ReciApp/Views/RecipeCarouselView.swift`
@@ -304,7 +306,7 @@ Build without requiring StoreKit purchase credentials. Use simulator UI to verif
 - Modify: `docs/SECURITY_RUNBOOK.md`
 
 **Interfaces:**
-- `scripts/e2e_extract.sh` accepts `API`, `API_KEY`, Supabase credentials, source URL, and language without printing secrets.
+- `scripts/e2e_extract.sh` accepts `API`, `API_KEY`, DB credentials, source URL, and language without printing secrets.
 - `scripts/e2e_matrix.sh` executes bounded repeated cache, language, carousel, and failure-retry cases.
 
 - [ ] **Step 1: Add matrix cases for supplied sources.**
@@ -313,7 +315,7 @@ Run each supplied TikTok URL through URL normalization, one warm cache request, 
 
 - [ ] **Step 2: Verify live server and database read-only.**
 
-Check `/health`, latest Render deploy/logs/metrics after workspace confirmation, Supabase `list_migrations`, tables, job counts, and request latency. Do not alter Render env vars or apply Supabase DDL automatically.
+Check `/health`, latest VPS deploy/logs/metrics after workspace confirmation, Postgres `list_migrations`, tables, job counts, and request latency. Do not alter VPS env vars or apply Postgres DDL automatically.
 
 - [ ] **Step 3: Run iOS simulator matrix.**
 
@@ -325,4 +327,4 @@ Run focused and full backend tests, compileall with writable pycache, `git diff 
 
 - [ ] **Step 5: Stop only when evidence is complete.**
 
-Report fixed causes, exact tests, supplied URL results, simulator evidence, remaining external prerequisites, and files changed. Mark goal complete only when required implementation and verifications pass; leave goal active if live Render or CoreSimulator access remains blocked.
+Report fixed causes, exact tests, supplied URL results, simulator evidence, remaining external prerequisites, and files changed. Mark goal complete only when required implementation and verifications pass; leave goal active if live VPS or CoreSimulator access remains blocked.

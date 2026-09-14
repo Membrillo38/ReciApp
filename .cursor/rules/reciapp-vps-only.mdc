@@ -1,0 +1,15 @@
+---
+description: ReciApp hosting is VPS only — never Supabase or Render
+alwaysApply: true
+---
+
+# ReciApp hosting
+
+ReciApp-Server runs on the **VPS** (Coolify + self-hosted Postgres + Redis if configured).
+
+- Do **not** use Supabase MCP, Supabase CLI, `supabase/` folders, or `*.supabase.co` for this project.
+- Do **not** use Render MCP, `render.yaml`, or `*.onrender.com` for this project.
+- Database = `DATABASE_URL` Postgres on the VPS. Deploy = Coolify Docker image from this repo.
+- Public API = `https://51-255-43-100.sslip.io` (or current Coolify/Traefik host).
+- Reset scripts must keep blocking `supabase.co` / `onrender.com` hosts.
+- Historical docs under `docs/superpowers/` may mention old hosting; treat them as obsolete for ops.

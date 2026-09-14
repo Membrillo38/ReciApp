@@ -155,7 +155,7 @@ python3 scripts/authenticated_readiness.py \
 
 Pass criteria: `/health` 200, `/ready` 200, all 100 library and 100 profile reads return 200, no missing request IDs, and each hot library/profile p95 at most 800 ms. Exact host must match `RECIAPP_EXPECTED_API_HOST`; redirects are disabled before authorization is attached. The runner fails closed when any criterion is missed and never prints tokens or response bodies.
 
-Existing JWTs may still pass signature verification until expiry. Backend `get_user` plus required profile existence must reject deleted users. Separately verify direct Supabase Data API/RLS access with an old token and confirm old Auth sessions cannot refresh. Do not describe signature rejection as proven.
+Existing JWTs may still pass signature verification until expiry. Backend `get_user` plus required profile existence must reject deleted users. Confirm old sessions cannot refresh against the VPS API. Do not describe signature rejection as proven.
 
 Before reopening traffic, manually run and record:
 

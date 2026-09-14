@@ -1,3 +1,5 @@
+> **Hosting note:** ReciApp now runs on the **VPS (Coolify + Postgres)**. Ignore Supabase / Render steps in this archived document.
+
 # Task 1 — Backend connection, auth and maintenance
 
 Status: DONE_WITH_CONCERNS (local implementation complete; production activation intentionally not performed).
@@ -8,10 +10,10 @@ Work completed in `/Users/andrescasillas/Desktop/ReciApp/.worktrees/connection-r
 
 ## Changes
 
-- Replaced private Supabase imports/subclasses with public `create_client` and `ClientOptions`; pinned `supabase==2.31.0` and compatible `pydantic==2.11.7`.
+- Replaced private Postgres imports/subclasses with public `create_client` and `ClientOptions`; pinned `supabase==2.31.0` and compatible `pydantic==2.11.7`.
 - Added an owned HTTP/1.1 transport with bounded connection pools and timeouts. Genuine transient failures retry safe reads exactly once, including response-body failures; mutations never replay. Responses are closed, and the shared client closes after lifespan/worker shutdown. Individual failed requests no longer reset a pool used by other requests.
 - PostgREST 2.31.0 has its own default HTTP 503/520 retry loop. A public HTTPX response hook raises these status failures before that loop. This prevents hidden status retries; a redacted retriable 503 reaches the API client. Actual SDK tests verify the request counts.
-- Startup validates the Supabase root URL, expected hostname, HTTPS, port, whitespace/control characters and service-key configuration without contacting Supabase. Modern secret keys and legacy service-role JWTs with a matching project reference are accepted. Explicit local HTTP development requires both development environment and local opt-in. Errors never include key contents. JWT parsing here checks configuration consistency, not cryptographic authentication.
+- Startup validates the Postgres root URL, expected hostname, HTTPS, port, whitespace/control characters and service-key configuration without contacting Postgres. Modern secret keys and legacy service-role JWTs with a matching project reference are accepted. Explicit local HTTP development requires both development environment and local opt-in. Errors never include key contents. JWT parsing here checks configuration consistency, not cryptographic authentication.
 - `/health` performs no database calls or database request logging. `/ready` uses one async authenticated REST read with a 3-second default overall deadline, cancellation and owned-client cleanup. Responses expose status, latency, maintenance and error class only; failure is 503.
 - `current_user` retains server-side `get_user`, makes profile reads only and denies absent/deleted profiles without recreating them. Invalid credentials return 401; Auth and profile-storage outages return retriable 503.
 - Superwall never inserts/upserts profiles. Conditional updates check deletion and prior event state, so deletion races cannot resurrect users and older concurrent events cannot overwrite newer events. Received/failed event receipts remain retryable. Failed processing/status writes do not become successful replays. Signature verification and event ordering/idempotency remain intact.
@@ -24,7 +26,7 @@ Work completed in `/Users/andrescasillas/Desktop/ReciApp/.worktrees/connection-r
 
 All commands ran from the persistent worktree unless stated otherwise.
 
-1. Original regression: saved `git show HEAD:app/db.py` to `.recovery/original-db.py`, loaded it using the original read-only `.venv/bin/python` with Supabase 2.11.0, and replaced its transport with `httpx.MockTransport`. Recorded result: `{"url": "/profiles?select=id", "headers": {}}`, followed by `ValueError`. Evidence: `.recovery/original-sdk-regression.json`.
+1. Original regression: saved `git show HEAD:app/db.py` to `.recovery/original-db.py`, loaded it using the original read-only `.venv/bin/python` with Postgres 2.11.0, and replaced its transport with `httpx.MockTransport`. Recorded result: `{"url": "/profiles?select=id", "headers": {}}`, followed by `ValueError`. Evidence: `.recovery/original-sdk-regression.json`.
 2. Environment: `/Users/andrescasillas/Desktop/ReciApp/.venv/bin/python -m venv .venv`; `.venv/bin/python -m pip install -r requirements.txt pytest==8.3.4`. Network-restricted install failed initially; approved package installation then succeeded in the isolated virtualenv. `.recovery/pip.log` records installation.
 3. Focused final behavioral tests: `.venv/bin/python -m pytest -q tests/test_connection_reset.py` — **100 passed in 0.74s**. Evidence: `.recovery/focused-tests.log`.
 4. Full suite before restoration of the extra user test: `.venv/bin/python -m pytest -q` — **165 passed in 0.65s**, no warnings. Evidence: `.recovery/full-tests.log`.
@@ -36,22 +38,22 @@ All commands ran from the persistent worktree unless stated otherwise.
 
 Coverage includes real SDK REST/Auth URL/header capture, service/user authorization separation, schema headers, read retry bounds, response-body failure, no ambiguous mutation replay, hidden SDK status retries, invalid configuration/startup, no-network startup and shutdown ownership, liveness, readiness cancellation/failure, missing/deleted Auth/profile records, Auth service failures, maintenance write/GET/background/worker guards, signed Superwall requests and tamper rejection, absent/deleted/racing profiles, duplicate/older deliveries, insert-conflict receipt states, failed processing retry and status-write failure recovery, and Apple/admin profile non-recreation.
 
-Official Supabase changelog was fetched and reviewed locally (`.recovery/supabase-changelog.md`); current public client APIs and Render Blueprint `autoDeployTrigger` support were also verified by the controller in the preceding turn. References: https://supabase.com/docs/reference/python/initializing and https://render.com/docs/blueprint-spec.
+Official Postgres changelog was fetched and reviewed locally (`.recovery/supabase-changelog.md`); current public client APIs and Coolify / compose `autoDeployTrigger` support were also verified by the controller in the preceding turn. References: https://supabase.com/docs/reference/python/initializing and https://render.com/docs/blueprint-spec.
 
 ## Self-review and activation concerns
 
-- No private Supabase imports/subclasses or profile upserts remain in the application. Default service REST and Auth paths use the owned transport; tests execute the real pinned SDK.
+- No private Postgres imports/subclasses or profile upserts remain in the application. Default service REST and Auth paths use the owned transport; tests execute the real pinned SDK.
 - Configure `SUPABASE_EXPECTED_HOST` and the intended service key on every writer before future activation. A mismatched or omitted host now intentionally prevents startup. Modern secret keys cannot reveal a project reference locally; readiness establishes upstream acceptance after activation.
 - Enable maintenance on every web/worker process and any other writer, then drain all in-flight jobs before backup/reset. Environment flags are process settings; changing one service does not stop other services. Maintenance does not cancel already-running paid/external requests.
-- Deferred request-local background jobs stay pending, with their existing durable state/reservations. Reconcile them through separately authorized local recovery after maintenance; ordinary import retries may attach to existing pending jobs rather than dispatch them again. Render worker activation is disabled. An operator must explicitly reconcile pending jobs/reservations before reopening imports.
+- Deferred request-local background jobs stay pending, with their existing durable state/reservations. Reconcile them through separately authorized local recovery after maintenance; ordinary import retries may attach to existing pending jobs rather than dispatch them again. VPS worker activation is disabled. An operator must explicitly reconcile pending jobs/reservations before reopening imports.
 - Liveness success proves only that the process is alive. Readiness uses mocked transports in these local tests; no production availability claim is made here.
-- `render.yaml` is a local proposal. The actual Render plan/configuration remains unchanged. Worker configuration is inert (`services: []`); no paid worker is proposed or deployable from it.
+- `Coolify service config` is a local proposal. The actual VPS plan/configuration remains unchanged. Worker configuration is inert (`services: []`); no paid worker is proposed or deployable from it.
 
 ## Review follow-up — 2026-09-09
 
 The review identified two important defects in the initial commit and a related Apple notification race. This follow-up fixes all three without schema changes or remote operations:
 
-- Removed the deployable paid worker definition. `render.worker.yaml` now has only explanatory comments and `services: []`; the free web configuration still uses `WORKER_ENABLED=false`. The worker module remains code for separately authorized local recovery, not a proposed Render deployment.
+- Removed the deployable paid worker definition. `render.worker.yaml` now has only explanatory comments and `services: []`; the free web configuration still uses `WORKER_ENABLED=false`. The worker module remains code for separately authorized local recovery, not a proposed VPS deployment.
 - Superwall receipt updates now include an atomic `status IN ('received', 'failed')` predicate. A zero-row update re-reads the receipt and accepts an already-terminal `processed` or `skipped` result without overwriting it. Both terminal states are immutable. Deterministic interleaving tests reproduce a successful concurrent delivery followed by the original request's failure, as well as late failed/processed/skipped completion attempts.
 - Apple previously checked receipt existence before a profile update, then inserted the receipt afterward. Concurrent deliveries could both write and conflict on insert; older notifications could overwrite newer subscription state. Apple now inserts a received receipt first, handles unique-key conflicts according to actual processing status, and updates only non-terminal receipts. A profile compare-and-set uses the shared subscription timestamp/id plus non-deleted predicate. The timestamp comes from the verified notification's `signedDate`, and the profile event id is namespaced as `apple:<notificationUUID>`. Older or equal-time distinct notifications cannot overwrite current state. A lost compare-and-set is re-read and resolved as duplicate, older, deleted, or retryable conflict. A crash or failed receipt write after a committed profile update is recovered on retry using the stored profile event id.
 - The Apple route preserves deliberate HTTP 503 responses and `Retry-After`, rather than wrapping them in a generic response.

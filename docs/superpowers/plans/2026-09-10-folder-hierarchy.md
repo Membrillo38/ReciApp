@@ -1,3 +1,5 @@
+> **Hosting note:** ReciApp now runs on the **VPS (Coolify + Postgres)**. Ignore Supabase / Render steps in this archived document.
+
 # Folder Hierarchy Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -13,7 +15,7 @@
 ## Global Constraints
 
 - Deployment target remains iOS 17.0.
-- No Supabase or Render mutation.
+- No VPS DB or API mutation.
 - No recipe deletion while moving or deleting folders.
 - No Liquid Glass, borders, strokes, duplicate controls, or new tab navigation.
 - Empty folders delete directly; non-empty folders move all recipes, never a partial destructive selection.
@@ -106,11 +108,11 @@ Expected: all tests pass.
 - Consumes: `childFolders(of:)`, `folderPath(_:)`, and safe hierarchy mutations.
 - Produces: recursive navigation, create-subfolder action, parent picker, and move-folder action.
 
-- [x] **Step 1: Render root children only on Home**
+- [x] **Step 1: VPS root children only on Home**
 
 Keep `Uncategorized` at root. Folder tiles navigate using names and re-resolve current color/count from `AppViewModel`.
 
-- [x] **Step 2: Render child folders inside folder screen**
+- [x] **Step 2: VPS child folders inside folder screen**
 
 The folder screen shows direct child folders before direct recipes. Selecting a child pushes the same `CategoryRecipesView` with its name.
 
@@ -142,7 +144,7 @@ Expected: `** BUILD SUCCEEDED **`.
 
 Use `reciapp.folderLayout.v1` and `reciapp.recipeLayout.v1`, each accepting `grid` or `list`. Existing `folderColumns` remains a grid density preference.
 
-- [x] **Step 2: Render both layout variants**
+- [x] **Step 2: VPS both layout variants**
 
 Folder layout changes only folder containers. Recipe layout changes only recipe containers. Both reuse the same tile/row actions and stable recipe IDs.
 

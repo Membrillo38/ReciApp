@@ -1,3 +1,5 @@
+> **Hosting note:** ReciApp now runs on the **VPS (Coolify + Postgres)**. Ignore Supabase / Render steps in this archived document.
+
 # Folder Hierarchy Specification
 
 ## Goal
@@ -27,6 +29,6 @@ Extend ReciApp's existing local recipe organization with arbitrary-depth folders
 
 ## Non-goals
 
-- No Supabase schema or Render API change: existing product decisions keep organization metadata on device.
+- No Postgres schema or VPS API change: existing product decisions keep organization metadata on device.
 - No cross-device folder synchronization.
 - No partial selection inside the destructive folder-deletion sheet.

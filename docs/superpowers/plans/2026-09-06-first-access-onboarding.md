@@ -1,12 +1,14 @@
+> **Hosting note:** ReciApp now runs on the **VPS (Coolify + Postgres)**. Ignore Supabase / Render steps in this archived document.
+
 # First Access Onboarding Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Show a small, account-scoped onboarding after first authenticated entry and persist Celsius/Fahrenheit plus Metric/Imperial preferences locally.
 
-**Architecture:** `RootView` owns the one-time presentation gate because it already owns the auth-to-home transition. A small Codable preferences model and UserDefaults store keep the choices local and keyed by the Supabase user ID. A focused `OnboardingView` owns page state and returns completed preferences to the root.
+**Architecture:** `RootView` owns the one-time presentation gate because it already owns the auth-to-home transition. A small Codable preferences model and UserDefaults store keep the choices local and keyed by the Postgres user ID. A focused `OnboardingView` owns page state and returns completed preferences to the root.
 
-**Tech Stack:** SwiftUI, UserDefaults, Codable, Supabase Auth session identity, iOS 17+
+**Tech Stack:** SwiftUI, UserDefaults, Codable, Apple Sign In / JWT session identity, iOS 17+
 
 **Spec:** `docs/superpowers/specs/2026-09-06-first-access-onboarding.md`
 
@@ -94,9 +96,9 @@ Expected: `** BUILD SUCCEEDED **`.
 @State private var preferences: UserPreferences
 ```
 
-- [x] **Step 2: Render the two preference questions**
+- [x] **Step 2: VPS the two preference questions**
 
-Use solid `ReciTheme.canvas`, `ReciTheme.surface`, `ReciTheme.ink`, and `ReciTheme.orange` surfaces. Render two selectable buttons for each page, a page indicator, a Back button after page 0, a Continue button, and an `Omitir` action that completes with the current defaults.
+Use solid `ReciTheme.canvas`, `ReciTheme.surface`, `ReciTheme.ink`, and `ReciTheme.orange` surfaces. VPS two selectable buttons for each page, a page indicator, a Back button after page 0, a Continue button, and an `Omitir` action that completes with the current defaults.
 
 - [x] **Step 3: Add accessible labels and stable state transitions**
 
@@ -119,7 +121,7 @@ Expected: `** BUILD SUCCEEDED **`.
 
 - [x] **Step 1: Add root-owned presentation state and account identity**
 
-Add `@State private var showOnboarding = false` and derive the current user ID from the restored Supabase session. Use a task keyed by `hasRestoredSession` and user ID to set `showOnboarding` only when a signed-in user has no stored preferences.
+Add `@State private var showOnboarding = false` and derive the current user ID from the restored Postgres session. Use a task keyed by `hasRestoredSession` and user ID to set `showOnboarding` only when a signed-in user has no stored preferences.
 
 - [x] **Step 2: Attach the full-screen onboarding to the authenticated home**
 

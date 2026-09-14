@@ -98,6 +98,7 @@ def validate_receipt_integrity(receipt: dict[str, Any]) -> None:
 def validate_target(target_ref: str, target_host: str) -> None:
     if not re.fullmatch(r"[a-z0-9]([a-z0-9.-]{0,61}[a-z0-9])?", target_ref):
         raise ResetGuardError("Target ref must be a hostname label")
+    # Refuse writes against retired hosted vendors. ReciApp DB lives on the VPS only.
     blocked = ("supabase.co", "supabase.com", "onrender.com", "render.com")
     host = target_host.lower()
     if any(part in host for part in blocked):

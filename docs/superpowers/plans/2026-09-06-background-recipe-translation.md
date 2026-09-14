@@ -1,3 +1,5 @@
+> **Hosting note:** ReciApp now runs on the **VPS (Coolify + Postgres)**. Ignore Supabase / Render steps in this archived document.
+
 # Background Recipe Translation Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -6,7 +8,7 @@
 
 **Architecture:** Keep one base recipe per normalized source URL and store generated translations in a shared `recipe_translations` table keyed by recipe and language. Requests hit the base row or translation row before creating any AI work; one active translation job is shared by all concurrent users for the same pair.
 
-**Tech Stack:** FastAPI, Pydantic, Supabase/Postgres migrations, SwiftUI, Swift Concurrency, OpenAI structured output, background FastAPI jobs.
+**Tech Stack:** FastAPI, Pydantic, Postgres migrations, SwiftUI, Swift Concurrency, OpenAI structured output, background FastAPI jobs.
 
 **Spec:** `docs/superpowers/specs/2026-09-06-background-recipe-translation.md`
 
@@ -17,7 +19,7 @@
 - Never include `user_id` in translation-cache uniqueness or payload ownership.
 - Preserve auth, quota, spend ledger, source URL validation, and user ownership behavior.
 - No recipe text, credentials, or raw server payloads in logs.
-- Do not apply live Supabase DDL without explicit user authorization.
+- Do not apply live Postgres DDL without explicit user authorization.
 
 ---
 
@@ -68,7 +70,7 @@ git commit -m "feat: reduce app locales to six"
 ### Task 2: Shared translation cache schema
 
 **Files:**
-- Create: `supabase/migrations/008_recipe_translations.sql`
+- Create: `migrations/008_recipe_translations.sql`
 - Modify: `app/models.py`
 - Create: `app/translation_cache.py`
 - Create: `tests/test_translation_cache.py`
@@ -183,7 +185,7 @@ Use existing iPad Simulator destination and a fresh derived-data path with code 
 
 Test System default plus six locales, same URL by two users, cache hit in same language, one background translation for a new language, and stable recipe ownership.
 
-- [ ] **Step 4: Verify live Supabase read-only**
+- [ ] **Step 4: Verify live Postgres read-only**
 
 Confirm migration history and columns/indexes. Applying migrations remains a separate explicitly authorized operation.
 

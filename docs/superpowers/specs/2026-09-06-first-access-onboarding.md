@@ -1,3 +1,5 @@
+> **Hosting note:** ReciApp now runs on the **VPS (Coolify + Postgres)**. Ignore Supabase / Render steps in this archived document.
+
 # First Access Onboarding Specification
 
 ## Goal
@@ -10,7 +12,7 @@ After the first authenticated entry, ReciApp asks for a small set of cooking pre
 - It asks for temperature preference: Celsius or Fahrenheit.
 - It asks for measurement preference: Metric or Imperial.
 - The user can move back, continue, skip, or finish.
-- Preferences persist locally per Supabase user ID and are available for later personalization.
+- Preferences persist locally per Postgres user ID and are available for later personalization.
 - Preview mode continues directly to the existing design-preview home screen.
 - The onboarding uses ReciApp's solid light theme and does not add a new dependency or Liquid Glass surface.
 

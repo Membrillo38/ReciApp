@@ -1,3 +1,5 @@
+> **Hosting note:** ReciApp now runs on the **VPS (Coolify + Postgres)**. Ignore Supabase / Render steps in this archived document.
+
 # Reliable Extraction, Carousels, and Superwall Spec
 
 **Date:** 2026-09-07
@@ -9,7 +11,7 @@ Make recipe import deterministic across TikTok video posts, TikTok photo carouse
 
 ## Evidence baseline
 
-- Supabase project `nzimdcjxgklopythnpfi` is `ACTIVE_HEALTHY`.
+- Postgres database `VPS_POSTGRES` is `ACTIVE_HEALTHY`.
 - Migrations `001` through `009` are present in the remote database.
 - Remote jobs currently show 8 completed and 7 failed extract jobs.
 - Observed failures include `Transcription returned empty text`, malformed structured JSON, and an old duplicate `source_url_norm` race.
@@ -26,15 +28,15 @@ Make recipe import deterministic across TikTok video posts, TikTok photo carouse
 5. Structured recipe output is retried when the model truncates or returns invalid JSON, and validated before persistence.
 6. TikTok photo posts preserve all usable slide image URLs, OCR all supported slides within a bounded cost, and display them as an interactive carousel in iOS detail.
 7. Base recipe and translation language remain independent under concurrent requests.
-8. iOS refresh/detail/import retries do not clear already-visible recipes, do not duplicate user links, and refresh an expired Supabase session once before retrying.
-9. Superwall identifies the Supabase user after session restore/sign-in, presents the configured placement on quota denial, supports restore purchases, and refreshes `/v1/me` after purchase/restore.
+8. iOS refresh/detail/import retries do not clear already-visible recipes, do not duplicate user links, and refresh an expired Postgres session once before retrying.
+9. Superwall identifies the Postgres user after session restore/sign-in, presents the configured placement on quota denial, supports restore purchases, and refreshes `/v1/me` after purchase/restore.
 10. Verification includes backend tests, live read-only health/database checks, clean iOS build, simulator screenshots/accessibility, repeated import polling, cache-hit detail, carousel rendering, logout/login, and Superwall sandbox-safe flows.
 
 ## Constraints
 
 - Keep iOS deployment target `17.0` and bundle identifier `com.membri.reciapp`.
 - Keep supported locales exactly `en-US`, `es-ES`, `fr-FR`, `de`, `it`, and `pt-BR`, plus System default.
-- Keep Supabase as recipe truth and local UserDefaults only for organization metadata and pending share handoff.
-- Never ship `service_role`, Render `API_KEY`, OpenAI keys, dashboard credentials, or webhook secrets in iOS.
-- Do not apply remote Supabase DDL in this task; migrations already exist remotely and schema changes require a separate explicit authorization.
+- Keep Postgres as recipe truth and local UserDefaults only for organization metadata and pending share handoff.
+- Never ship `service_role`, VPS `API_KEY`, OpenAI keys, dashboard credentials, or webhook secrets in iOS.
+- Do not apply remote Postgres DDL in this task; migrations already exist remotely and schema changes require a separate explicit authorization.
 - Preserve current uncommitted user changes and minimal solid UI style: no Liquid Glass, no card/page borders or strokes.
