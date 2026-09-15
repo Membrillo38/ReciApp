@@ -21,6 +21,7 @@ def test_dry_run_persists_recipe_and_releases_slot(monkeypatch):
     monkeypatch.setattr(pipeline, "save_user_recipe", lambda *a, **k: None)
     monkeypatch.setattr(pipeline, "record_usage", lambda **kw: None)
     monkeypatch.setattr(pipeline, "settle_spend", lambda **kw: None)
+    monkeypatch.setattr(pipeline, "_stress_media_from_file", lambda *a, **k: ("lite-mock", 0, 0))
     monkeypatch.setattr(pipeline, "release_job", lambda uid: releases.append(uid))
     monkeypatch.setattr(pipeline, "_drain_next_extract_for_user", lambda uid: drains.append(uid))
 

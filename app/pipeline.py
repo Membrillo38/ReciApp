@@ -298,32 +298,23 @@ def _stress_media_from_url(job_id: UUID, media_url: str, *, max_frames: int) -> 
 def _run_extract_job_dry(job_id: UUID, user_id: UUID, url: str, url_norm: str, language_code: str) -> None:
     """Admission + persistence path with zero paid providers. For load tests only."""
     language_code = normalize_language(language_code)
-    mode = (settings.extract_dry_run_mode or "lite").strip().lower()
+    # Stress window: always exercise media CPU/RAM when dry-run is on
+    # (ignores EXTRACT_DRY_RUN_MODE=lite left in Coolify).
+    mode = "media"
     note = ""
     frame_count = 0
     try:
         update_job(job_id, status=JobStatus.processing.value, progress=10)
-        logger.warning(
-            "extract dry_run=1 mode=%s job_id=%s hold_ms=%s",
-            mode,
-            job_id,
-            settings.extract_dry_run_hold_ms,
-        )
-        if mode == "media":
-            update_job(job_id, progress=25)
-            max_frames = int(settings.extract_dry_run_media_frames)
-            media_url = (settings.extract_dry_run_media_url or "").strip()
-            media_file = Path((settings.extract_dry_run_media_file or "").strip() or "/tmp/reciapp-stress-sample.mp4")
-            if media_url:
-                note, frame_count, _audio_bytes = _stress_media_from_url(job_id, media_url, max_frames=max_frames)
-            else:
-                note, frame_count, _audio_bytes = _stress_media_from_file(job_id, media_file, max_frames=max_frames)
-            update_job(job_id, progress=80)
+        logger.warning("extract dry_run=1 mode=%s job_id=%s", mode, job_id)
+        update_job(job_id, progress=25)
+        max_frames = int(settings.extract_dry_run_media_frames)
+        media_url = (settings.extract_dry_run_media_url or "").strip()
+        media_file = Path((settings.extract_dry_run_media_file or "").strip() or "/tmp/reciapp-stress-sample.mp4")
+        if media_url:
+            note, frame_count, _audio_bytes = _stress_media_from_url(job_id, media_url, max_frames=max_frames)
         else:
-            hold = max(0, int(settings.extract_dry_run_hold_ms)) / 1000.0
-            if hold:
-                time.sleep(hold)
-            update_job(job_id, progress=85)
+            note, frame_count, _audio_bytes = _stress_media_from_file(job_id, media_file, max_frames=max_frames)
+        update_job(job_id, progress=85)
 
         recipe = _dry_run_recipe(url=url, url_norm=url_norm, language_code=language_code, mode=mode, note=note)
         row = upsert_recipe(recipe, source_url_norm=url_norm, language_code=language_code)
@@ -352,7 +343,11 @@ def _run_extract_job_dry(job_id: UUID, user_id: UUID, url: str, url_norm: str, l
         logger.info("extract dry_run done job_id=%s mode=%s frames=%s", job_id, mode, frame_count)
     except Exception as exc:
         logger.error("extract dry_run failed job_id=%s error_type=%s", job_id, type(exc).__name__)
-        _mark_job_failed(job_id, _safe_job_error(exc) if isinstance(exc, ExtractError) else _RETRYABLE_EXTRACTION_ERROR, cost_cents=0.0)
+        _mark_job_failed(
+            job_id,
+            _safe_job_error(exc) if isinstance(exc, ExtractError) else _RETRYABLE_EXTRACTION_ERROR,
+            cost_cents=0.0,
+        )
         settle_spend(job_id=job_id, actual_cents=0.0, status="failed")
     finally:
         release_job(user_id)
