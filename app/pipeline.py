@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import shutil
 import time
 from pathlib import Path
@@ -178,34 +179,61 @@ def _ensure_stress_fixture(path: Path) -> Path:
     if not ffmpeg:
         raise ExtractError("ffmpeg is required for media dry-run")
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp.mp4")
-    subprocess.run(
-        [
-            ffmpeg,
-            "-y",
-            "-f",
-            "lavfi",
-            "-i",
-            "color=c=orange:s=480x270:d=6",
-            "-f",
-            "lavfi",
-            "-i",
-            "sine=f=440:d=6",
-            "-shortest",
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            "-c:a",
-            "aac",
-            str(tmp),
-        ],
-        check=True,
-        capture_output=True,
-        timeout=120,
-    )
-    tmp.replace(path)
-    return path
+    lock = path.with_suffix(".lock")
+    tmp = path.with_suffix(f".{os.getpid()}.tmp.mp4")
+    # Serialize first-time fixture creation across concurrent dry jobs.
+    for _ in range(60):
+        if path.is_file() and path.stat().st_size > 0:
+            return path
+        try:
+            fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            break
+        except FileExistsError:
+            time.sleep(0.25)
+    else:
+        if path.is_file() and path.stat().st_size > 0:
+            return path
+        raise ExtractError("dry-run media fixture lock timeout")
+    try:
+        if path.is_file() and path.stat().st_size > 0:
+            return path
+        subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=orange:s=480x270:d=6",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=f=440:d=6",
+                "-shortest",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                str(tmp),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=120,
+        )
+        tmp.replace(path)
+        return path
+    finally:
+        try:
+            lock.unlink(missing_ok=True)
+        except Exception:
+            pass
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def _stress_media_from_file(job_id: UUID, source: Path, *, max_frames: int) -> tuple[str, int, int]:

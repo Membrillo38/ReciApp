@@ -158,12 +158,16 @@ def _extract(index: int, base: str, token: str, url: str, language: str) -> Hit:
 def _poll_done(base: str, token: str, job_id: str, timeout_s: float) -> str:
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        status, payload, _ = _request_json(
-            "GET",
-            f"{base}/v1/jobs/{job_id}",
-            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-            timeout=30,
-        )
+        try:
+            status, payload, _ = _request_json(
+                "GET",
+                f"{base}/v1/jobs/{job_id}",
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                timeout=30,
+            )
+        except Exception:
+            time.sleep(0.5)
+            continue
         if status == 200 and isinstance(payload, dict):
             state = str(payload.get("status") or "")
             if state in {"completed", "failed"}:
