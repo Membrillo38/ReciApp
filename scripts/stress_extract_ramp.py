@@ -96,12 +96,21 @@ def _create_users(base: str, api_key: str, secret: str, count: int, stamp: str) 
     headers = {"X-API-Key": api_key, "Content-Type": "application/json", "Accept": "application/json"}
     for index in range(count):
         email = f"dry-{stamp}-{index}@reciapp.test"
-        status, payload, _ = _request_json(
-            "POST",
-            f"{base}/v1/admin/users",
-            headers=headers,
-            body={"email": email, "display_name": f"Dry {index}", "is_pro": True},
-        )
+        status = 0
+        payload: dict | list | None = None
+        for attempt in range(5):
+            status, payload, _ = _request_json(
+                "POST",
+                f"{base}/v1/admin/users",
+                headers=headers,
+                body={"email": email, "display_name": f"Dry {index}", "is_pro": True},
+            )
+            if status in {200, 201} and isinstance(payload, dict):
+                break
+            if status in {429, 502, 503}:
+                time.sleep(2.0 * (attempt + 1))
+                continue
+            break
         if status not in {200, 201} or not isinstance(payload, dict):
             raise RuntimeError(f"admin_user_create_failed status={status}")
         items = payload.get("items") or []
