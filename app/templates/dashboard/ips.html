@@ -1,0 +1,62 @@
+{% extends "dashboard/base.html" %}
+{% block title %}IPs · ReciApp{% endblock %}
+{% block content %}
+<h1>IPs</h1>
+<p class="muted">Blacklist (CrowdSec + Fail2ban) y whitelist del owner. Snapshot: {{ i.snapshot_at or 'aún no' }}</p>
+
+<div class="grid">
+  <div class="card">
+    <div class="label">Blacklist</div>
+    <div class="value">{{ i.blacklist_count }}</div>
+    <div class="muted">bloqueadas ahora</div>
+  </div>
+  <div class="card">
+    <div class="label">Whitelist</div>
+    <div class="value">{{ i.whitelist_count }}</div>
+    <div class="muted">IPs + CIDRs owner</div>
+  </div>
+</div>
+
+<h2>Blacklist</h2>
+<div class="card">
+  <table>
+    <thead><tr><th>IP</th><th>Fuente</th><th>Motivo</th><th>Duración</th></tr></thead>
+    <tbody>
+      {% for row in i.blacklist %}
+      <tr>
+        <td>{{ row.ip }}</td>
+        <td class="muted">{{ row.source }}</td>
+        <td class="muted" style="white-space:normal; max-width:360px;">{{ row.reason }}</td>
+        <td class="muted">{{ row.duration }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="muted">Nadie bloqueado ahora</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h2>Whitelist</h2>
+<div class="card">
+  <table>
+    <thead><tr><th>Tipo</th><th>Valor</th></tr></thead>
+    <tbody>
+      {% for ip in i.whitelist_ips %}
+      <tr>
+        <td class="muted">IP</td>
+        <td>{{ ip }}</td>
+      </tr>
+      {% endfor %}
+      {% for cidr in i.whitelist_cidrs %}
+      <tr>
+        <td class="muted">CIDR</td>
+        <td>{{ cidr }}</td>
+      </tr>
+      {% endfor %}
+      {% if not i.whitelist_ips and not i.whitelist_cidrs %}
+      <tr><td colspan="2" class="muted">Sin whitelist en snapshot. Revisa <code>/etc/crowdsec/parsers/s02-enrich/reciapp-owner-whitelist.yaml</code></td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

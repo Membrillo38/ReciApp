@@ -247,6 +247,73 @@ def list_usage(limit: int = 100) -> list[dict]:
     return fetch_all("select * from usage_events order by created_at desc limit %s", (limit,))
 
 
+def dashboard_ips() -> dict:
+    """Blacklist (CrowdSec + Fail2ban) and owner whitelist for /dashboard/ips."""
+    snapshot_row = fetch_one(
+        """
+        select metadata, created_at
+          from security_events
+         where event = 'fail2ban_snapshot'
+         order by created_at desc
+         limit 1
+        """
+    ) or {}
+    snapshot = snapshot_row.get("metadata") or {}
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+
+    blacklist: list[dict] = []
+    seen: set[str] = set()
+
+    crowd = snapshot.get("crowdsec") if isinstance(snapshot.get("crowdsec"), dict) else {}
+    for row in crowd.get("decisions") or []:
+        if not isinstance(row, dict):
+            continue
+        ip = str(row.get("ip") or "").strip()
+        if not ip or ip in seen:
+            continue
+        seen.add(ip)
+        blacklist.append(
+            {
+                "ip": ip,
+                "source": "crowdsec",
+                "reason": row.get("reason") or "—",
+                "duration": row.get("duration") or "—",
+            }
+        )
+
+    jails = snapshot.get("jails") if isinstance(snapshot.get("jails"), dict) else {}
+    for name, jail in jails.items():
+        if not isinstance(jail, dict):
+            continue
+        for ip in jail.get("banned_ips") or []:
+            text = str(ip).strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            blacklist.append(
+                {
+                    "ip": text,
+                    "source": f"fail2ban:{name}",
+                    "reason": "banned",
+                    "duration": "—",
+                }
+            )
+
+    wl = snapshot.get("whitelist") if isinstance(snapshot.get("whitelist"), dict) else {}
+    whitelist_ips = [str(x) for x in (wl.get("ips") or []) if str(x).strip()]
+    whitelist_cidrs = [str(x) for x in (wl.get("cidrs") or []) if str(x).strip()]
+
+    return {
+        "snapshot_at": snapshot_row.get("created_at"),
+        "blacklist": blacklist,
+        "blacklist_count": len(blacklist),
+        "whitelist_ips": whitelist_ips,
+        "whitelist_cidrs": whitelist_cidrs,
+        "whitelist_count": len(whitelist_ips) + len(whitelist_cidrs),
+    }
+
+
 def dashboard_threats() -> dict:
     snapshot_row = fetch_one(
         """

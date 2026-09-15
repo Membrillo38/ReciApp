@@ -204,3 +204,47 @@ def test_dashboard_threats_flattens_fail2ban_snapshot():
     assert {row["ip"] for row in threats["banned"]} == {"203.0.113.9", "198.51.100.7"}
     assert threats["events"][0]["event"] == "scanner_probe"
     assert "http_hits" not in threats
+
+
+def test_dashboard_ips_reads_crowdsec_and_whitelist():
+    from app import dashboard_stats
+
+    def fake_fetch_one(sql, params=None):
+        return {
+            "created_at": "2026-09-15T18:00:00+00:00",
+            "metadata": {
+                "crowdsec": {
+                    "decisions_count": 1,
+                    "decisions": [
+                        {
+                            "ip": "203.0.113.50",
+                            "reason": "crowdsecurity/ssh-bf",
+                            "duration": "3h59m",
+                            "origin": "crowdsec",
+                        }
+                    ],
+                },
+                "jails": {
+                    "sshd": {
+                        "banned_ips": ["198.51.100.9"],
+                        "currently_banned": 1,
+                    }
+                },
+                "whitelist": {
+                    "ips": ["92.189.226.39"],
+                    "cidrs": ["100.64.0.0/10"],
+                },
+            },
+        }
+
+    original = dashboard_stats.fetch_one
+    dashboard_stats.fetch_one = fake_fetch_one
+    try:
+        data = dashboard_stats.dashboard_ips()
+    finally:
+        dashboard_stats.fetch_one = original
+
+    assert data["blacklist_count"] == 2
+    assert {row["ip"] for row in data["blacklist"]} == {"203.0.113.50", "198.51.100.9"}
+    assert data["whitelist_ips"] == ["92.189.226.39"]
+    assert data["whitelist_cidrs"] == ["100.64.0.0/10"]
