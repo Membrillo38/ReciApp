@@ -371,13 +371,19 @@ def dashboard_ip_detail(ip: str) -> dict | None:
     ) or {}
     snapshot = snapshot_row.get("metadata") or {}
     ssh_hits: list[dict] = []
+    f2b_hits: list[dict] = []
     if isinstance(snapshot, dict):
-        for row in snapshot.get("ssh_recent") or []:
-            if not isinstance(row, dict):
-                continue
-            line = str(row.get("line") or "")
-            if ip in line:
-                ssh_hits.append(row)
+        by_ip = snapshot.get("ssh_by_ip") if isinstance(snapshot.get("ssh_by_ip"), dict) else {}
+        ssh_hits = list(by_ip.get(ip) or [])
+        if not ssh_hits:
+            for row in snapshot.get("ssh_recent") or []:
+                if not isinstance(row, dict):
+                    continue
+                line = str(row.get("line") or "")
+                if ip in line:
+                    ssh_hits.append(row)
+        f2b_map = snapshot.get("fail2ban_by_ip") if isinstance(snapshot.get("fail2ban_by_ip"), dict) else {}
+        f2b_hits = list(f2b_map.get(ip) or [])
 
     crowd_alerts: list[dict] = []
     if isinstance(snapshot, dict):
@@ -388,6 +394,10 @@ def dashboard_ip_detail(ip: str) -> dict | None:
             if str(row.get("ip") or "") == ip:
                 crowd_alerts.append(row)
 
+    # Prefer fail2ban log reason over bare "banned"
+    if ban.get("reason") in {None, "", "—", "banned"} and f2b_hits:
+        ban = {**ban, "reason": f2b_hits[-1].get("line") or ban.get("reason")}
+
     return {
         "ip": ip,
         "ip_hash": ip_hash,
@@ -395,6 +405,7 @@ def dashboard_ip_detail(ip: str) -> dict | None:
         "probes": probes,
         "requests": requests,
         "ssh_hits": ssh_hits[:40],
+        "fail2ban_hits": f2b_hits[:40],
         "crowd_alerts": crowd_alerts,
         "snapshot_at": listing.get("snapshot_at"),
     }

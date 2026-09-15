@@ -54,6 +54,23 @@
 </div>
 {% endif %}
 
+{% if d.fail2ban_hits %}
+<h2>Fail2ban log</h2>
+<div class="card">
+  <table>
+    <thead><tr><th>Cuándo</th><th>Línea</th></tr></thead>
+    <tbody>
+      {% for row in d.fail2ban_hits %}
+      <tr>
+        <td class="muted">{{ row.t or '—' }}</td>
+        <td style="white-space:normal;"><pre>{{ row.line }}</pre></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
 <h2>Probes scanner</h2>
 <div class="card">
   <table>

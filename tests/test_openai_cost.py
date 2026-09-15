@@ -286,6 +286,12 @@ def test_dashboard_ip_detail_joins_ban_probes_and_requests():
                 "ssh_recent": [
                     {"t": "2026-09-15T17:49:00", "line": f"Failed password for root from {ip} port 22"}
                 ],
+                "ssh_by_ip": {
+                    ip: [{"t": "2026-09-15T17:49:00", "line": f"Failed password for root from {ip} port 22"}]
+                },
+                "fail2ban_by_ip": {
+                    ip: [{"t": "2026-09-15 17:49:10", "line": f"[sshd] Ban {ip}"}]
+                },
             },
         }
 
@@ -328,4 +334,5 @@ def test_dashboard_ip_detail_joins_ban_probes_and_requests():
     assert detail["probes"][0]["metadata"]["path"] == "/.env"
     assert detail["requests"][0]["status_code"] == 404
     assert detail["ssh_hits"]
+    assert detail["fail2ban_hits"]
     assert detail["crowd_alerts"][0]["events_count"] == 6
