@@ -14,6 +14,7 @@ from app.dashboard_auth import (
     dashboard_enabled,
     read_session_token,
     set_session_cookie,
+    totp_required,
     verify_password,
     verify_totp,
 )
@@ -67,6 +68,7 @@ def login_page(request: Request):
             "flash": request.query_params.get("ok"),
             "error": request.query_params.get("err"),
             "configured": dashboard_enabled(),
+            "totp_required": totp_required(),
         },
     )
 
@@ -80,7 +82,7 @@ def login_submit(
     if not dashboard_enabled():
         return RedirectResponse("/dashboard/login?err=Dashboard+sin+configurar", status_code=303)
     if not (verify_password(password) and verify_totp(totp.strip())):
-        return RedirectResponse("/dashboard/login?err=Password+o+TOTP+incorrecto", status_code=303)
+        return RedirectResponse("/dashboard/login?err=Credenciales+incorrectas", status_code=303)
     response = RedirectResponse("/dashboard", status_code=303)
     set_session_cookie(response, create_session_token())
     return response

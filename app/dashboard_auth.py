@@ -23,11 +23,11 @@ def _serializer() -> URLSafeTimedSerializer:
 
 
 def dashboard_enabled() -> bool:
-    return bool(
-        settings.dashboard_password
-        and settings.dashboard_session_secret
-        and settings.dashboard_totp_secret
-    )
+    return bool(settings.dashboard_password and settings.dashboard_session_secret)
+
+
+def totp_required() -> bool:
+    return bool(settings.dashboard_totp_secret)
 
 
 def verify_password(password: str) -> bool:
@@ -39,7 +39,8 @@ def verify_password(password: str) -> bool:
 
 def verify_totp(code: str) -> bool:
     if not settings.dashboard_totp_secret:
-        return False
+        # Password-only until DASHBOARD_TOTP_SECRET is set in Coolify.
+        return True
     try:
         import pyotp
 

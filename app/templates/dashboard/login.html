@@ -4,12 +4,14 @@
 <div class="login-wrap card">
   <h1>Admin login</h1>
   {% if not configured %}
-  <p class="muted">Dashboard bloqueado: faltan <code>DASHBOARD_PASSWORD</code>, <code>DASHBOARD_SESSION_SECRET</code> y <code>DASHBOARD_TOTP_SECRET</code>.</p>
+  <p class="muted">Dashboard bloqueado: faltan <code>DASHBOARD_PASSWORD</code> y <code>DASHBOARD_SESSION_SECRET</code>.</p>
   {% else %}
-  <p class="muted">Password + TOTP. Cookie httpOnly Secure SameSite=Strict.</p>
+  <p class="muted">Solo admin. Cookie httpOnly Secure SameSite=Strict.{% if totp_required %} + TOTP.{% endif %}</p>
   <form method="post" action="/dashboard/login" style="margin-top:1rem; display:grid; gap:0.75rem;">
     <input type="password" name="password" placeholder="Dashboard password" autocomplete="current-password" required autofocus />
+    {% if totp_required %}
     <input inputmode="numeric" pattern="[0-9]{6}" name="totp" placeholder="Código TOTP de 6 dígitos" autocomplete="one-time-code" required />
+    {% endif %}
     <button type="submit">Entrar</button>
   </form>
   {% endif %}
