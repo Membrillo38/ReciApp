@@ -68,6 +68,7 @@ from app.security import (
     audit_security_event,
     allow_rate_limit,
     check_not_banned,
+    dashboard_publicly_blocked,
     is_scanner_probe,
     new_correlation_id,
     pseudonymous_ip,
@@ -300,6 +301,9 @@ async def request_metrics(request: Request, call_next):
     request.state.correlation_id = correlation_id
     content_length = request.headers.get("content-length")
     is_probe = request.url.path in {"/health", "/ready"}
+    # Public sslip Host must not expose ops UI — Tailscale/cpanel proxy only.
+    if dashboard_publicly_blocked(request):
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
     if is_scanner_probe(request.url.path):
         client_ip = request_ip(request)
         if allow_rate_limit(f"scanner-log:{client_ip}", limit=30, window_seconds=3600):

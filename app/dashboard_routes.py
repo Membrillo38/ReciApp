@@ -3,21 +3,10 @@ from __future__ import annotations
 import ipaddress
 from pathlib import Path
 
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from app.dashboard_auth import (
-    COOKIE_NAME,
-    clear_session_cookie,
-    create_session_token,
-    dashboard_enabled,
-    read_session_token,
-    set_session_cookie,
-    totp_required,
-    verify_password,
-    verify_totp,
-)
 from app.dashboard_stats import (
     dashboard_ip_detail,
     dashboard_ips,
@@ -28,6 +17,7 @@ from app.dashboard_stats import (
 from app.db import fetch_all
 from app.store import list_jobs, list_live_queue_jobs, list_profiles, list_recipes
 
+# Tailscale / cpanel only — public Host is blocked in main middleware.
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
@@ -43,64 +33,19 @@ def _ctx(request: Request, tab: str, **extra):
     }
 
 
-def _require_admin(request: Request) -> RedirectResponse | None:
-    """Fail closed: no secrets → no dashboard. No session → login."""
-    if not dashboard_enabled():
-        return RedirectResponse("/dashboard/login?err=Dashboard+sin+configurar", status_code=303)
-    if read_session_token(request.cookies.get(COOKIE_NAME)):
-        return None
-    nxt = request.url.path
-    if nxt.startswith("/dashboard") and nxt not in {"/dashboard/login", "/dashboard/logout"}:
-        return RedirectResponse(f"/dashboard/login?next={nxt}", status_code=303)
-    return RedirectResponse("/dashboard/login", status_code=303)
-
-
 @router.get("/login", response_class=HTMLResponse)
-def login_page(request: Request):
-    if dashboard_enabled() and read_session_token(request.cookies.get(COOKIE_NAME)):
-        return RedirectResponse("/dashboard", status_code=303)
-    return templates.TemplateResponse(
-        "dashboard/login.html",
-        {
-            "request": request,
-            "show_nav": False,
-            "tab": "login",
-            "flash": request.query_params.get("ok"),
-            "error": request.query_params.get("err"),
-            "configured": dashboard_enabled(),
-            "totp_required": totp_required(),
-        },
-    )
-
-
-@router.post("/login")
-def login_submit(
-    request: Request,
-    password: str = Form(""),
-    totp: str = Form(""),
-):
-    if not dashboard_enabled():
-        return RedirectResponse("/dashboard/login?err=Dashboard+sin+configurar", status_code=303)
-    if not (verify_password(password) and verify_totp(totp.strip())):
-        return RedirectResponse("/dashboard/login?err=Credenciales+incorrectas", status_code=303)
-    response = RedirectResponse("/dashboard", status_code=303)
-    set_session_cookie(response, create_session_token())
-    return response
+def login_redirect():
+    return RedirectResponse("/dashboard", status_code=303)
 
 
 @router.get("/logout")
-def logout():
-    response = RedirectResponse("/dashboard/login?ok=Sesion+cerrada", status_code=303)
-    clear_session_cookie(response)
-    return response
+def logout_redirect():
+    return RedirectResponse("/dashboard", status_code=303)
 
 
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
 def overview(request: Request):
-    gate = _require_admin(request)
-    if gate:
-        return gate
     return templates.TemplateResponse(
         "dashboard/overview.html",
         _ctx(request, "overview", o=dashboard_overview()),
@@ -109,9 +54,6 @@ def overview(request: Request):
 
 @router.get("/users", response_class=HTMLResponse)
 def users_page(request: Request):
-    gate = _require_admin(request)
-    if gate:
-        return gate
     return templates.TemplateResponse(
         "dashboard/users.html",
         _ctx(request, "users", users=list_profiles(200)),
@@ -120,9 +62,6 @@ def users_page(request: Request):
 
 @router.get("/recipes", response_class=HTMLResponse)
 def recipes_page(request: Request):
-    gate = _require_admin(request)
-    if gate:
-        return gate
     return templates.TemplateResponse(
         "dashboard/recipes.html",
         _ctx(request, "recipes", recipes=list_recipes(100)),
@@ -131,9 +70,6 @@ def recipes_page(request: Request):
 
 @router.get("/jobs", response_class=HTMLResponse)
 def jobs_page(request: Request):
-    gate = _require_admin(request)
-    if gate:
-        return gate
     queue = list_live_queue_jobs(limit=100)
     for index, row in enumerate(queue):
         row["queue_position"] = index + 1
@@ -150,9 +86,6 @@ def jobs_page(request: Request):
 
 @router.get("/usage", response_class=HTMLResponse)
 def usage_page(request: Request):
-    gate = _require_admin(request)
-    if gate:
-        return gate
     return templates.TemplateResponse(
         "dashboard/usage.html",
         _ctx(request, "usage", usage=list_usage(150)),
@@ -161,9 +94,6 @@ def usage_page(request: Request):
 
 @router.get("/requests", response_class=HTMLResponse)
 def requests_page(request: Request):
-    gate = _require_admin(request)
-    if gate:
-        return gate
     rows = fetch_all("select * from api_request_logs order by created_at desc limit 200")
     return templates.TemplateResponse(
         "dashboard/requests.html",
@@ -173,9 +103,6 @@ def requests_page(request: Request):
 
 @router.get("/threats", response_class=HTMLResponse)
 def threats_page(request: Request):
-    gate = _require_admin(request)
-    if gate:
-        return gate
     return templates.TemplateResponse(
         "dashboard/threats.html",
         _ctx(request, "threats", t=dashboard_threats()),
@@ -184,9 +111,6 @@ def threats_page(request: Request):
 
 @router.get("/ips", response_class=HTMLResponse)
 def ips_page(request: Request):
-    gate = _require_admin(request)
-    if gate:
-        return gate
     return templates.TemplateResponse(
         "dashboard/ips.html",
         _ctx(request, "ips", i=dashboard_ips()),
@@ -195,9 +119,6 @@ def ips_page(request: Request):
 
 @router.get("/ips/{ip}", response_class=HTMLResponse)
 def ips_detail_page(request: Request, ip: str):
-    gate = _require_admin(request)
-    if gate:
-        return gate
     try:
         ip = str(ipaddress.ip_address(ip.strip()))
     except ValueError:

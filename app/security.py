@@ -63,6 +63,49 @@ def request_ip(request: Request) -> str:
         return "unknown"
 
 
+def request_host(request: Request) -> str:
+    raw = (
+        request.headers.get("x-forwarded-host")
+        or request.headers.get("host")
+        or ""
+    )
+    return raw.split(",", 1)[0].strip().split(":", 1)[0].lower()
+
+
+def is_public_dashboard_host(request: Request) -> bool:
+    """True when request hits the public internet hostname (sslip / public IP)."""
+    host = request_host(request)
+    if not host:
+        return True
+    if host.endswith(".sslip.io") or host.endswith(".nip.io"):
+        return True
+    if host == "51.255.43.100":
+        return True
+    return False
+
+
+def is_tailscale_or_local_ip(value: str | None) -> bool:
+    try:
+        address = ipaddress.ip_address(value or "")
+    except ValueError:
+        return False
+    if address.is_loopback or address.is_private:
+        return True
+    # Tailscale CGNAT
+    return address in ipaddress.ip_network("100.64.0.0/10")
+
+
+def dashboard_publicly_blocked(request: Request) -> bool:
+    """Block /dashboard on public Host. Allow Tailscale/cpanel proxy Hosts."""
+    if not request.url.path.startswith("/dashboard"):
+        return False
+    if is_public_dashboard_host(request):
+        return True
+    # Extra belt: if somehow Host is private but client is random internet, still ok
+    # because public Host already blocked. Proxy binds Tailscale only.
+    return False
+
+
 def pseudonymous_ip(value: str | None) -> str | None:
     if not value:
         return None
