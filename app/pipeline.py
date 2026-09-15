@@ -168,6 +168,46 @@ def _dry_run_recipe(
     )
 
 
+def _ensure_stress_fixture(path: Path) -> Path:
+    """Create a short synthetic mp4 if image fixture is missing (no rebuild required)."""
+    if path.is_file() and path.stat().st_size > 0:
+        return path
+    import subprocess
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise ExtractError("ffmpeg is required for media dry-run")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp.mp4")
+    subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=orange:s=480x270:d=6",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=f=440:d=6",
+            "-shortest",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            str(tmp),
+        ],
+        check=True,
+        capture_output=True,
+        timeout=120,
+    )
+    tmp.replace(path)
+    return path
+
+
 def _stress_media_from_file(job_id: UUID, source: Path, *, max_frames: int) -> tuple[str, int, int]:
     """CPU/RAM path: copy fixture, extract audio, local STT, sample frames. Returns (note, frame_count, audio_bytes)."""
     import subprocess
@@ -176,8 +216,7 @@ def _stress_media_from_file(job_id: UUID, source: Path, *, max_frames: int) -> t
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise ExtractError("ffmpeg is required for media dry-run")
-    if not source.is_file() or source.stat().st_size <= 0:
-        raise ExtractError("dry-run media fixture missing")
+    source = _ensure_stress_fixture(source)
 
     tmpdir = Path(tempfile.mkdtemp(prefix=f"dry-media-{job_id.hex[:8]}-"))
     work = tmpdir / "clip.mp4"
@@ -274,7 +313,7 @@ def _run_extract_job_dry(job_id: UUID, user_id: UUID, url: str, url_norm: str, l
             update_job(job_id, progress=25)
             max_frames = int(settings.extract_dry_run_media_frames)
             media_url = (settings.extract_dry_run_media_url or "").strip()
-            media_file = Path((settings.extract_dry_run_media_file or "").strip() or "/app/fixtures/stress_sample.mp4")
+            media_file = Path((settings.extract_dry_run_media_file or "").strip() or "/tmp/reciapp-stress-sample.mp4")
             if media_url:
                 note, frame_count, _audio_bytes = _stress_media_from_url(job_id, media_url, max_frames=max_frames)
             else:
