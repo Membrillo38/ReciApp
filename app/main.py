@@ -419,6 +419,7 @@ async def ready() -> JSONResponse:
             "status": "unavailable" if error else "ready",
             "latency_ms": round((time.perf_counter() - start) * 1000),
             "maintenance": settings.maintenance_mode,
+            "extract_dry_run": settings.extract_dry_run,
             **({"error": error} if error else {}),
         },
         headers={"Cache-Control": "no-store", **({"Retry-After": "1"} if error else {})},
@@ -738,7 +739,7 @@ def extract_recipe(
                 progress=100,
             )
 
-        if not settings.openai_api_key:
+        if not settings.openai_api_key and not settings.extract_dry_run:
             raise HTTPException(status_code=503, detail="OPENAI_API_KEY not configured")
 
         job = _ensure_translation_job(
@@ -767,7 +768,7 @@ def extract_recipe(
                 progress=int(active.get("progress") or 0),
             )
 
-    if not settings.openai_api_key:
+    if not settings.openai_api_key and not settings.extract_dry_run:
         raise HTTPException(status_code=503, detail="OPENAI_API_KEY not configured")
 
     assert_can_extract(user, cache_hit=False)
@@ -798,7 +799,8 @@ def extract_recipe(
             cache_hit=False,
         )
         job_id = _as_uuid(job["id"])
-        reserve_spend(user_id=user.id, job_id=job_id)
+        if not settings.extract_dry_run:
+            reserve_spend(user_id=user.id, job_id=job_id)
     except HTTPException as exc:
         if local_claimed:
             release_job(user.id)

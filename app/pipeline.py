@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import hashlib
-import shutil
 import logging
+import shutil
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 from uuid import UUID
@@ -21,7 +22,7 @@ from app.extract import (
     select_spread_frame_indexes,
 )
 from app.db import db_context
-from app.models import JobStatus, Platform, Recipe
+from app.models import Ingredient, JobStatus, Platform, Recipe, Step
 from app.platforms import detect_platform
 from app.quota import record_usage
 from app.job_guard import release as release_job, try_claim as try_claim_job
@@ -144,11 +145,71 @@ def run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langua
         _run_extract_job(job_id, user_id, url, url_norm, language_code)
 
 
+def _dry_run_recipe(*, url: str, url_norm: str, language_code: str) -> Recipe:
+    suffix = url_norm[-16:] if len(url_norm) > 16 else url_norm
+    return Recipe(
+        title=f"Dry run {suffix}",
+        ingredients=[Ingredient(name="dry-run ingredient", quantity="1")],
+        steps=[Step(order=1, text="Dry-run extract (no provider calls).")],
+        source_url=url,
+        platform=detect_platform(url),
+        confidence=1.0,
+        language_code=language_code,
+        tags=["dry-run"],
+    )
+
+
+def _run_extract_job_dry(job_id: UUID, user_id: UUID, url: str, url_norm: str, language_code: str) -> None:
+    """Admission + persistence path with zero paid providers. For load tests only."""
+    language_code = normalize_language(language_code)
+    try:
+        update_job(job_id, status=JobStatus.processing.value, progress=10)
+        logger.warning("extract dry_run=1 job_id=%s hold_ms=%s", job_id, settings.extract_dry_run_hold_ms)
+        hold = max(0, int(settings.extract_dry_run_hold_ms)) / 1000.0
+        if hold:
+            time.sleep(hold)
+        update_job(job_id, progress=85)
+        recipe = _dry_run_recipe(url=url, url_norm=url_norm, language_code=language_code)
+        row = upsert_recipe(recipe, source_url_norm=url_norm, language_code=language_code)
+        recipe_id = row["id"] if isinstance(row["id"], UUID) else UUID(str(row["id"]))
+        save_user_recipe(user_id, recipe_id)
+        update_job(
+            job_id,
+            status=JobStatus.completed.value,
+            progress=100,
+            lease_until=None,
+            recipe_id=recipe_id,
+            cost_cents=0,
+            cache_hit=False,
+        )
+        try:
+            record_usage(
+                user_id=user_id,
+                kind="extract_dry",
+                cost_cents=0,
+                recipe_id=recipe_id,
+                job_id=job_id,
+            )
+        except Exception:
+            pass
+        settle_spend(job_id=job_id, actual_cents=0.0, status="settled")
+    except Exception as exc:
+        logger.error("extract dry_run failed job_id=%s error_type=%s", job_id, type(exc).__name__)
+        _mark_job_failed(job_id, _RETRYABLE_EXTRACTION_ERROR, cost_cents=0.0)
+        settle_spend(job_id=job_id, actual_cents=0.0, status="failed")
+    finally:
+        release_job(user_id)
+        _drain_next_extract_for_user(user_id)
+
+
 def _run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, language_code: str) -> None:
     if settings.maintenance_mode:
         # Keep the durable job pending; release only the process-local slot.
         # Operators must drain already-running jobs before backup/reset.
         release_job(user_id)
+        return
+    if settings.extract_dry_run:
+        _run_extract_job_dry(job_id, user_id, url, url_norm, language_code)
         return
     language_code = normalize_language(language_code)
     audio_path: Path | None = None

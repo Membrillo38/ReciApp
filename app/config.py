@@ -74,6 +74,11 @@ class Settings(BaseSettings):
     worker_enabled: bool = False
     worker_poll_seconds: float = 5.0
     worker_lease_seconds: int = 900
+    # Fake full extract path (queue/slots/DB) with zero OpenAI/yt-dlp spend.
+    # Temporary load-test only — leave false in normal production.
+    extract_dry_run: bool = False
+    # Hold each dry job in "processing" so concurrent slot ceilings are measurable.
+    extract_dry_run_hold_ms: int = Field(default=500, ge=0, le=60_000)
     max_request_body_bytes: int = 262_144
     webhook_max_age_seconds: int = 7 * 24 * 60 * 60
     apple_root_ca_pem: str = ""
