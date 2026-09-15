@@ -56,6 +56,9 @@ def test_recipe_prompt_requires_target_language():
     assert "title, description, ingredient names" in prompt
     assert "to taste" in prompt
     assert "Never use '-', '—'" in prompt
+    assert "density_g_per_ml" in prompt
+    assert "Split quantity and unit" in prompt
+    assert "g, kg, ml, l, cup, tbsp, tsp, fl oz, oz, lb" in prompt
 
 
 def test_fallback_recipe_copy_is_localized():

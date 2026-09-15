@@ -31,11 +31,26 @@ def test_translation_payload_keeps_structured_recipe_data():
     recipe = Recipe(
         id=uuid4(),
         title="Pasta",
-        ingredients=[Ingredient(name="tomato", quantity="4", unit="units")],
+        ingredients=[
+            Ingredient(name="tomato", quantity="4", unit="units", density_g_per_ml=None)
+        ],
         ingredient_sections=[
             IngredientSection(
                 title="Sauce",
-                ingredients=[Ingredient(name="tomato", quantity="4", unit="units")],
+                ingredients=[
+                    Ingredient(
+                        name="tomato",
+                        quantity="4",
+                        unit="units",
+                        density_g_per_ml=None,
+                    ),
+                    Ingredient(
+                        name="flour",
+                        quantity="0.5",
+                        unit="cup",
+                        density_g_per_ml=0.53,
+                    ),
+                ],
             )
         ],
         steps=[Step(order=1, text="Cook", duration_minutes=12)],
@@ -51,6 +66,7 @@ def test_translation_payload_keeps_structured_recipe_data():
     payload = recipe_translation_payload(recipe)
     assert payload["title"] == "Pasta"
     assert payload["ingredient_sections"][0]["ingredients"][0]["quantity"] == "4"
+    assert payload["ingredient_sections"][0]["ingredients"][1]["density_g_per_ml"] == 0.53
     assert "ingredients" not in payload
     assert payload["steps"][0]["duration_minutes"] == 12
     assert payload["tips"][0]["text"] == "Keep chilled"

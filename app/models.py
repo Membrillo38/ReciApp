@@ -4,7 +4,7 @@ from enum import Enum
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, field_validator
 
 
 class Platform(str, Enum):
@@ -19,6 +19,15 @@ class Ingredient(BaseModel):
     name: str
     quantity: str | None = None
     unit: str | None = None
+    # Culinary bulk density for volume↔mass. Positive or null; never invent.
+    density_g_per_ml: float | None = None
+
+    @field_validator("density_g_per_ml", mode="before")
+    @classmethod
+    def _sanitize_density(cls, value: object) -> float | None:
+        from app.ingredient_density import parse_density_g_per_ml
+
+        return parse_density_g_per_ml(value)
 
 
 class IngredientSection(BaseModel):

@@ -17,6 +17,7 @@ from app.job_errors import (
     RECIPE_NO_METHOD,
     RECIPE_UNDETERMINED,
 )
+from app.ingredient_density import parse_density_g_per_ml, resolve_density_g_per_ml
 from app.localization import (
     build_recipe_prompt,
     ingredient_section_name,
@@ -144,8 +145,9 @@ RECIPE_SCHEMA = {
                                     "name": {"type": "string"},
                                     "quantity": {"type": ["string", "null"]},
                                     "unit": {"type": ["string", "null"]},
+                                    "density_g_per_ml": {"type": ["number", "null"]},
                                 },
-                                "required": ["name", "quantity", "unit"],
+                                "required": ["name", "quantity", "unit", "density_g_per_ml"],
                             },
                         },
                     },
@@ -435,7 +437,12 @@ def _strip_optional_marker(ingredient: Ingredient) -> tuple[Ingredient, bool]:
         return ingredient, optional
     if name == ingredient.name and not optional:
         return ingredient, False
-    return Ingredient(name=name, quantity=ingredient.quantity, unit=ingredient.unit), optional
+    return Ingredient(
+        name=name,
+        quantity=ingredient.quantity,
+        unit=ingredient.unit,
+        density_g_per_ml=ingredient.density_g_per_ml,
+    ), optional
 
 
 def power_up_ingredient_sections(
@@ -457,7 +464,12 @@ def power_up_ingredient_sections(
     def _with_taste(ingredient: Ingredient) -> Ingredient:
         if ingredient.quantity or ingredient.unit:
             return ingredient
-        return Ingredient(name=ingredient.name, quantity=taste, unit=None)
+        return Ingredient(
+            name=ingredient.name,
+            quantity=taste,
+            unit=None,
+            density_g_per_ml=None,
+        )
 
     def flush_current() -> None:
         nonlocal current
@@ -542,7 +554,11 @@ def _usable_ingredient_sections(
                 continue
             quantity = _optional_text(item.get("quantity"))
             unit = _optional_text(item.get("unit"))
-            ingredients.append(Ingredient(name=name, quantity=quantity, unit=unit))
+            # Authorized culinary table only — never keep model-invented densities.
+            density = resolve_density_g_per_ml(name, quantity=quantity, unit=unit)
+            ingredients.append(
+                Ingredient(name=name, quantity=quantity, unit=unit, density_g_per_ml=density)
+            )
         if ingredients:
             sections.append(IngredientSection(title=title, ingredients=ingredients))
     return power_up_ingredient_sections(sections, language_code=language_code)
@@ -598,6 +614,41 @@ def _bounded_source_json(payload: dict, max_chars: int = 24_000) -> str:
     raise ExtractError("Recipe source text exceeds supported bound")
 
 
+def _restore_quantity_and_density(
+    source_sections: list[IngredientSection],
+    translated_sections: list[IngredientSection],
+) -> list[IngredientSection]:
+    """Keep quantity + density_g_per_ml numeric values from the source recipe."""
+    source_items = [item for section in source_sections for item in section.ingredients]
+    index = 0
+    restored: list[IngredientSection] = []
+    for section in translated_sections:
+        items: list[Ingredient] = []
+        for item in section.ingredients:
+            if index < len(source_items):
+                src = source_items[index]
+                items.append(
+                    Ingredient(
+                        name=item.name,
+                        quantity=src.quantity,
+                        unit=item.unit,
+                        density_g_per_ml=parse_density_g_per_ml(src.density_g_per_ml),
+                    )
+                )
+            else:
+                items.append(
+                    Ingredient(
+                        name=item.name,
+                        quantity=item.quantity,
+                        unit=item.unit,
+                        density_g_per_ml=parse_density_g_per_ml(item.density_g_per_ml),
+                    )
+                )
+            index += 1
+        restored.append(IngredientSection(title=section.title, ingredients=items))
+    return restored
+
+
 def translate_recipe(recipe: Recipe, target_language_code: str) -> Recipe:
     if not settings.openai_api_key:
         raise ExtractError("OPENAI_API_KEY is not configured")
@@ -622,7 +673,8 @@ def translate_recipe(recipe: Recipe, target_language_code: str) -> Recipe:
     prompt = (
         f"Translate this structured cooking recipe into {target_language}.\n"
         "Translate every user-facing text field, including section titles, ingredient names, units, steps, tips, tags, and description. "
-        "Preserve quantities, durations, ordering, null values, is_complete, and blocking_gaps. Do not add or remove recipe content. "
+        "Preserve quantities, density_g_per_ml, durations, ordering, null values, is_complete, and blocking_gaps exactly — "
+        "do not recalculate, convert, or invent densities. Do not add or remove recipe content. "
         "Return the same JSON structure.\n\n"
         f"RECIPE:\n{json.dumps(source, ensure_ascii=False)}"
     )
@@ -634,12 +686,29 @@ def translate_recipe(recipe: Recipe, target_language_code: str) -> Recipe:
         {"role": "user", "content": prompt[:16000]},
     ]
     data = _request_structured_recipe(messages)
+    translated_sections = [
+        IngredientSection(
+            title=section.get("title") or ingredient_section_name(language_code),
+            ingredients=[
+                Ingredient(
+                    name=str(item.get("name") or "").strip(),
+                    quantity=_optional_text(item.get("quantity")),
+                    unit=_optional_text(item.get("unit")),
+                    density_g_per_ml=parse_density_g_per_ml(item.get("density_g_per_ml")),
+                )
+                for item in (section.get("ingredients") or [])
+                if isinstance(item, dict) and str(item.get("name") or "").strip()
+            ],
+        )
+        for section in (data.get("ingredient_sections") or [])
+        if isinstance(section, dict)
+    ]
+    translated_sections = _restore_quantity_and_density(
+        recipe.ingredient_sections,
+        translated_sections,
+    )
     ingredient_sections = power_up_ingredient_sections(
-        [
-            IngredientSection(**section)
-            for section in (data.get("ingredient_sections") or [])
-            if isinstance(section, dict) and section.get("ingredients")
-        ],
+        translated_sections,
         language_code=language_code,
     )
     ingredients = [ingredient for section in ingredient_sections for ingredient in section.ingredients]
