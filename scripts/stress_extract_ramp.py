@@ -200,6 +200,12 @@ def main() -> int:
     parser.add_argument("--poll-timeout", type=float, default=180.0)
     parser.add_argument("--confirm-prod", action="store_true")
     parser.add_argument("--skip-poll", action="store_true")
+    parser.add_argument(
+        "--pause-seconds",
+        type=float,
+        default=65.0,
+        help="Pause between mint chunks and levels (raise if IP rate-limited)",
+    )
     args = parser.parse_args()
 
     api_key = os.environ.get("API_KEY", "").strip()
@@ -234,7 +240,7 @@ def main() -> int:
         n = min(chunk, max_n - start)
         tokens.extend(_create_users(base, api_key, secret, n, f"{stamp}-{start}"))
         if start + chunk < max_n:
-            time.sleep(65.0)
+            time.sleep(args.pause_seconds)
 
     reports = []
     for level in levels:
@@ -266,7 +272,7 @@ def main() -> int:
         reports.append(summary)
         print(json.dumps({"phase": "level", **summary}, sort_keys=True))
         # Let sliding IP windows drain before the next burst.
-        time.sleep(65.0)
+        time.sleep(args.pause_seconds)
 
     cliff = next((r["level"] for r in reports if r["ok_rate"] < 0.95), None)
     print(
