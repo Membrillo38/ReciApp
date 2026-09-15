@@ -74,11 +74,17 @@ class Settings(BaseSettings):
     worker_enabled: bool = False
     worker_poll_seconds: float = 5.0
     worker_lease_seconds: int = 900
-    # Fake full extract path (queue/slots/DB) with zero OpenAI/yt-dlp spend.
+    # Fake full extract path (queue/slots/DB) with zero OpenAI spend.
     # Temporary load-test only — leave false in normal production.
     extract_dry_run: bool = False
-    # Hold each dry job in "processing" so concurrent slot ceilings are measurable.
+    # lite = sleep+fake recipe; media = ffmpeg/whisper (or yt-dlp URL) then fake recipe.
+    extract_dry_run_mode: str = "lite"
+    # Hold each lite dry job in "processing" so concurrent slot ceilings are measurable.
     extract_dry_run_hold_ms: int = Field(default=500, ge=0, le=60_000)
+    # Local fixture (preferred) or remote URL for media-mode stress.
+    extract_dry_run_media_file: str = "/app/fixtures/stress_sample.mp4"
+    extract_dry_run_media_url: str = ""
+    extract_dry_run_media_frames: int = Field(default=8, ge=1, le=24)
     max_request_body_bytes: int = 262_144
     webhook_max_age_seconds: int = 7 * 24 * 60 * 60
     apple_root_ca_pem: str = ""

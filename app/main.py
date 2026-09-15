@@ -420,6 +420,7 @@ async def ready() -> JSONResponse:
             "latency_ms": round((time.perf_counter() - start) * 1000),
             "maintenance": settings.maintenance_mode,
             "extract_dry_run": settings.extract_dry_run,
+            "extract_dry_run_mode": settings.extract_dry_run_mode if settings.extract_dry_run else None,
             **({"error": error} if error else {}),
         },
         headers={"Cache-Control": "no-store", **({"Retry-After": "1"} if error else {})},

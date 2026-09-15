@@ -81,7 +81,7 @@ def _mint_token(user_id: str, email: str, secret: str) -> str:
     )
 
 
-def _require_dry_run(base: str) -> None:
+def _require_dry_run(base: str, *, want_mode: str | None = None) -> dict:
     status, payload, _ = _request_json("GET", f"{base}/ready", headers={"Accept": "application/json"})
     if status != 200 or not isinstance(payload, dict):
         raise RuntimeError("ready_check_failed")
@@ -89,6 +89,11 @@ def _require_dry_run(base: str) -> None:
         raise RuntimeError(
             "EXTRACT_DRY_RUN is false on server. Set EXTRACT_DRY_RUN=true in Coolify, redeploy, retry."
         )
+    if want_mode:
+        got = str(payload.get("extract_dry_run_mode") or "")
+        if got != want_mode:
+            raise RuntimeError(f"extract_dry_run_mode={got!r} want {want_mode!r}")
+    return payload
 
 
 def _create_users(base: str, api_key: str, secret: str, count: int, stamp: str) -> list[str]:
@@ -215,6 +220,11 @@ def main() -> int:
         default=65.0,
         help="Pause between mint chunks and levels (raise if IP rate-limited)",
     )
+    parser.add_argument(
+        "--require-mode",
+        default="",
+        help="Require GET /ready extract_dry_run_mode (e.g. media)",
+    )
     args = parser.parse_args()
 
     api_key = os.environ.get("API_KEY", "").strip()
@@ -234,7 +244,7 @@ def main() -> int:
         return 2
 
     try:
-        _require_dry_run(base)
+        _require_dry_run(base, want_mode=(args.require_mode or None))
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 2

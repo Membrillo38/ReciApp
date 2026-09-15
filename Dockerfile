@@ -15,6 +15,12 @@ RUN pip install --no-cache-dir -r requirements.txt \
 
 COPY app ./app
 
+# ~6s synthetic clip for EXTRACT_DRY_RUN_MODE=media (no OpenAI, real ffmpeg/STT load).
+RUN mkdir -p /app/fixtures \
+    && ffmpeg -y -f lavfi -i color=c=orange:s=480x270:d=6 -f lavfi -i sine=f=440:d=6 \
+       -shortest -c:v libx264 -pix_fmt yuv420p -c:a aac /app/fixtures/stress_sample.mp4 \
+    && test -s /app/fixtures/stress_sample.mp4
+
 RUN addgroup --system reciapp && adduser --system --ingroup reciapp reciapp \
     && chown -R reciapp:reciapp /app
 

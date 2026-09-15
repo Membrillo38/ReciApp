@@ -145,31 +145,148 @@ def run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langua
         _run_extract_job(job_id, user_id, url, url_norm, language_code)
 
 
-def _dry_run_recipe(*, url: str, url_norm: str, language_code: str) -> Recipe:
+def _dry_run_recipe(
+    *,
+    url: str,
+    url_norm: str,
+    language_code: str,
+    mode: str,
+    note: str = "",
+) -> Recipe:
     suffix = url_norm[-16:] if len(url_norm) > 16 else url_norm
+    tags = ["dry-run", f"dry-run-{mode}"]
     return Recipe(
-        title=f"Dry run {suffix}",
+        title=f"Dry run {mode} {suffix}",
         ingredients=[Ingredient(name="dry-run ingredient", quantity="1")],
-        steps=[Step(order=1, text="Dry-run extract (no provider calls).")],
+        steps=[Step(order=1, text=note or f"Dry-run {mode} extract (no OpenAI).")],
         source_url=url,
-        platform=detect_platform(url),
+        platform=detect_platform(url) if detect_platform(url) != Platform.unknown else Platform.youtube,
         confidence=1.0,
         language_code=language_code,
-        tags=["dry-run"],
+        tags=tags,
+        description=(note[:500] if note else None),
     )
+
+
+def _stress_media_from_file(job_id: UUID, source: Path, *, max_frames: int) -> tuple[str, int, int]:
+    """CPU/RAM path: copy fixture, extract audio, local STT, sample frames. Returns (note, frame_count, audio_bytes)."""
+    import subprocess
+    import tempfile
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise ExtractError("ffmpeg is required for media dry-run")
+    if not source.is_file() or source.stat().st_size <= 0:
+        raise ExtractError("dry-run media fixture missing")
+
+    tmpdir = Path(tempfile.mkdtemp(prefix=f"dry-media-{job_id.hex[:8]}-"))
+    work = tmpdir / "clip.mp4"
+    audio = tmpdir / "audio.wav"
+    frames_dir = tmpdir / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.copyfile(source, work)
+        subprocess.run(
+            [ffmpeg, "-y", "-i", str(work), "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", str(audio)],
+            check=True,
+            capture_output=True,
+            timeout=120,
+        )
+        transcript = local_transcript(audio) or ""
+        # Sample up to max_frames JPEGs (~2 FPS over clip) to pressure decode RAM.
+        subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-i",
+                str(work),
+                "-vf",
+                f"fps=2,scale=480:-2",
+                "-frames:v",
+                str(max_frames),
+                str(frames_dir / "f_%03d.jpg"),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=120,
+        )
+        frame_paths = sorted(frames_dir.glob("f_*.jpg"))
+        # Touch bytes so pages are faulted in (RAM pressure), then drop.
+        loaded = 0
+        for path in frame_paths:
+            loaded += len(path.read_bytes())
+        note = f"media dry-run frames={len(frame_paths)} audio_bytes={audio.stat().st_size} frame_bytes={loaded} stt_chars={len(transcript)}"
+        if transcript:
+            note = f"{note} stt={transcript[:160]}"
+        return note, len(frame_paths), int(audio.stat().st_size)
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def _stress_media_from_url(job_id: UUID, media_url: str, *, max_frames: int) -> tuple[str, int, int]:
+    """Network media path via yt-dlp helpers, still zero OpenAI."""
+    audio_path: Path | None = None
+    video_frames: VideoFrames | None = None
+    try:
+        media = fetch_media_info(media_url)
+        mid = f"dry-{job_id.hex[:12]}"
+        audio_path = download_audio(media.webpage_url or media_url, mid)
+        transcript = local_transcript(audio_path) if audio_path else ""
+        duration = media.duration_seconds
+        if duration is not None:
+            duration = min(int(duration), 90)
+        video_frames = download_video_frames(
+            media.webpage_url or media_url,
+            media_id=mid,
+            duration_seconds=duration,
+            play_urls=media.play_urls,
+            max_unique_frames=max_frames,
+        )
+        frame_paths = list(video_frames.paths) if video_frames else []
+        loaded = sum(path.stat().st_size for path in frame_paths if path.is_file())
+        for path in frame_paths:
+            path.read_bytes()
+        audio_bytes = int(audio_path.stat().st_size) if audio_path and audio_path.is_file() else 0
+        note = f"media url dry-run frames={len(frame_paths)} audio_bytes={audio_bytes} frame_bytes={loaded} stt_chars={len(transcript or '')}"
+        return note, len(frame_paths), audio_bytes
+    finally:
+        if audio_path:
+            shutil.rmtree(audio_path.parent, ignore_errors=True)
+        if video_frames is not None:
+            shutil.rmtree(video_frames.directory, ignore_errors=True)
 
 
 def _run_extract_job_dry(job_id: UUID, user_id: UUID, url: str, url_norm: str, language_code: str) -> None:
     """Admission + persistence path with zero paid providers. For load tests only."""
     language_code = normalize_language(language_code)
+    mode = (settings.extract_dry_run_mode or "lite").strip().lower()
+    note = ""
+    frame_count = 0
     try:
         update_job(job_id, status=JobStatus.processing.value, progress=10)
-        logger.warning("extract dry_run=1 job_id=%s hold_ms=%s", job_id, settings.extract_dry_run_hold_ms)
-        hold = max(0, int(settings.extract_dry_run_hold_ms)) / 1000.0
-        if hold:
-            time.sleep(hold)
-        update_job(job_id, progress=85)
-        recipe = _dry_run_recipe(url=url, url_norm=url_norm, language_code=language_code)
+        logger.warning(
+            "extract dry_run=1 mode=%s job_id=%s hold_ms=%s",
+            mode,
+            job_id,
+            settings.extract_dry_run_hold_ms,
+        )
+        if mode == "media":
+            update_job(job_id, progress=25)
+            max_frames = int(settings.extract_dry_run_media_frames)
+            media_url = (settings.extract_dry_run_media_url or "").strip()
+            media_file = Path((settings.extract_dry_run_media_file or "").strip() or "/app/fixtures/stress_sample.mp4")
+            if media_url:
+                note, frame_count, _audio_bytes = _stress_media_from_url(job_id, media_url, max_frames=max_frames)
+            else:
+                note, frame_count, _audio_bytes = _stress_media_from_file(job_id, media_file, max_frames=max_frames)
+            update_job(job_id, progress=80)
+        else:
+            hold = max(0, int(settings.extract_dry_run_hold_ms)) / 1000.0
+            if hold:
+                time.sleep(hold)
+            update_job(job_id, progress=85)
+
+        recipe = _dry_run_recipe(url=url, url_norm=url_norm, language_code=language_code, mode=mode, note=note)
         row = upsert_recipe(recipe, source_url_norm=url_norm, language_code=language_code)
         recipe_id = row["id"] if isinstance(row["id"], UUID) else UUID(str(row["id"]))
         save_user_recipe(user_id, recipe_id)
@@ -193,9 +310,10 @@ def _run_extract_job_dry(job_id: UUID, user_id: UUID, url: str, url_norm: str, l
         except Exception:
             pass
         settle_spend(job_id=job_id, actual_cents=0.0, status="settled")
+        logger.info("extract dry_run done job_id=%s mode=%s frames=%s", job_id, mode, frame_count)
     except Exception as exc:
         logger.error("extract dry_run failed job_id=%s error_type=%s", job_id, type(exc).__name__)
-        _mark_job_failed(job_id, _RETRYABLE_EXTRACTION_ERROR, cost_cents=0.0)
+        _mark_job_failed(job_id, _safe_job_error(exc) if isinstance(exc, ExtractError) else _RETRYABLE_EXTRACTION_ERROR, cost_cents=0.0)
         settle_spend(job_id=job_id, actual_cents=0.0, status="failed")
     finally:
         release_job(user_id)
