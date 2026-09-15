@@ -248,3 +248,84 @@ def test_dashboard_ips_reads_crowdsec_and_whitelist():
     assert {row["ip"] for row in data["blacklist"]} == {"203.0.113.50", "198.51.100.9"}
     assert data["whitelist_ips"] == ["92.189.226.39"]
     assert data["whitelist_cidrs"] == ["100.64.0.0/10"]
+
+
+def test_dashboard_ip_detail_joins_ban_probes_and_requests():
+    from app import dashboard_stats
+    from app.security import pseudonymous_ip
+
+    ip = "203.0.113.50"
+    ip_hash = pseudonymous_ip(ip)
+
+    def fake_fetch_one(sql, params=None):
+        return {
+            "created_at": "2026-09-15T18:00:00+00:00",
+            "metadata": {
+                "crowdsec": {
+                    "decisions": [
+                        {
+                            "ip": ip,
+                            "reason": "crowdsecurity/ssh-bf",
+                            "duration": "4h",
+                            "origin": "crowdsec",
+                        }
+                    ],
+                    "alerts": [
+                        {
+                            "ip": ip,
+                            "scenario": "crowdsecurity/ssh-bf",
+                            "events_count": 6,
+                            "created_at": "2026-09-15T17:50:00+00:00",
+                            "start_at": "2026-09-15T17:40:00+00:00",
+                            "stop_at": "2026-09-15T17:50:00+00:00",
+                        }
+                    ],
+                },
+                "jails": {},
+                "whitelist": {"ips": [], "cidrs": []},
+                "ssh_recent": [
+                    {"t": "2026-09-15T17:49:00", "line": f"Failed password for root from {ip} port 22"}
+                ],
+            },
+        }
+
+    def fake_fetch_all(sql, params=None):
+        text = " ".join(sql.split())
+        if "scanner_probe" in text:
+            return [
+                {
+                    "created_at": "2026-09-15T17:00:00+00:00",
+                    "event": "scanner_probe",
+                    "ip": ip_hash,
+                    "metadata": {"path": "/.env", "ip": ip},
+                }
+            ]
+        if "api_request_logs" in text:
+            assert params == (ip_hash,)
+            return [
+                {
+                    "created_at": "2026-09-15T17:01:00+00:00",
+                    "method": "GET",
+                    "path": "/.env",
+                    "status_code": 404,
+                    "duration_ms": 12,
+                    "ip": ip_hash,
+                }
+            ]
+        return []
+
+    original_one = dashboard_stats.fetch_one
+    original_all = dashboard_stats.fetch_all
+    dashboard_stats.fetch_one = fake_fetch_one
+    dashboard_stats.fetch_all = fake_fetch_all
+    try:
+        detail = dashboard_stats.dashboard_ip_detail(ip)
+    finally:
+        dashboard_stats.fetch_one = original_one
+        dashboard_stats.fetch_all = original_all
+
+    assert detail["ban"]["reason"] == "crowdsecurity/ssh-bf"
+    assert detail["probes"][0]["metadata"]["path"] == "/.env"
+    assert detail["requests"][0]["status_code"] == 404
+    assert detail["ssh_hits"]
+    assert detail["crowd_alerts"][0]["events_count"] == 6

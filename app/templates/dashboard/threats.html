@@ -34,7 +34,7 @@
     <tbody>
       {% for row in t.banned %}
       <tr>
-        <td>{{ row.ip }}</td>
+        <td><a class="ip-link" href="/dashboard/ips/{{ row.ip }}">{{ row.ip }}</a></td>
         <td class="muted">{{ row.jail }}</td>
       </tr>
       {% else %}

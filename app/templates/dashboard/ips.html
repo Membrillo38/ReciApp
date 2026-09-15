@@ -24,7 +24,7 @@
     <tbody>
       {% for row in i.blacklist %}
       <tr>
-        <td>{{ row.ip }}</td>
+        <td><a class="ip-link" href="/dashboard/ips/{{ row.ip }}">{{ row.ip }}</a></td>
         <td class="muted">{{ row.source }}</td>
         <td class="muted" style="white-space:normal; max-width:360px;">{{ row.reason }}</td>
         <td class="muted">{{ row.duration }}</td>

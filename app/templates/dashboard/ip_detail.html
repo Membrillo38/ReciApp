@@ -1,0 +1,116 @@
+{% extends "dashboard/base.html" %}
+{% block title %}{{ d.ip }} · IPs · ReciApp{% endblock %}
+{% block content %}
+<a class="back" href="/dashboard/ips">← IPs</a>
+<h1>{{ d.ip }}</h1>
+<p class="muted">
+  Motivo del bloqueo y actividad relacionada.
+  Snapshot: {{ d.snapshot_at or 'aún no' }}
+  {% if d.ip_hash %} · hash {{ d.ip_hash }}{% endif %}
+</p>
+
+<div class="grid">
+  <div class="card">
+    <div class="label">Fuente</div>
+    <div class="value" style="font-size:1.1rem;">{{ d.ban.source }}</div>
+  </div>
+  <div class="card">
+    <div class="label">Duración</div>
+    <div class="value" style="font-size:1.1rem;">{{ d.ban.duration }}</div>
+  </div>
+  <div class="card">
+    <div class="label">Probes</div>
+    <div class="value">{{ d.probes|length }}</div>
+    <div class="muted">scanner_probe</div>
+  </div>
+  <div class="card">
+    <div class="label">API calls</div>
+    <div class="value">{{ d.requests|length }}</div>
+    <div class="muted">por hash</div>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom:1.25rem;">
+  <div class="label">Por qué se bloqueó</div>
+  <p style="margin:0.55rem 0 0; white-space:normal;">{{ d.ban.reason }}</p>
+</div>
+
+{% if d.crowd_alerts %}
+<h2>Alertas CrowdSec</h2>
+<div class="card">
+  <table>
+    <thead><tr><th>Cuándo</th><th>Escenario</th><th>Eventos</th><th>Ventana</th></tr></thead>
+    <tbody>
+      {% for row in d.crowd_alerts %}
+      <tr>
+        <td class="muted">{{ row.created_at or '—' }}</td>
+        <td>{{ row.scenario }}</td>
+        <td>{{ row.events_count or '—' }}</td>
+        <td class="muted" style="white-space:normal;">{{ row.start_at or '—' }} → {{ row.stop_at or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<h2>Probes scanner</h2>
+<div class="card">
+  <table>
+    <thead><tr><th>Cuándo</th><th>Path / meta</th></tr></thead>
+    <tbody>
+      {% for row in d.probes %}
+      <tr>
+        <td class="muted">{{ row.created_at }}</td>
+        <td style="white-space:normal;">
+          {% if row.metadata and row.metadata.path %}
+            <code>{{ row.metadata.path }}</code>
+          {% else %}
+            <pre>{{ row.metadata }}</pre>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="2" class="muted">Sin scanner_probe para esta IP</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h2>Llamadas API</h2>
+<div class="card">
+  <table>
+    <thead><tr><th>Cuándo</th><th>Método</th><th>Path</th><th>Status</th><th>ms</th></tr></thead>
+    <tbody>
+      {% for row in d.requests %}
+      <tr>
+        <td class="muted">{{ row.created_at }}</td>
+        <td>{{ row.method }}</td>
+        <td style="white-space:normal;"><code>{{ row.path }}</code></td>
+        <td class="{% if row.status_code >= 400 %}bad{% else %}ok{% endif %}">{{ row.status_code }}</td>
+        <td class="muted">{{ row.duration_ms }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="muted">Sin api_request_logs (IP se guarda como hash)</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h2>SSH reciente</h2>
+<div class="card">
+  <table>
+    <thead><tr><th>Cuándo</th><th>Línea</th></tr></thead>
+    <tbody>
+      {% for row in d.ssh_hits %}
+      <tr>
+        <td class="muted">{{ row.t or '—' }}</td>
+        <td style="white-space:normal;"><pre>{{ row.line }}</pre></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="2" class="muted">Sin líneas SSH con esta IP en el snapshot</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

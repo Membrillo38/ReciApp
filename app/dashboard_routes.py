@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import ipaddress
 from pathlib import Path
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from app.dashboard_stats import dashboard_ips, dashboard_overview, dashboard_threats, list_usage
+from app.dashboard_stats import (
+    dashboard_ip_detail,
+    dashboard_ips,
+    dashboard_overview,
+    dashboard_threats,
+    list_usage,
+)
 from app.db import fetch_all
 from app.store import list_jobs, list_live_queue_jobs, list_profiles, list_recipes
 
@@ -107,4 +114,19 @@ def ips_page(request: Request):
     return templates.TemplateResponse(
         "dashboard/ips.html",
         _ctx(request, "ips", i=dashboard_ips()),
+    )
+
+
+@router.get("/ips/{ip}", response_class=HTMLResponse)
+def ips_detail_page(request: Request, ip: str):
+    try:
+        ip = str(ipaddress.ip_address(ip.strip()))
+    except ValueError:
+        return RedirectResponse("/dashboard/ips?err=IP+invalida", status_code=303)
+    detail = dashboard_ip_detail(ip)
+    if detail is None:
+        return RedirectResponse("/dashboard/ips?err=IP+no+encontrada", status_code=303)
+    return templates.TemplateResponse(
+        "dashboard/ip_detail.html",
+        _ctx(request, "ips", d=detail),
     )
