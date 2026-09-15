@@ -314,6 +314,92 @@ def dashboard_ips() -> dict:
     }
 
 
+def dashboard_ip_detail(ip: str) -> dict | None:
+    """Why an IP was blocked + related probe/API/SSH evidence."""
+    from app.security import pseudonymous_ip
+
+    ip = (ip or "").strip()
+    if not ip:
+        return None
+
+    listing = dashboard_ips()
+    ban = next((row for row in listing["blacklist"] if row["ip"] == ip), None)
+    if ban is None:
+        # Still show detail if we have logs, even if no longer banned
+        ban = {
+            "ip": ip,
+            "source": "—",
+            "reason": "No está en blacklist ahora",
+            "duration": "—",
+        }
+
+    ip_hash = pseudonymous_ip(ip)
+    probes = fetch_all(
+        """
+        select created_at, event, ip, metadata
+          from security_events
+         where event = 'scanner_probe'
+           and (
+             metadata->>'ip' = %s
+             or ip = %s
+             or ip = %s
+           )
+         order by created_at desc
+         limit 80
+        """,
+        (ip, ip, ip_hash),
+    )
+    requests = fetch_all(
+        """
+        select created_at, method, path, status_code, duration_ms, ip
+          from api_request_logs
+         where ip = %s
+         order by created_at desc
+         limit 80
+        """,
+        (ip_hash,),
+    ) if ip_hash else []
+
+    snapshot_row = fetch_one(
+        """
+        select metadata
+          from security_events
+         where event = 'fail2ban_snapshot'
+         order by created_at desc
+         limit 1
+        """
+    ) or {}
+    snapshot = snapshot_row.get("metadata") or {}
+    ssh_hits: list[dict] = []
+    if isinstance(snapshot, dict):
+        for row in snapshot.get("ssh_recent") or []:
+            if not isinstance(row, dict):
+                continue
+            line = str(row.get("line") or "")
+            if ip in line:
+                ssh_hits.append(row)
+
+    crowd_alerts: list[dict] = []
+    if isinstance(snapshot, dict):
+        crowd = snapshot.get("crowdsec") if isinstance(snapshot.get("crowdsec"), dict) else {}
+        for row in crowd.get("alerts") or []:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("ip") or "") == ip:
+                crowd_alerts.append(row)
+
+    return {
+        "ip": ip,
+        "ip_hash": ip_hash,
+        "ban": ban,
+        "probes": probes,
+        "requests": requests,
+        "ssh_hits": ssh_hits[:40],
+        "crowd_alerts": crowd_alerts,
+        "snapshot_at": listing.get("snapshot_at"),
+    }
+
+
 def dashboard_threats() -> dict:
     snapshot_row = fetch_one(
         """
