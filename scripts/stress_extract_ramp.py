@@ -227,7 +227,14 @@ def main() -> int:
     stamp = str(int(time.time()))
     max_n = max(levels)
     print(json.dumps({"phase": "mint_users", "count": max_n, "host": host, "dry_run": True}, sort_keys=True))
-    tokens = _create_users(base, api_key, secret, max_n, stamp)
+    # Mint in chunks so general RATE_LIMIT_PER_IP_PER_MINUTE (default 90) does not ban the ramp.
+    tokens: list[str] = []
+    chunk = 40
+    for start in range(0, max_n, chunk):
+        n = min(chunk, max_n - start)
+        tokens.extend(_create_users(base, api_key, secret, n, f"{stamp}-{start}"))
+        if start + chunk < max_n:
+            time.sleep(65.0)
 
     reports = []
     for level in levels:
@@ -258,7 +265,8 @@ def main() -> int:
         summary = _summarize(level, hits, finals, (time.perf_counter() - wall_start) * 1000)
         reports.append(summary)
         print(json.dumps({"phase": "level", **summary}, sort_keys=True))
-        time.sleep(1.0)
+        # Let sliding IP windows drain before the next burst.
+        time.sleep(65.0)
 
     cliff = next((r["level"] for r in reports if r["ok_rate"] < 0.95), None)
     print(
