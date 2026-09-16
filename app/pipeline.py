@@ -68,9 +68,9 @@ from app.transcript import (
     local_transcript,
     ocr_one_slide,
     ocr_video_frames,
-    whisper_transcript,
     youtube_transcript,
 )
+from app.stt import rotate_transcript
 
 logger = logging.getLogger(__name__)
 _RETRYABLE_EXTRACTION_ERROR = EXTRACTION_RETRYABLE
@@ -608,8 +608,8 @@ def _run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langu
                 recipe = try_build(transcript, video_text)
                 update_job(job_id, progress=45)
 
-                # Stage 2–3: local STT then OpenAI STT only when recipe still incomplete.
-                # Char count does not gate audio — a short complete recipe is enough to skip.
+                # Stage 2–3: remote STT rotation → local (if few jobs) → OpenAI.
+                # Audio only when recipe still incomplete.
                 if recipe is None:
                     try:
                         audio_path = download_audio(media.webpage_url, media.media_id)
@@ -621,53 +621,31 @@ def _run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langu
                         )
                         audio_path = None
 
-                    spoken_local: str | None = None
                     if audio_path is not None:
-                        spoken_local = local_transcript(audio_path)
-                        if spoken_local:
-                            transcript = _merge_evidence(transcript, spoken_local)
-                            recipe = try_build(transcript, video_text)
-                            logger.info(
-                                "extract stage=local_transcribe job_id=%s chars=%d",
-                                job_id,
-                                len(spoken_local),
-                            )
-
-                    # OpenAI STT only when local whisper gave little/no speech.
-                    local_chars = len((spoken_local or "").strip())
-                    need_openai_stt = (
-                        recipe is None
-                        and audio_path is not None
-                        and local_chars < settings.local_stt_min_chars
-                    )
-                    if need_openai_stt:
                         try:
-                            spoken = whisper_transcript(
+                            spoken, provider = rotate_transcript(
                                 audio_path,
                                 duration_seconds=float(duration_seconds)
                                 if duration_seconds
                                 else None,
+                                language_code=language_code,
+                                local_fn=local_transcript,
                             )
                             transcript = _merge_evidence(transcript, spoken)
                             recipe = try_build(transcript, video_text)
                             logger.info(
-                                "extract stage=openai_transcribe job_id=%s chars=%d",
+                                "extract stage=stt_transcribe job_id=%s provider=%s chars=%d",
                                 job_id,
+                                provider,
                                 len(spoken),
                             )
                         except Exception as exc:
                             logger.warning(
-                                "extract stage=whisper_fallback job_id=%s platform=%s error_type=%s",
+                                "extract stage=stt_fallback job_id=%s platform=%s error_type=%s",
                                 job_id,
                                 platform.value,
                                 type(exc).__name__,
                             )
-                    elif recipe is None and audio_path is not None and local_chars >= settings.local_stt_min_chars:
-                        logger.info(
-                            "extract stage=openai_transcribe_skipped job_id=%s local_chars=%d",
-                            job_id,
-                            local_chars,
-                        )
 
                 update_job(job_id, progress=60)
 

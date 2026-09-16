@@ -139,15 +139,10 @@ def test_incomplete_recipe_tries_audio_before_vision(monkeypatch, tmp_path):
     monkeypatch.setattr(pipeline, "detect_platform", lambda url: Platform.tiktok)
     monkeypatch.setattr(pipeline, "fetch_tiktok_slides", lambda url: None)
     monkeypatch.setattr(pipeline, "fetch_media_info", lambda url: media)
+    monkeypatch.setattr(pipeline, "download_audio", lambda *a, **k: audio_calls.append(1) or audio_path)
     monkeypatch.setattr(
         pipeline,
-        "download_audio",
-        lambda *a, **k: audio_calls.append(1) or audio_path,
-    )
-    monkeypatch.setattr(pipeline, "local_transcript", lambda *a, **k: None)
-    monkeypatch.setattr(
-        pipeline,
-        "whisper_transcript",
+        "rotate_transcript",
         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("stt miss")),
     )
     monkeypatch.setattr(
@@ -255,7 +250,7 @@ def test_carousel_link_in_bio_skips_ocr(monkeypatch):
     assert settled[-1]["actual_cents"] == 0
 
 
-def test_openai_stt_skipped_when_local_transcript_is_rich(monkeypatch, tmp_path):
+def test_rotate_transcript_completes_recipe(monkeypatch, tmp_path):
     import app.pipeline as pipeline
 
     audio = tmp_path / "a.wav"
@@ -271,13 +266,12 @@ def test_openai_stt_skipped_when_local_transcript_is_rich(monkeypatch, tmp_path)
         audio_path=None,
         media_id="9",
     )
-    stt_calls = []
     settled = []
     recipe_id = uuid4()
-    local_text = "A" * (settings.local_stt_min_chars + 5)
+    spoken = "Ingredients: eggs, salt. Steps: scramble and serve hot."
 
     def fake_build(**kwargs):
-        if kwargs.get("transcript") and local_text in (kwargs.get("transcript") or ""):
+        if kwargs.get("transcript") and spoken in (kwargs.get("transcript") or ""):
             return _complete_recipe(**kwargs)
         return None
 
@@ -285,12 +279,7 @@ def test_openai_stt_skipped_when_local_transcript_is_rich(monkeypatch, tmp_path)
     monkeypatch.setattr(pipeline, "fetch_tiktok_slides", lambda url: None)
     monkeypatch.setattr(pipeline, "fetch_media_info", lambda url: media)
     monkeypatch.setattr(pipeline, "download_audio", lambda *a, **k: audio)
-    monkeypatch.setattr(pipeline, "local_transcript", lambda *a, **k: local_text)
-    monkeypatch.setattr(
-        pipeline,
-        "whisper_transcript",
-        lambda *a, **k: stt_calls.append(1) or "paid",
-    )
+    monkeypatch.setattr(pipeline, "rotate_transcript", lambda *a, **k: (spoken, "groq"))
     monkeypatch.setattr(
         pipeline,
         "download_video_frames",
@@ -308,7 +297,6 @@ def test_openai_stt_skipped_when_local_transcript_is_rich(monkeypatch, tmp_path)
 
     pipeline.run_extract_job(uuid4(), uuid4(), media.webpage_url, "tiktok:9", "en-US")
 
-    assert stt_calls == []
     assert settled[-1]["status"] == "settled"
 
 

@@ -12,6 +12,18 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     api_key: str = ""
 
+    # Remote STT rotation (tried before local/OpenAI). Never commit real values.
+    groq_api_key: str = Field(default="", repr=False)
+    deepgram_api_key: str = Field(default="", repr=False)
+    assemblyai_api_key: str = Field(default="", repr=False)
+    speechmatics_api_key: str = Field(default="", repr=False)
+    gladia_api_key: str = Field(default="", repr=False)
+    elevenlabs_api_key: str = Field(default="", repr=False)
+    elevenlabs_api_key_2: str = Field(default="", repr=False)
+    soniox_api_key: str = Field(default="", repr=False)
+    # After remotes fail: local STT only when fewer than this many in-process jobs.
+    stt_local_max_active_jobs: int = Field(default=2, ge=1, le=32)
+
     database_url: str = Field(default="", repr=False)
     redis_url: str = Field(default="", repr=False)
     auth_jwt_secret: str = Field(default="", repr=False)
