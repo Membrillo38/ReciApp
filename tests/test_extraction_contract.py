@@ -635,11 +635,11 @@ def test_upload_cover_jpeg_returns_public_url(monkeypatch, tmp_path):
     assert (tmp_path / "abcd.jpg").read_bytes() == b"jpeg-bytes"
 
 
-def test_cover_sample_times_are_eight_frames_in_first_two_seconds():
+def test_cover_sample_times_are_five_frames_in_first_two_point_five_seconds():
     times = extract.cover_sample_times(20)
-    assert times == [0.125, 0.375, 0.625, 0.875, 1.125, 1.375, 1.625, 1.875]
+    assert times == [0.25, 0.75, 1.25, 1.75, 2.25]
     short = extract.cover_sample_times(1)
-    assert len(short) == 8
+    assert len(short) == 5
     assert short[0] >= 0
     assert short[-1] < 1.0
 
@@ -655,7 +655,7 @@ def test_select_best_cover_prefers_high_variance_frame(tmp_path):
     assert extract.select_best_cover_path([dull, sharp], tmp_path) == sharp
 
 
-def test_cover_frame_sampler_uses_two_second_section(tmp_path):
+def test_cover_frame_sampler_uses_two_point_five_second_section(tmp_path):
     original_ytdlp = extract._run_ytdlp
     original_run = extract.subprocess.run
     original_which = extract.shutil.which
@@ -673,9 +673,9 @@ def test_cover_frame_sampler_uses_two_second_section(tmp_path):
             return SimpleNamespace(returncode=0, stdout="12.0\n", stderr="")
         dest = Path(command[-1])
         if dest.name == "cover.raw":
-            dest.write_bytes(bytes(range(256)) * ((extract.COVER_GRAY_SIZE ** 2) * 8 // 256))
+            dest.write_bytes(bytes(range(256)) * ((extract.COVER_GRAY_SIZE ** 2) * 5 // 256))
         elif "%02d" in dest.name:
-            for index in range(1, 9):
+            for index in range(1, 6):
                 (dest.parent / f"cover-{index:02d}.jpg").write_bytes(b"j" * 400)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -689,7 +689,7 @@ def test_cover_frame_sampler_uses_two_second_section(tmp_path):
             media_id="1",
             duration_seconds=20,
         )
-        assert len(result.paths) == 8
+        assert len(result.paths) == 5
         assert all(path.is_file() for path in result.paths)
         assert extract.COVER_DOWNLOAD_SECTION in calls[0]
         assert extract.select_best_cover_path(result.paths, result.directory) in result.paths

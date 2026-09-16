@@ -59,10 +59,10 @@ VIDEO_PROBE_TIMEOUT_SECONDS = 10
 VISION_FPS = 5.0
 DHASH_HAMMING_THRESHOLD = 6
 MAX_UNIQUE_VISION_FRAMES = 12
-COVER_WINDOW_SECONDS = 2.0
-COVER_FRAME_COUNT = 8
+COVER_WINDOW_SECONDS = 2.5
+COVER_FRAME_COUNT = 5
 COVER_GRAY_SIZE = 64
-COVER_DOWNLOAD_SECTION = "*0-2.2"
+COVER_DOWNLOAD_SECTION = "*0-2.5"
 _VIDEO_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
@@ -723,7 +723,7 @@ def _hamming64(left: int, right: int) -> int:
 
 
 def cover_sample_times(duration: float) -> list[float]:
-    """Eight timestamps in the first two seconds (or the whole clip if shorter)."""
+    """Five timestamps in the first 2.5 seconds (or the whole clip if shorter)."""
     window = min(COVER_WINDOW_SECONDS, max(float(duration), 0.04))
     return [
         round((index + 0.5) * window / COVER_FRAME_COUNT, 3)
@@ -738,7 +738,7 @@ def download_cover_frames(
     duration_seconds: int | None,
     play_urls: list[str] | None = None,
 ) -> VideoFrames:
-    """Download a short prefix and extract eight JPEGs for cover selection."""
+    """Download a short prefix and extract five JPEGs for cover selection."""
     try:
         validate_public_url(url, allowed_hosts=_SOURCE_HOSTS)
     except ValueError as exc:

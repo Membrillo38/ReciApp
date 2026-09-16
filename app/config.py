@@ -60,8 +60,7 @@ class Settings(BaseSettings):
     max_job_cost_cents: float = 50.0
     # Skip paid OpenAI STT when local whisper already returned enough speech.
     local_stt_min_chars: int = 80
-    # Captions/subs/description at least this long → skip audio download + local Whisper
-    # (fall through to vision if recipe still incomplete).
+    # Deprecated: audio is gated by recipe completeness, not caption length.
     caption_skip_audio_min_chars: int = Field(default=80, ge=0, le=5000)
     # Hard ceiling on vision OCR frames per job (last resort).
     max_vision_frames: int = 8
@@ -70,7 +69,7 @@ class Settings(BaseSettings):
     ocr_slide_max_tokens: int = 400
     ocr_overlay_max_tokens: int = 800
     # Sized from real TikTok peak ~950MiB/job on 8GB host.
-    max_concurrent_jobs: int = 4
+    max_concurrent_jobs: int = 8
     # Process slots (extract + translation). Serial extract starts are gated in
     # extract_recipe via user_has_processing_extract, not this counter alone.
     max_concurrent_jobs_per_user: int = 2

@@ -48,8 +48,7 @@ def test_max_job_cost_default_is_fifty_cents():
     assert settings.max_job_cost_cents == 50.0
     assert settings.max_vision_frames == 8
     assert settings.first_vision_pass_frames == 2
-    assert settings.caption_skip_audio_min_chars == 80
-    assert settings.max_concurrent_jobs == 4
+    assert settings.max_concurrent_jobs == 8
 
 
 def test_rich_captions_skip_audio_and_local_whisper(monkeypatch):
@@ -107,8 +106,8 @@ def test_rich_captions_skip_audio_and_local_whisper(monkeypatch):
     assert settled[-1]["status"] == "settled"
 
 
-def test_rich_incomplete_captions_skip_audio_go_vision(monkeypatch, tmp_path):
-    """Captions long enough to skip Whisper, but incomplete → vision only."""
+def test_incomplete_recipe_tries_audio_before_vision(monkeypatch, tmp_path):
+    """Incomplete after captions → audio first; vision only if STT still fails."""
     import app.pipeline as pipeline
     from app.extract import VideoFrames
 
@@ -125,6 +124,8 @@ def test_rich_incomplete_captions_skip_audio_go_vision(monkeypatch, tmp_path):
     )
     frame = tmp_path / "f.jpg"
     frame.write_bytes(b"x")
+    audio_path = tmp_path / "a.wav"
+    audio_path.write_bytes(b"audio")
     audio_calls = []
     vision_calls = []
     settled = []
@@ -141,7 +142,13 @@ def test_rich_incomplete_captions_skip_audio_go_vision(monkeypatch, tmp_path):
     monkeypatch.setattr(
         pipeline,
         "download_audio",
-        lambda *a, **k: audio_calls.append(1) or pytest.fail("audio skipped"),
+        lambda *a, **k: audio_calls.append(1) or audio_path,
+    )
+    monkeypatch.setattr(pipeline, "local_transcript", lambda *a, **k: None)
+    monkeypatch.setattr(
+        pipeline,
+        "whisper_transcript",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("stt miss")),
     )
     monkeypatch.setattr(
         pipeline,
@@ -159,11 +166,10 @@ def test_rich_incomplete_captions_skip_audio_go_vision(monkeypatch, tmp_path):
     monkeypatch.setattr(pipeline, "settle_spend", lambda **k: settled.append(k))
     monkeypatch.setattr(pipeline, "release_job", lambda *a: None)
     monkeypatch.setattr(pipeline, "_drain_next_extract_for_user", lambda *a, **k: None)
-    monkeypatch.setattr(pipeline.settings, "caption_skip_audio_min_chars", 80)
 
     pipeline.run_extract_job(uuid4(), uuid4(), media.webpage_url, "tiktok:caption-vision", "en-US")
 
-    assert audio_calls == []
+    assert audio_calls == [1]
     assert vision_calls == [1]
     assert settled[-1]["status"] == "settled"
 

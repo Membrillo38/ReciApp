@@ -78,12 +78,8 @@ _VISION_BATCH = 4
 _COVER_BUCKET_KEY_LEN = 40
 
 
-def _caption_evidence_chars(*parts: str | None) -> int:
-    return sum(len((part or "").strip()) for part in parts)
-
-
 def choose_video_cover_url(media: MediaInfo) -> str | None:
-    """Best of eight frames from the first two seconds; keep source thumb on failure."""
+    """Best of five frames from the first 2.5 seconds; keep source thumb on failure."""
     frames: VideoFrames | None = None
     try:
         frames = download_cover_frames(
@@ -612,23 +608,9 @@ def _run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langu
                 recipe = try_build(transcript, video_text)
                 update_job(job_id, progress=45)
 
-                caption_chars = _caption_evidence_chars(
-                    transcript, media.title, media.description, video_text
-                )
-                skip_audio = (
-                    recipe is None
-                    and caption_chars >= settings.caption_skip_audio_min_chars
-                )
-
-                # Stage 2–3: local STT then OpenAI STT, only if incomplete and
-                # captions are too thin to justify skipping the heavy media path.
-                if recipe is None and skip_audio:
-                    logger.info(
-                        "extract stage=audio_skipped job_id=%s caption_chars=%d",
-                        job_id,
-                        caption_chars,
-                    )
-                elif recipe is None:
+                # Stage 2–3: local STT then OpenAI STT only when recipe still incomplete.
+                # Char count does not gate audio — a short complete recipe is enough to skip.
+                if recipe is None:
                     try:
                         audio_path = download_audio(media.webpage_url, media.media_id)
                     except ExtractError as exc:
