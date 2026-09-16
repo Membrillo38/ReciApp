@@ -107,9 +107,11 @@ from app.store import (
 from app.superwall import apply_superwall_event
 from app.url_norm import normalize_url
 from app.translation_cache import localized_recipe_row
+from app.stress_mode import assert_stress_safe, stress_hosts
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    assert_stress_safe()
     settings.validate_database()
     get_pool()
     try:
@@ -301,6 +303,11 @@ async def request_metrics(request: Request, call_next):
     request.state.correlation_id = correlation_id
     content_length = request.headers.get("content-length")
     is_probe = request.url.path in {"/health", "/ready"}
+    if settings.stress_test_mode and not is_probe:
+        from app.security import safe_compare
+
+        if not safe_compare(request.headers.get("x-stress-token"), settings.stress_token):
+            return JSONResponse(status_code=403, content={"detail": "Stress token required"})
     # Public sslip Host must not expose ops UI — Tailscale/cpanel proxy only.
     if dashboard_publicly_blocked(request):
         return JSONResponse(status_code=404, content={"detail": "Not Found"})
@@ -417,6 +424,9 @@ async def ready() -> JSONResponse:
             await probe_postgres()
     except Exception as exc:
         error = type(exc).__name__
+    dry_mode = None
+    if settings.extract_dry_run:
+        dry_mode = (settings.extract_dry_run_mode or "media").strip().lower() or "media"
     return JSONResponse(
         status_code=503 if error else 200,
         content={
@@ -424,7 +434,10 @@ async def ready() -> JSONResponse:
             "latency_ms": round((time.perf_counter() - start) * 1000),
             "maintenance": settings.maintenance_mode,
             "extract_dry_run": settings.extract_dry_run,
-            "extract_dry_run_mode": ("media" if settings.extract_dry_run else None),
+            "extract_dry_run_mode": dry_mode,
+            "stress_test_mode": settings.stress_test_mode,
+            "stress_run_id": settings.stress_run_id or None,
+            "environment": settings.environment,
             **({"error": error} if error else {}),
         },
         headers={"Cache-Control": "no-store", **({"Retry-After": "1"} if error else {})},
@@ -692,10 +705,10 @@ def extract_recipe(
         retry_after_seconds=60 * 60,
     )
     try:
-        validate_public_url(
-            url,
-            allowed_hosts={"youtube.com", "youtu.be", "tiktok.com", "instagram.com", "facebook.com", "fb.watch"},
-        )
+        allowed = {"youtube.com", "youtu.be", "tiktok.com", "instagram.com", "facebook.com", "fb.watch"}
+        if settings.stress_test_mode:
+            allowed |= stress_hosts()
+        validate_public_url(url, allowed_hosts=allowed)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="Unsupported or unsafe URL") from exc
     url_norm = normalize_url(url)
@@ -744,7 +757,7 @@ def extract_recipe(
                 progress=100,
             )
 
-        if not settings.openai_api_key and not settings.extract_dry_run:
+        if not settings.openai_api_key and not settings.extract_dry_run and not settings.stress_test_mode:
             raise HTTPException(status_code=503, detail="OPENAI_API_KEY not configured")
 
         job = _ensure_translation_job(
@@ -773,7 +786,7 @@ def extract_recipe(
                 progress=int(active.get("progress") or 0),
             )
 
-    if not settings.openai_api_key and not settings.extract_dry_run:
+    if not settings.openai_api_key and not settings.extract_dry_run and not settings.stress_test_mode:
         raise HTTPException(status_code=503, detail="OPENAI_API_KEY not configured")
 
     assert_can_extract(user, cache_hit=False)
@@ -804,7 +817,7 @@ def extract_recipe(
             cache_hit=False,
         )
         job_id = _as_uuid(job["id"])
-        if not settings.extract_dry_run:
+        if not settings.extract_dry_run and not settings.stress_test_mode:
             reserve_spend(user_id=user.id, job_id=job_id)
     except HTTPException as exc:
         if local_claimed:

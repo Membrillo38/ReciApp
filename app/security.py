@@ -278,11 +278,19 @@ def _validate_public_address(raw_address: str) -> None:
 
 def validate_public_url(url: str, *, allowed_hosts: set[str] | None = None) -> None:
     """Reject ambiguous, local and metadata URLs before fetching."""
+    from app.config import settings
+    from app.stress_mode import is_stress_host
+
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower().rstrip(".")
     scheme = parsed.scheme.lower()
     if scheme not in _ALLOWED_URL_SCHEMES or not host or parsed.username or parsed.password:
         raise ValueError("Only public HTTP(S) URLs are accepted")
+    # Stress synthetic hosts never resolve and never leave the process.
+    if settings.stress_test_mode and is_stress_host(host):
+        if allowed_hosts and not any(host == item or host.endswith(f".{item}") for item in allowed_hosts):
+            raise ValueError("Unsupported source host")
+        return
     if host in _BLOCKED_HOSTS:
         raise ValueError("Private or metadata addresses are not accepted")
     try:

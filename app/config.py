@@ -85,6 +85,16 @@ class Settings(BaseSettings):
     extract_dry_run_media_file: str = "/tmp/reciapp-stress-sample.mp4"
     extract_dry_run_media_url: str = ""
     extract_dry_run_media_frames: int = Field(default=8, ge=1, le=24)
+
+    # Isolated stress stack only. Fail-closed: see app.stress_mode.assert_stress_safe.
+    stress_test_mode: bool = False
+    stress_run_id: str = ""
+    stress_token: str = Field(default="", repr=False)
+    stress_allowed_hosts: str = "stress-test.local"
+    stress_mock_latency_ms: int = Field(default=0, ge=0, le=60_000)
+    stress_mock_latency_min_ms: int = Field(default=0, ge=0, le=60_000)
+    stress_mock_latency_max_ms: int = Field(default=0, ge=0, le=60_000)
+    stress_mock_fail_pct: float = Field(default=0.0, ge=0.0, le=100.0)
     max_request_body_bytes: int = 262_144
     webhook_max_age_seconds: int = 7 * 24 * 60 * 60
     apple_root_ca_pem: str = ""

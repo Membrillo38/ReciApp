@@ -323,25 +323,82 @@ def _stress_media_from_url(job_id: UUID, media_url: str, *, max_frames: int) -> 
             shutil.rmtree(video_frames.directory, ignore_errors=True)
 
 
+def _run_extract_job_stress(job_id: UUID, user_id: UUID, url: str, url_norm: str, language_code: str) -> None:
+    """Mock extract: admission + DB only. No network, media, or providers."""
+    from app.stress_mode import apply_mock_latency, mock_should_fail
+
+    language_code = normalize_language(language_code)
+    seed = f"{job_id}:{url_norm}"
+    try:
+        update_job(job_id, status=JobStatus.processing.value, progress=10)
+        hold_ms = apply_mock_latency(seed)
+        if mock_should_fail(seed):
+            raise ExtractError("stress mock permanent failure")
+        update_job(job_id, progress=85)
+        note = f"stress mock hold_ms={hold_ms} run={settings.stress_run_id or '-'}"
+        recipe = _dry_run_recipe(url=url, url_norm=url_norm, language_code=language_code, mode="stress", note=note)
+        row = upsert_recipe(recipe, source_url_norm=url_norm, language_code=language_code)
+        recipe_id = row["id"] if isinstance(row["id"], UUID) else UUID(str(row["id"]))
+        save_user_recipe(user_id, recipe_id)
+        update_job(
+            job_id,
+            status=JobStatus.completed.value,
+            progress=100,
+            lease_until=None,
+            recipe_id=recipe_id,
+            cost_cents=0,
+            cache_hit=False,
+        )
+        try:
+            record_usage(
+                user_id=user_id,
+                kind="extract_stress",
+                cost_cents=0,
+                recipe_id=recipe_id,
+                job_id=job_id,
+            )
+        except Exception:
+            pass
+        settle_spend(job_id=job_id, actual_cents=0.0, status="settled")
+        logger.info("extract stress done job_id=%s hold_ms=%s", job_id, hold_ms)
+    except Exception as exc:
+        logger.error("extract stress failed job_id=%s error_type=%s", job_id, type(exc).__name__)
+        _mark_job_failed(
+            job_id,
+            _safe_job_error(exc) if isinstance(exc, ExtractError) else _RETRYABLE_EXTRACTION_ERROR,
+            cost_cents=0.0,
+        )
+        settle_spend(job_id=job_id, actual_cents=0.0, status="failed")
+    finally:
+        release_job(user_id)
+        _drain_next_extract_for_user(user_id)
+
+
 def _run_extract_job_dry(job_id: UUID, user_id: UUID, url: str, url_norm: str, language_code: str) -> None:
     """Admission + persistence path with zero paid providers. For load tests only."""
     language_code = normalize_language(language_code)
-    # Stress window: always exercise media CPU/RAM when dry-run is on
-    # (ignores EXTRACT_DRY_RUN_MODE=lite left in Coolify).
-    mode = "media"
+    mode = (settings.extract_dry_run_mode or "media").strip().lower() or "media"
+    if mode not in {"lite", "media"}:
+        mode = "media"
     note = ""
     frame_count = 0
     try:
         update_job(job_id, status=JobStatus.processing.value, progress=10)
         logger.warning("extract dry_run=1 mode=%s job_id=%s", mode, job_id)
         update_job(job_id, progress=25)
-        max_frames = int(settings.extract_dry_run_media_frames)
-        media_url = (settings.extract_dry_run_media_url or "").strip()
-        media_file = Path((settings.extract_dry_run_media_file or "").strip() or "/tmp/reciapp-stress-sample.mp4")
-        if media_url:
-            note, frame_count, _audio_bytes = _stress_media_from_url(job_id, media_url, max_frames=max_frames)
+        if mode == "lite":
+            hold = max(0, int(settings.extract_dry_run_hold_ms or 0))
+            if hold:
+                time.sleep(hold / 1000.0)
+            note = f"lite dry-run hold_ms={hold}"
         else:
-            note, frame_count, _audio_bytes = _stress_media_from_file(job_id, media_file, max_frames=max_frames)
+            max_frames = int(settings.extract_dry_run_media_frames)
+            media_url = (settings.extract_dry_run_media_url or "").strip()
+            media_file = Path((settings.extract_dry_run_media_file or "").strip() or "/tmp/reciapp-stress-sample.mp4")
+            if media_url:
+                note, frame_count, _audio_bytes = _stress_media_from_url(job_id, media_url, max_frames=max_frames)
+            else:
+                note, frame_count, _audio_bytes = _stress_media_from_file(job_id, media_file, max_frames=max_frames)
         update_job(job_id, progress=85)
 
         recipe = _dry_run_recipe(url=url, url_norm=url_norm, language_code=language_code, mode=mode, note=note)
@@ -387,6 +444,9 @@ def _run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langu
         # Keep the durable job pending; release only the process-local slot.
         # Operators must drain already-running jobs before backup/reset.
         release_job(user_id)
+        return
+    if settings.stress_test_mode:
+        _run_extract_job_stress(job_id, user_id, url, url_norm, language_code)
         return
     if settings.extract_dry_run:
         _run_extract_job_dry(job_id, user_id, url, url_norm, language_code)
