@@ -352,7 +352,7 @@ def _run_extract_job_stress(job_id: UUID, user_id: UUID, url: str, url_norm: str
         try:
             record_usage(
                 user_id=user_id,
-                kind="extract_stress",
+                kind="extract_dry",
                 cost_cents=0,
                 recipe_id=recipe_id,
                 job_id=job_id,
