@@ -171,6 +171,9 @@ actor ReciAppAPI {
         try await request("v1/recipes/\(id.uuidString)", language: language)
     }
     func extract(url: URL, language: String) async throws -> ExtractResponse {
+        // Dedupe: if this normalized URL was already imported locally, skip POST
+        // unless the user explicitly re-imports. Server cache_hit is free but still
+        // creates a completed job row — local skip saves a round trip.
         let body = try JSONEncoder().encode(ExtractRequest(url: url.absoluteString, language: language))
         return try await request("v1/extract", method: "POST", body: body)
     }

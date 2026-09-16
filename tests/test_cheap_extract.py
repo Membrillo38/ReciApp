@@ -46,7 +46,126 @@ def test_default_margin_is_forty_percent(monkeypatch):
 
 def test_max_job_cost_default_is_fifty_cents():
     assert settings.max_job_cost_cents == 50.0
-    assert settings.max_vision_frames == 12
+    assert settings.max_vision_frames == 8
+    assert settings.first_vision_pass_frames == 2
+    assert settings.caption_skip_audio_min_chars == 80
+    assert settings.max_concurrent_jobs == 4
+
+
+def test_rich_captions_skip_audio_and_local_whisper(monkeypatch):
+    import app.pipeline as pipeline
+
+    media = extract.MediaInfo(
+        title="Pasta night",
+        description="Ingredients listed in captions below.",
+        author="cook",
+        thumbnail_url=None,
+        duration_seconds=40,
+        webpage_url="https://www.tiktok.com/@cook/video/caption-rich",
+        subtitles_text=(
+            "Ingredients: pasta, olive oil, garlic, salt. "
+            "Steps: boil water, cook pasta, saute garlic, toss and serve hot."
+        ),
+        audio_path=None,
+        media_id="caption-rich",
+    )
+    audio_calls = []
+    settled = []
+    recipe_id = uuid4()
+
+    monkeypatch.setattr(pipeline, "detect_platform", lambda url: Platform.tiktok)
+    monkeypatch.setattr(pipeline, "fetch_tiktok_slides", lambda url: None)
+    monkeypatch.setattr(pipeline, "fetch_media_info", lambda url: media)
+    monkeypatch.setattr(
+        pipeline,
+        "download_audio",
+        lambda *a, **k: audio_calls.append(1) or pytest.fail("audio must not download"),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "local_transcript",
+        lambda *a, **k: pytest.fail("local whisper must not run"),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "download_video_frames",
+        lambda *a, **k: pytest.fail("vision must not run when captions complete"),
+    )
+    monkeypatch.setattr(pipeline, "build_recipe", lambda **kwargs: _complete_recipe(**kwargs))
+    monkeypatch.setattr(pipeline, "choose_video_cover_url", lambda *a, **k: None)
+    monkeypatch.setattr(pipeline, "update_job", lambda *a, **k: None)
+    monkeypatch.setattr(pipeline, "upsert_recipe", lambda *a, **k: {"id": str(recipe_id)})
+    monkeypatch.setattr(pipeline, "save_user_recipe", lambda *a, **k: None)
+    monkeypatch.setattr(pipeline, "record_usage", lambda **k: None)
+    monkeypatch.setattr(pipeline, "settle_spend", lambda **k: settled.append(k))
+    monkeypatch.setattr(pipeline, "release_job", lambda *a: None)
+    monkeypatch.setattr(pipeline, "_drain_next_extract_for_user", lambda *a, **k: None)
+
+    pipeline.run_extract_job(uuid4(), uuid4(), media.webpage_url, "tiktok:caption-rich", "en-US")
+
+    assert audio_calls == []
+    assert settled[-1]["status"] == "settled"
+
+
+def test_rich_incomplete_captions_skip_audio_go_vision(monkeypatch, tmp_path):
+    """Captions long enough to skip Whisper, but incomplete → vision only."""
+    import app.pipeline as pipeline
+    from app.extract import VideoFrames
+
+    media = extract.MediaInfo(
+        title="Yum",
+        description="Watch till the end!",
+        author="cook",
+        thumbnail_url=None,
+        duration_seconds=40,
+        webpage_url="https://www.tiktok.com/@cook/video/caption-thin-recipe",
+        subtitles_text="A" * 100,
+        audio_path=None,
+        media_id="caption-vision",
+    )
+    frame = tmp_path / "f.jpg"
+    frame.write_bytes(b"x")
+    audio_calls = []
+    vision_calls = []
+    settled = []
+    recipe_id = uuid4()
+
+    def fake_build(**kwargs):
+        if kwargs.get("slide_text"):
+            return _complete_recipe(**kwargs)
+        return None
+
+    monkeypatch.setattr(pipeline, "detect_platform", lambda url: Platform.tiktok)
+    monkeypatch.setattr(pipeline, "fetch_tiktok_slides", lambda url: None)
+    monkeypatch.setattr(pipeline, "fetch_media_info", lambda url: media)
+    monkeypatch.setattr(
+        pipeline,
+        "download_audio",
+        lambda *a, **k: audio_calls.append(1) or pytest.fail("audio skipped"),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "download_video_frames",
+        lambda *a, **k: vision_calls.append(1)
+        or VideoFrames(directory=tmp_path, paths=[frame]),
+    )
+    monkeypatch.setattr(pipeline, "ocr_video_frames", lambda *a, **k: "Ingredients: egg. Steps: cook.")
+    monkeypatch.setattr(pipeline, "build_recipe", fake_build)
+    monkeypatch.setattr(pipeline, "choose_video_cover_url", lambda *a, **k: None)
+    monkeypatch.setattr(pipeline, "update_job", lambda *a, **k: None)
+    monkeypatch.setattr(pipeline, "upsert_recipe", lambda *a, **k: {"id": str(recipe_id)})
+    monkeypatch.setattr(pipeline, "save_user_recipe", lambda *a, **k: None)
+    monkeypatch.setattr(pipeline, "record_usage", lambda **k: None)
+    monkeypatch.setattr(pipeline, "settle_spend", lambda **k: settled.append(k))
+    monkeypatch.setattr(pipeline, "release_job", lambda *a: None)
+    monkeypatch.setattr(pipeline, "_drain_next_extract_for_user", lambda *a, **k: None)
+    monkeypatch.setattr(pipeline.settings, "caption_skip_audio_min_chars", 80)
+
+    pipeline.run_extract_job(uuid4(), uuid4(), media.webpage_url, "tiktok:caption-vision", "en-US")
+
+    assert audio_calls == []
+    assert vision_calls == [1]
+    assert settled[-1]["status"] == "settled"
 
 
 def test_carousel_caption_complete_skips_ocr(monkeypatch):

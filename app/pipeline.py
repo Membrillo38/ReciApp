@@ -74,9 +74,12 @@ from app.transcript import (
 
 logger = logging.getLogger(__name__)
 _RETRYABLE_EXTRACTION_ERROR = EXTRACTION_RETRYABLE
-_FIRST_VISION_PASS = 4
 _VISION_BATCH = 4
 _COVER_BUCKET_KEY_LEN = 40
+
+
+def _caption_evidence_chars(*parts: str | None) -> int:
+    return sum(len((part or "").strip()) for part in parts)
 
 
 def choose_video_cover_url(media: MediaInfo) -> str | None:
@@ -609,8 +612,23 @@ def _run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langu
                 recipe = try_build(transcript, video_text)
                 update_job(job_id, progress=45)
 
-                # Stage 2–3: local STT then OpenAI STT, only if incomplete.
-                if recipe is None:
+                caption_chars = _caption_evidence_chars(
+                    transcript, media.title, media.description, video_text
+                )
+                skip_audio = (
+                    recipe is None
+                    and caption_chars >= settings.caption_skip_audio_min_chars
+                )
+
+                # Stage 2–3: local STT then OpenAI STT, only if incomplete and
+                # captions are too thin to justify skipping the heavy media path.
+                if recipe is None and skip_audio:
+                    logger.info(
+                        "extract stage=audio_skipped job_id=%s caption_chars=%d",
+                        job_id,
+                        caption_chars,
+                    )
+                elif recipe is None:
                     try:
                         audio_path = download_audio(media.webpage_url, media.media_id)
                     except ExtractError as exc:
@@ -818,7 +836,8 @@ def _vision_incremental_build(
         int(remaining_budget // max(settings.cost_ocr_cents_per_slide, 0.01)),
     )
     paths = frame_paths[:max_affordable]
-    first_indexes = select_spread_frame_indexes(len(paths), min(_FIRST_VISION_PASS, len(paths)))
+    first_n = max(1, int(settings.first_vision_pass_frames))
+    first_indexes = select_spread_frame_indexes(len(paths), min(first_n, len(paths)))
     first_paths = [paths[i] for i in first_indexes]
     analyzed_set = set(first_indexes)
 
