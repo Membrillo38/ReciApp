@@ -45,6 +45,7 @@ from app.recipe_builder import (
     RECIPE_INCOMPLETE_ERROR,
     RECIPE_UNDETERMINED_ERROR,
     build_recipe,
+    reject_clearly_non_recipe,
     reject_link_in_bio,
     translate_recipe,
 )
@@ -485,6 +486,8 @@ def _run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langu
                     raise ExtractError(INCOMPLETE_CAROUSEL)
                 # Caption / bio first — never OCR when recipe points off-app.
                 reject_link_in_bio(slide_info.title, slide_info.description)
+                # Rich non-food caption → fail before OpenAI/OCR.
+                reject_clearly_non_recipe(slide_info.title, slide_info.description)
 
                 def record_slide_attempt() -> None:
                     nonlocal slide_count
@@ -577,6 +580,8 @@ def _run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langu
                 if not transcript and platform == Platform.youtube:
                     transcript = youtube_transcript(url)
                 reject_link_in_bio(media.title, media.description, transcript)
+                # Title/desc only — thin marketing still escalates; free subs stay for stage 1.
+                reject_clearly_non_recipe(media.title, media.description, media.extra_text)
                 video_text = media.extra_text or ""
 
                 def try_build(current_transcript: str | None, current_visual: str | None) -> Recipe | None:
@@ -607,6 +612,15 @@ def _run_extract_job(job_id: UUID, user_id: UUID, url: str, url_norm: str, langu
                 # Stage 1: description / metadata / captions only.
                 recipe = try_build(transcript, video_text)
                 update_job(job_id, progress=45)
+
+                # Model already said "not a recipe" with real caption/subs — stop.
+                # Incomplete/missing-ingredients still escalate (more evidence may help).
+                if (
+                    recipe is None
+                    and reject_reasons
+                    and reject_reasons[-1] == RECIPE_UNDETERMINED_ERROR
+                ):
+                    raise ExtractError(RECIPE_UNDETERMINED_ERROR)
 
                 # Stage 2–3: remote STT rotation → local (if few jobs) → OpenAI.
                 # Audio only when recipe still incomplete.

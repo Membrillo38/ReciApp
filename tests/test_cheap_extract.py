@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from uuid import uuid4
 
 import pytest
@@ -248,6 +249,140 @@ def test_carousel_link_in_bio_skips_ocr(monkeypatch):
     assert ocr_calls == []
     assert jobs[-1]["status"] == "failed"
     assert settled[-1]["actual_cents"] == 0
+
+
+def test_f1_caption_rejects_before_openai_stt_ocr(monkeypatch):
+    """Rich non-food title/desc → undetermined without paid stages."""
+    import app.pipeline as pipeline
+    from app.recipe_builder import RECIPE_UNDETERMINED_ERROR
+
+    media = extract.MediaInfo(
+        title="RUSSELL DA POR PERDIDO EL MUNDIAL DE FORMULA 1",
+        description="Es realmente imposible? #f1 #formula1 #georgerussell #mercedes",
+        author="pablonievest",
+        thumbnail_url=None,
+        duration_seconds=21,
+        webpage_url="https://www.tiktok.com/@pablonievest/video/1",
+        subtitles_text="George Russell habla del campeonato y de Mercedes en la F1.",
+        audio_path=None,
+        media_id="f1",
+    )
+    jobs = []
+    settled = []
+    builds = []
+
+    monkeypatch.setattr(pipeline, "detect_platform", lambda url: Platform.tiktok)
+    monkeypatch.setattr(pipeline, "fetch_tiktok_slides", lambda url: None)
+    monkeypatch.setattr(pipeline, "fetch_media_info", lambda url: media)
+    monkeypatch.setattr(
+        pipeline,
+        "build_recipe",
+        lambda **k: builds.append(1) or pytest.fail("OpenAI build must not run"),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "download_audio",
+        lambda *a, **k: pytest.fail("STT audio must not run"),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "download_video_frames",
+        lambda *a, **k: pytest.fail("OCR vision must not run"),
+    )
+    monkeypatch.setattr(pipeline, "update_job", lambda *a, **k: jobs.append(k))
+    monkeypatch.setattr(pipeline, "record_usage", lambda **k: None)
+    monkeypatch.setattr(pipeline, "settle_spend", lambda **k: settled.append(k))
+    monkeypatch.setattr(pipeline, "release_job", lambda *a: None)
+    monkeypatch.setattr(pipeline, "_drain_next_extract_for_user", lambda *a, **k: None)
+
+    pipeline.run_extract_job(uuid4(), uuid4(), media.webpage_url, "tiktok:f1", "en-US")
+
+    assert builds == []
+    assert jobs[-1]["status"] == "failed"
+    assert jobs[-1]["error"] == RECIPE_UNDETERMINED_ERROR
+    assert settled[-1]["actual_cents"] == 0
+
+
+def test_undetermined_after_captions_skips_stt_and_vision(monkeypatch):
+    """Stage-1 model undetermined with real captions → no STT/OCR escalate."""
+    import app.pipeline as pipeline
+    from app.recipe_builder import RECIPE_UNDETERMINED_ERROR
+
+    media = extract.MediaInfo(
+        title="Quick tip",
+        description="Something about cars and racing weekend vibes today",
+        author="cook",
+        thumbnail_url=None,
+        duration_seconds=20,
+        webpage_url="https://www.tiktok.com/@x/video/2",
+        # Keep under free-gate length without culinary words so stage-1 OpenAI runs.
+        subtitles_text="hello",
+        audio_path=None,
+        media_id="2",
+    )
+    # Force free gate miss: short combined metadata by monkeypatching helper.
+    monkeypatch.setattr(
+        pipeline,
+        "reject_clearly_non_recipe",
+        lambda *a, **k: None,
+    )
+
+    def fake_build(**kwargs):
+        reasons = kwargs.get("reject_reasons")
+        if reasons is not None:
+            reasons.clear()
+            reasons.append(RECIPE_UNDETERMINED_ERROR)
+        return None
+
+    jobs = []
+    settled = []
+
+    monkeypatch.setattr(pipeline, "detect_platform", lambda url: Platform.tiktok)
+    monkeypatch.setattr(pipeline, "fetch_tiktok_slides", lambda url: None)
+    monkeypatch.setattr(pipeline, "fetch_media_info", lambda url: media)
+    monkeypatch.setattr(pipeline, "build_recipe", fake_build)
+    monkeypatch.setattr(
+        pipeline,
+        "download_audio",
+        lambda *a, **k: pytest.fail("must not STT after undetermined"),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "download_video_frames",
+        lambda *a, **k: pytest.fail("must not OCR after undetermined"),
+    )
+    monkeypatch.setattr(pipeline, "update_job", lambda *a, **k: jobs.append(k))
+    monkeypatch.setattr(pipeline, "record_usage", lambda **k: None)
+    monkeypatch.setattr(pipeline, "settle_spend", lambda **k: settled.append(k))
+    monkeypatch.setattr(pipeline, "release_job", lambda *a: None)
+    monkeypatch.setattr(pipeline, "_drain_next_extract_for_user", lambda *a, **k: None)
+
+    pipeline.run_extract_job(uuid4(), uuid4(), media.webpage_url, "tiktok:2", "en-US")
+
+    assert jobs[-1]["status"] == "failed"
+    assert jobs[-1]["error"] == RECIPE_UNDETERMINED_ERROR
+
+
+def test_reject_clearly_non_recipe_unit():
+    from app.extract import ExtractError
+    from app.recipe_builder import (
+        RECIPE_UNDETERMINED_ERROR,
+        caption_has_culinary_signal,
+        reject_clearly_non_recipe,
+    )
+
+    assert not caption_has_culinary_signal(
+        "RUSSELL DA POR PERDIDO EL MUNDIAL DE FORMULA 1",
+        "#f1 #formula1 #georgerussell",
+    )
+    assert caption_has_culinary_signal("Pasta night", "Ingredients listed below")
+    with pytest.raises(ExtractError, match=re.escape(RECIPE_UNDETERMINED_ERROR)):
+        reject_clearly_non_recipe(
+            "RUSSELL DA POR PERDIDO EL MUNDIAL DE FORMULA 1",
+            "Es realmente imposible? #f1 #formula1 #georgerussell #mercedes",
+        )
+    # Thin marketing — do not reject (may still be spoken recipe).
+    reject_clearly_non_recipe("Yum", "Watch till the end!")
 
 
 def test_rotate_transcript_completes_recipe(monkeypatch, tmp_path):

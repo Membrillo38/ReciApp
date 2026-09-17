@@ -120,6 +120,58 @@ def reject_link_in_bio(*parts: str | None) -> None:
         raise ExtractError(LINK_IN_BIO_ERROR)
 
 
+# Free gate: rich non-food caption → fail before OpenAI/STT/OCR.
+# Thin marketing captions still escalate (recipe may live only in audio/frames).
+_MIN_NON_RECIPE_CAPTION_CHARS = 48
+_CULINARY_SIGNAL_RE = re.compile(
+    r"(?i)(?:"
+    r"[🍳🍕🍝🥗🍰🍪🧁🥘🍲🔪🥄🍴🍽️]|"
+    r"#(?:recipe|recipes|receta|recetas|cooking|cocina|foodtok|baking|"
+    r"hornear|cocinando|comida|foodie|asmrfood)\b|"
+    r"\b(?:"
+    r"recipe|recipes|receta|recetas|"
+    r"ingredient(?:s|es)?|ingr[eé]dient(?:s)?|zutaten|ingredienti|"
+    r"cook(?:ing|ed)?|cocin(?:a|ar|ado|ada|ando)?|bake[dr]?|baking|"
+    r"fry(?:ing|ed)?|fre[ií]r|grill(?:ed|ing)?|roast(?:ed|ing)?|"
+    r"saute|saut[eé]|boil(?:ed|ing)?|simmer|horne(?:ar|ado)|"
+    r"meal|dinner|lunch|breakfast|brunch|dessert|snack|"
+    r"cena|almuerzo|desayuno|postre|merienda|"
+    r"pasta|pizza|salad|soup|sauce|salsa|dough|masa|batter|"
+    r"flour|harina|sugar|az[uú]car|salt|butter|mantequilla|"
+    r"oil|aceite|garlic|ajo|onion|cebolla|chicken|pollo|"
+    r"beef|pork|carne|fish|pescado|eggs?|huevos?|"
+    r"cheese|queso|milk|leche|cream|nata|chocolate|"
+    r"cake|pastel|cookie|galleta|bread|arroz|"
+    r"noodle|fideo|taco|burrito|sushi|steak|"
+    r"marinade|adobo|seasoning|tbsp|tsp|cucharad[ao]|"
+    r"oven|horno|skillet|sart[eé]n|whisk|chop|mince|slice|"
+    r"servings?|porciones?|raciones?"
+    r")\b"
+    r")"
+)
+
+
+def _caption_blob(*parts: str | None) -> str:
+    return " ".join(str(part).strip() for part in parts if part and str(part).strip())
+
+
+def caption_has_culinary_signal(*parts: str | None) -> bool:
+    blob = _caption_blob(*parts)
+    if not blob:
+        return False
+    return bool(_CULINARY_SIGNAL_RE.search(blob))
+
+
+def reject_clearly_non_recipe(*parts: str | None) -> None:
+    """Abort when free metadata is long and shows zero recipe signal."""
+    blob = _caption_blob(*parts)
+    if len(blob) < _MIN_NON_RECIPE_CAPTION_CHARS:
+        return
+    if caption_has_culinary_signal(blob):
+        return
+    raise ExtractError(RECIPE_UNDETERMINED_ERROR)
+
+
 RECIPE_SCHEMA = {
     "name": "recipe",
     "strict": True,
