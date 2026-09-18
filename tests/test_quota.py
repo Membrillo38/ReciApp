@@ -33,13 +33,13 @@ def _patch_quota_reads(monkeypatch, *, miss_count: int):
     monkeypatch.setattr(quota, "fetch_one", fake_fetch_one)
 
 
-def test_free_user_blocked_after_10_recipes_this_year(monkeypatch):
+def test_free_user_blocked_after_yearly_cap(monkeypatch):
     user = AuthUser(uuid4(), None, None, False, None)
-    _patch_quota_reads(monkeypatch, miss_count=10)
+    _patch_quota_reads(monkeypatch, miss_count=3)
 
     status = quota.get_quota(user)
-    assert status.free_limit == 10
-    assert status.free_used_this_week == 10
+    assert status.free_limit == 3
+    assert status.free_used_this_week == 3
     assert status.free_remaining == 0
 
     with pytest.raises(HTTPException) as exc:
@@ -51,7 +51,7 @@ def test_free_user_blocked_after_10_recipes_this_year(monkeypatch):
 
 def test_free_user_allowed_under_yearly_cap(monkeypatch):
     user = AuthUser(uuid4(), None, None, False, None)
-    _patch_quota_reads(monkeypatch, miss_count=9)
+    _patch_quota_reads(monkeypatch, miss_count=2)
 
     status = quota.get_quota(user)
     assert status.free_remaining == 1
