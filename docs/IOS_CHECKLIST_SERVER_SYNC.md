@@ -1,26 +1,31 @@
 # Checklist iOS ↔ server (VPS)
 
-Server ya está en Coolify (`main` ≥ `7cb76f1`). Margen Pro **40%**, reserva job **50¢**, OCR último recurso.  
-API: `https://51-255-43-100.sslip.io`
+Server en Coolify `main`. Margen Pro **40%**, reserva job **50¢**, OCR último recurso.  
+API: `https://51-255-43-100.sslip.io`  
+Free: **10 miss / año**. Pro fair-use: budget = precio×0.60.
 
 Usa esto como lista de huecos en la app. Lo ya OK se marca.
 
 ---
 
-## Ya alineado (no hace falta)
+## Ya alineado (server + iOS base)
 
 - [x] `AppConfig.apiBaseURL` → VPS `51-255-43-100.sslip.io` (no Render).
 - [x] Superwall `identify` + attribute **`user_id`** (UUID backend). Server acepta también legacy `supabase_user_id`.
-- [x] Paywall en `FREE_WEEKLY_LIMIT` / `FREE_YEARLY_LIMIT`.
+- [x] Paywall en `FREE_WEEKLY_LIMIT` / `FREE_YEARLY_LIMIT` (= 10/año en prod).
 - [x] UI fair-use en `PRO_FAIR_USE_LIMIT`.
 - [x] `warmUpBackend()` antes de auth.
 - [x] Poll job / refresh `/v1/me` tras compra.
+- [x] Prod `/health` + `/ready` OK (`stress_test_mode=false`, `environment=production`).
+- [x] Webhook Superwall VPS: `https://51-255-43-100.sslip.io/v1/webhooks/superwall`.
+- [x] Server códigos job canónicos (`link_in_bio`, `extraction_retryable`, carousel, etc.).
+- [x] Server emite `SPEND_LIMIT` (403) cuando budget OpenAI se agota.
 
 ---
 
 ## Revisar / completar en iOS
 
-### 1. `SPEND_LIMIT` (403)
+### 1. `SPEND_LIMIT` (403) — pendiente cliente
 
 Server puede devolver:
 
@@ -38,16 +43,15 @@ Hoy cae en `showForbidden` genérico (`ClientStatePolicy`).
 
 Archivo: `ReciApp/Services/ClientStatePolicy.swift` (+ mensaje en `Models.swift` / strings).
 
-### 2. Copy cuota Free
+### 2. Copy cuota Free — pendiente docs/UI si aún dicen “2.º miss”
 
-Server real: **10 miss / año** (`FREE_WEEKLY_LIMIT` = nombre legacy).  
-Algunos docs iOS aún dicen “2.º miss” (`INTEGRACION_SWIFT.md`).
+Server real: **10 miss / año** (`FREE_WEEKLY_LIMIT` = nombre legacy).
 
-**Hacer:** unificar copy UI + docs a **10 / año**. Perfil / TestFlight ya hablan de year — ok.
+**Hacer:** unificar copy UI + docs a **10 / año**.
 
-### 3. Errores de job (extract)
+### 3. Errores de job (extract) — pendiente cliente
 
-Server ahora guarda mensajes canónicos en inglés (y localiza en API cuando aplica), p.ej.:
+Server guarda mensajes canónicos en inglés (localiza en API cuando aplica):
 
 | Mensaje / sentido | Código interno server |
 |---|---|
@@ -64,9 +68,7 @@ Server ahora guarda mensajes canónicos en inglés (y localiza en API cuando apl
 - `link_in_bio` → copy claro: la receta está en el bio del creador; no es fallo de la app.
 - Si más adelante el job expone `error_code`, preferir código; hoy suele ser el string.
 
-### 4. Comportamiento esperado post-cambio server (QA)
-
-Importar y comprobar:
+### 4. QA post-cambio server
 
 1. **Caption completa** (TikTok/IG) → OK sin tardar mucho (sin OCR).
 2. **“Recipe in bio”** → error bio, **sin** gasto raro / sin spinner eterno.
@@ -78,9 +80,9 @@ Importar y comprobar:
 
 ### 5. Superwall dashboard
 
-- Webhook solo VPS: `https://51-255-43-100.sslip.io/v1/webhooks/superwall`.
+- Webhook solo VPS (ya).
 - No apuntar a ningún `*.onrender.com`.
-- Attribute en eventos: `user_id` (ya lo manda el SDK).
+- Attribute en eventos: `user_id`.
 
 ### 6. Docs iOS a sync
 
@@ -91,8 +93,7 @@ Importar y comprobar:
 ### 7. Opcional (no bloquea)
 
 - Renombrar comentarios “weekly limit” → “yearly free cap” en UI/código.
-- Analytics: event cuando `SPEND_LIMIT` (hoy puede no existir).
-- Test harness: caso `SPEND_LIMIT` → no paywall.
+- Analytics: event cuando `SPEND_LIMIT`.
 
 ---
 
@@ -104,13 +105,13 @@ Importar y comprobar:
 
 ---
 
-## Smoke mínimo antes de TestFlight
+## Smoke mínimo prod
 
 1. Sign in with Apple.
 2. Import 1 TikTok video con caption rica.
 3. Import 1 “recipe in bio” → mensaje correcto.
 4. Re-import mismo link → instant / cache.
 5. Settings → Upgrade / restore → `/v1/me` `is_pro`.
-6. (Sandbox) Free: quemar cuota y ver paywall `free_limit_reached`.
+6. Free: quemar cuota (10) y ver paywall `free_limit_reached`.
 
 Si algo de la lista 1–3 no está, prioriza **`SPEND_LIMIT`** y **mostrar `job.error`**.

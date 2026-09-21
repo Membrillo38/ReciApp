@@ -35,11 +35,11 @@ def _patch_quota_reads(monkeypatch, *, miss_count: int):
 
 def test_free_user_blocked_after_yearly_cap(monkeypatch):
     user = AuthUser(uuid4(), None, None, False, None)
-    _patch_quota_reads(monkeypatch, miss_count=3)
+    _patch_quota_reads(monkeypatch, miss_count=10)
 
     status = quota.get_quota(user)
-    assert status.free_limit == 3
-    assert status.free_used_this_week == 3
+    assert status.free_limit == 10
+    assert status.free_used_this_week == 10
     assert status.free_remaining == 0
 
     with pytest.raises(HTTPException) as exc:
@@ -51,7 +51,7 @@ def test_free_user_blocked_after_yearly_cap(monkeypatch):
 
 def test_free_user_allowed_under_yearly_cap(monkeypatch):
     user = AuthUser(uuid4(), None, None, False, None)
-    _patch_quota_reads(monkeypatch, miss_count=2)
+    _patch_quota_reads(monkeypatch, miss_count=9)
 
     status = quota.get_quota(user)
     assert status.free_remaining == 1
