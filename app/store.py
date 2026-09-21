@@ -37,7 +37,8 @@ _JSONB_COLUMNS = {"carousel_image_urls", "ingredients", "ingredient_sections", "
 
 def upload_cover_jpeg(jpeg: bytes, *, key: str) -> str | None:
     """Store a public cover JPEG. Returns None when storage is unavailable."""
-    if not jpeg or len(jpeg) > _MAX_COVER_BYTES:
+    # Size + magic bytes (SOI). Extension alone is not a type check.
+    if not jpeg or len(jpeg) > _MAX_COVER_BYTES or not jpeg.startswith(b"\xff\xd8\xff"):
         return None
     safe_key = re.sub(r"[^A-Za-z0-9._-]", "_", key.strip())[:120]
     if not safe_key.endswith(".jpg"):

@@ -630,9 +630,19 @@ def test_upload_cover_jpeg_returns_public_url(monkeypatch, tmp_path):
 
     monkeypatch.setenv("COVER_STORAGE_DIR", str(tmp_path))
     monkeypatch.setattr(store.settings, "cover_public_base_url", "https://cdn.example/covers")
-    url = store.upload_cover_jpeg(b"jpeg-bytes", key="abcd.jpg")
+    jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 16
+    url = store.upload_cover_jpeg(jpeg, key="abcd.jpg")
     assert url == "https://cdn.example/covers/abcd.jpg"
-    assert (tmp_path / "abcd.jpg").read_bytes() == b"jpeg-bytes"
+    assert (tmp_path / "abcd.jpg").read_bytes() == jpeg
+
+
+def test_upload_cover_jpeg_rejects_non_jpeg(monkeypatch, tmp_path):
+    from app import store
+
+    monkeypatch.setenv("COVER_STORAGE_DIR", str(tmp_path))
+    monkeypatch.setattr(store.settings, "cover_public_base_url", "https://cdn.example/covers")
+    assert store.upload_cover_jpeg(b"not-a-jpeg", key="abcd.jpg") is None
+    assert store.upload_cover_jpeg(b"\xff\xd8\xff" + b"x" * 3_000_000, key="abcd.jpg") is None
 
 
 def test_cover_sample_times_are_five_frames_in_first_two_point_five_seconds():

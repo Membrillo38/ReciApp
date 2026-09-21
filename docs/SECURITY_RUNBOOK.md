@@ -16,11 +16,19 @@
 6. Configure provider-side spend limits and alerts at 50%, 75%, 90% and 100%.
 7. Deploy the web service and run `/health`, `/ready`, then the recipe matrix with `AUTH_JWT_SECRET`. Keep `authorization_code` optional until the iOS client is updated; do not require the field.
 
+## Dashboard
+
+- Dashboard requires password, session secret and TOTP.
+- Session cookie: `HttpOnly`, `Secure`, `SameSite=Strict`, path `/dashboard`.
+
 ## Operator controls
 
 - Kill switch: set `BILLING_GUARD_ENABLED=false` only to deliberately stop protected extraction; the API fails closed with `503`.
 - Daily/monthly/user budgets: `DAILY_API_BUDGET_CENTS`, `MONTHLY_API_BUDGET_CENTS`, `USER_MONTHLY_BUDGET_CENTS`.
-- Dashboard requires password, session secret and TOTP.
+
+## Securitymaxxing audit
+
+See `docs/SECURITYMAXXING_CHECKLIST.md` (mapped from millee.md reel `DbMkXnBuTcb`).
 
 ## Data lifecycle and recovery
 

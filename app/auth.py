@@ -34,6 +34,16 @@ def require_api_key(request: Request, x_api_key: str | None = Header(default=Non
     if not settings.api_key:
         audit_security_event(event="admin_api_key_unconfigured", request=request)
         raise HTTPException(status_code=503, detail="API_KEY not configured")
+    # Browser callers must come from an allowlisted Origin (CORS alone is not enough
+    # when a stolen key is pasted into a foreign page that triggers a preflight).
+    origin = (request.headers.get("origin") or "").strip()
+    if origin and origin not in settings.cors_origin_list:
+        audit_security_event(
+            event="admin_api_key_origin_rejected",
+            request=request,
+            metadata={"origin": origin[:200]},
+        )
+        raise HTTPException(status_code=403, detail="Origin not allowed")
     if not safe_compare(x_api_key, settings.api_key):
         audit_security_event(event="admin_api_key_rejected", request=request)
         raise HTTPException(status_code=401, detail="Invalid API key")
