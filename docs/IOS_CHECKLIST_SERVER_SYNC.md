@@ -2,7 +2,7 @@
 
 Server en Coolify `main`. Margen Pro **40%**, reserva job **50¢**, OCR último recurso.  
 API: `https://51-255-43-100.sslip.io`  
-Free: **10 miss / año**. Pro fair-use: budget = precio×0.60.
+Free: **3 miss / año**. Pro fair-use: budget = precio×0.60.
 
 Usa esto como lista de huecos en la app. Lo ya OK se marca.
 
@@ -12,11 +12,11 @@ Usa esto como lista de huecos en la app. Lo ya OK se marca.
 
 - [x] `AppConfig.apiBaseURL` → VPS `51-255-43-100.sslip.io` (no Render).
 - [x] Superwall `identify` + attribute **`user_id`** (UUID backend). Server acepta también legacy `supabase_user_id`.
-- [x] Paywall en `FREE_WEEKLY_LIMIT` / `FREE_YEARLY_LIMIT` (= 10/año en prod).
+- [x] Paywall en `FREE_WEEKLY_LIMIT` / `FREE_YEARLY_LIMIT` (= 3/año en prod).
 - [x] UI fair-use en `PRO_FAIR_USE_LIMIT`.
 - [x] `warmUpBackend()` antes de auth.
 - [x] Poll job / refresh `/v1/me` tras compra.
-- [x] Prod `/health` + `/ready` OK (`stress_test_mode=false`, `environment=production`).
+- [x] Prod `/health` + `/ready` OK (`environment=production`).
 - [x] Webhook Superwall VPS: `https://51-255-43-100.sslip.io/v1/webhooks/superwall`.
 - [x] Server códigos job canónicos (`link_in_bio`, `extraction_retryable`, carousel, etc.).
 - [x] Server emite `SPEND_LIMIT` (403) cuando budget OpenAI se agota.
@@ -43,11 +43,11 @@ Hoy cae en `showForbidden` genérico (`ClientStatePolicy`).
 
 Archivo: `ReciApp/Services/ClientStatePolicy.swift` (+ mensaje en `Models.swift` / strings).
 
-### 2. Copy cuota Free — pendiente docs/UI si aún dicen “2.º miss”
+### 2. Copy cuota Free
 
-Server real: **10 miss / año** (`FREE_WEEKLY_LIMIT` = nombre legacy).
+Server real: **3 miss / año** (`FREE_WEEKLY_LIMIT` = nombre legacy).
 
-**Hacer:** unificar copy UI + docs a **10 / año**.
+**Hacer:** unificar copy UI + docs a **3 / año**.
 
 ### 3. Errores de job (extract) — pendiente cliente
 
@@ -75,7 +75,7 @@ Server guarda mensajes canónicos en inglés (localiza en API cuando aplica):
 3. **Carrusel** con caption incompleta → puede OCR slides; si falla mid-way, mensaje carousel incompleto.
 4. **Video sin caption** → local STT primero; si local habla bastante, no debería ir a OpenAI STT.
 5. **Mismo enlace otra vez** → cache hit, no cuenta cuota Free.
-6. Free: 10 miss nuevos en el año → paywall. El 11.º falla con `FREE_WEEKLY_LIMIT`.
+6. Free: 3 miss nuevos en el año → paywall. El 4.º falla con `FREE_WEEKLY_LIMIT`.
 7. Pro: tras mucho uso OpenAI del mes (budget = precio×0.60) → `PRO_FAIR_USE_LIMIT`, no paywall de compra.
 
 ### 5. Superwall dashboard
@@ -86,9 +86,8 @@ Server guarda mensajes canónicos en inglés (localiza en API cuando aplica):
 
 ### 6. Docs iOS a sync
 
-- [ ] `INTEGRACION_SWIFT.md` — Free = 10/año (quitar “2.º miss” si sigue).
-- [ ] `docs/SUPERWALL_SERVER.md` — si aún menciona Render host, borrar.
 - [ ] Strings Localizable: mensajes bio / retry / spend limit.
+- [ ] Copy Free = **3 / año** en UI.
 
 ### 7. Opcional (no bloquea)
 
@@ -108,10 +107,10 @@ Server guarda mensajes canónicos en inglés (localiza en API cuando aplica):
 ## Smoke mínimo prod
 
 1. Sign in with Apple.
-2. Import 1 TikTok video con caption rica.
+2. Import 1 TikTok/IG video con caption rica.
 3. Import 1 “recipe in bio” → mensaje correcto.
 4. Re-import mismo link → instant / cache.
 5. Settings → Upgrade / restore → `/v1/me` `is_pro`.
-6. Free: quemar cuota (10) y ver paywall `free_limit_reached`.
+6. Free: quemar cuota (3) y ver paywall `free_limit_reached`.
 
 Si algo de la lista 1–3 no está, prioriza **`SPEND_LIMIT`** y **mostrar `job.error`**.

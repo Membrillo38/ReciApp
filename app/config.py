@@ -91,27 +91,6 @@ class Settings(BaseSettings):
     worker_enabled: bool = False
     worker_poll_seconds: float = 5.0
     worker_lease_seconds: int = 900
-    # Fake full extract path (queue/slots/DB) with zero OpenAI spend.
-    # Temporary load-test only — leave false in normal production.
-    extract_dry_run: bool = False
-    # lite = sleep+fake recipe; media = ffmpeg/whisper (or yt-dlp URL) then fake recipe.
-    extract_dry_run_mode: str = "media"
-    # Hold each lite dry job in "processing" so concurrent slot ceilings are measurable.
-    extract_dry_run_hold_ms: int = Field(default=500, ge=0, le=60_000)
-    # Local fixture (preferred) or remote URL for media-mode stress.
-    extract_dry_run_media_file: str = "/tmp/reciapp-stress-sample.mp4"
-    extract_dry_run_media_url: str = ""
-    extract_dry_run_media_frames: int = Field(default=8, ge=1, le=24)
-
-    # Isolated stress stack only. Fail-closed: see app.stress_mode.assert_stress_safe.
-    stress_test_mode: bool = False
-    stress_run_id: str = ""
-    stress_token: str = Field(default="", repr=False)
-    stress_allowed_hosts: str = "stress-test.local"
-    stress_mock_latency_ms: int = Field(default=0, ge=0, le=60_000)
-    stress_mock_latency_min_ms: int = Field(default=0, ge=0, le=60_000)
-    stress_mock_latency_max_ms: int = Field(default=0, ge=0, le=60_000)
-    stress_mock_fail_pct: float = Field(default=0.0, ge=0.0, le=100.0)
     max_request_body_bytes: int = 262_144
     webhook_max_age_seconds: int = 7 * 24 * 60 * 60
     apple_root_ca_pem: str = ""

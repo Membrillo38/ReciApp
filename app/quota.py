@@ -11,7 +11,7 @@ from app.db import execute, fetch_one
 from app.limits import resolve_user_limits
 
 # Product cap for non-Pro. DB free_weekly_limit is legacy; this is the ceiling.
-FREE_YEARLY_LIMIT = 10
+FREE_YEARLY_LIMIT = 3
 
 
 @dataclass
