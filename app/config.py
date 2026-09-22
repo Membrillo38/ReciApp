@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     readiness_timeout_seconds: float = Field(default=3.0, ge=0.1, le=10)
     maintenance_mode: bool = False
     environment: str = "production"
+    sentry_dsn: str = Field(default="", repr=False)
+    sentry_environment: str = "production"
+    sentry_release: str = ""
+    sentry_traces_sample_rate: float = Field(default=0.0, ge=0.0, le=1.0)
 
     max_duration_seconds: int = 600
     transcribe_model: str = "gpt-4o-mini-transcribe"

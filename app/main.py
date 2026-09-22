@@ -12,9 +12,11 @@ from uuid import UUID
 import httpx
 import jwt
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.gzip import GZipMiddleware
+from starlette.responses import Response
 
 from app.apple_auth import (
     decrypt_apple_refresh_token,
@@ -64,6 +66,7 @@ from app.quota import assert_can_extract, get_quota, record_usage
 from app.job_guard import claim as claim_job, release as release_job, try_claim as try_claim_job
 from app.job_errors import STALE_JOB, localize_job_error
 from app.localization import normalize_language
+from app.observability import AUTH_PATHS, auth_error, init_sentry
 from app.security import (
     audit_security_event,
     allow_rate_limit,
@@ -107,6 +110,8 @@ from app.store import (
 from app.superwall import apply_superwall_event
 from app.url_norm import normalize_url
 from app.translation_cache import localized_recipe_row
+
+init_sentry()
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -165,21 +170,92 @@ def _bearer_user_id(request: Request) -> str | None:
         return None
 
 
+def _apply_security_headers(request: Request, response: Response, correlation_id: str) -> Response:
+    response.headers["X-Correlation-ID"] = correlation_id
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Cross-Origin-Resource-Policy"] = "same-site"
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    if request.url.path.startswith("/v1/") or request.url.path.startswith("/dashboard"):
+        response.headers["Cache-Control"] = "no-store"
+    forwarded_proto = (request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip().lower()
+    if _PRODUCTION or request.url.scheme == "https" or forwarded_proto == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    if request.url.path.startswith("/dashboard"):
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+            "base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+        )
+    return response
+
+
+def _auth_error_payload(request: Request, code: str, message: str) -> dict[str, str]:
+    return {
+        "code": code,
+        "message": message,
+        "request_id": getattr(request.state, "request_id", "unknown"),
+        "correlation_id": getattr(request.state, "correlation_id", "unknown"),
+    }
+
+
+def _http_error_code(status: int, detail: object) -> tuple[str, str]:
+    if isinstance(detail, dict) and detail.get("code") and detail.get("message"):
+        return str(detail["code"]), str(detail["message"])
+    return {
+        401: "AUTH_UNAUTHORIZED", 403: "AUTH_FORBIDDEN", 422: "AUTH_VALIDATION_FAILED",
+        500: "INTERNAL_SERVER_ERROR", 503: "AUTH_UNAVAILABLE",
+    }.get(status, "AUTH_REQUEST_FAILED"), str(detail or "Authentication request failed")
+
+
+@app.exception_handler(HTTPException)
+async def auth_http_exception(request: Request, exc: HTTPException) -> JSONResponse:
+    if not request.url.path.startswith(AUTH_PATHS) and request.url.path != "/v1/me":
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}, headers=exc.headers)
+    code, message = _http_error_code(exc.status_code, exc.detail)
+    level = "warning" if exc.status_code in {401, 403, 422} else "error"
+    auth_error(request=request, code=code, phase="http_error", status=exc.status_code, level=level, message=message)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=_auth_error_payload(request, code, message),
+        headers=exc.headers,
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def auth_validation_exception(request: Request, exc: RequestValidationError) -> JSONResponse:
+    if not request.url.path.startswith(AUTH_PATHS) and request.url.path != "/v1/me":
+        return JSONResponse(status_code=422, content={"detail": exc.errors()})
+    auth_error(request=request, code="AUTH_VALIDATION_FAILED", phase="request_validation", status=422, level="warning", message="Authentication request validation failed")
+    return JSONResponse(status_code=422, content=_auth_error_payload(request, "AUTH_VALIDATION_FAILED", "Authentication request validation failed"))
+
+
+@app.exception_handler(Exception)
+async def unexpected_exception(request: Request, exc: Exception) -> JSONResponse:
+    if request.url.path.startswith(AUTH_PATHS) or request.url.path == "/v1/me":
+        auth_error(request=request, code="INTERNAL_SERVER_ERROR", phase="unexpected", status=500, exc=exc)
+        return JSONResponse(status_code=500, content=_auth_error_payload(request, "INTERNAL_SERVER_ERROR", "Internal server error"))
+    raise exc
+
+
 @app.exception_handler(httpx.HTTPStatusError)
 @app.exception_handler(httpx.RequestError)
 async def upstream_request_error(request: Request, exc: httpx.RequestError | httpx.HTTPStatusError) -> JSONResponse:
     """Turn transient upstream disconnects into an iOS-retryable response."""
+    if request.url.path.startswith(AUTH_PATHS):
+        auth_error(request=request, code="AUTH_UPSTREAM_TIMEOUT" if isinstance(exc, httpx.TimeoutException) else "AUTH_UPSTREAM_ERROR", phase="network", status=503, exc=exc)
     logger.warning(
         "upstream request failed path=%s error_type=%s correlation_id=%s",
         request.url.path,
         type(exc).__name__,
         getattr(request.state, "correlation_id", "unknown"),
     )
-    return JSONResponse(
-        status_code=503,
-        content={"detail": "Backend temporarily unavailable. Retry."},
-        headers={"Retry-After": "1"},
-    )
+    if request.url.path.startswith(AUTH_PATHS):
+        content = _auth_error_payload(request, "AUTH_UPSTREAM_TIMEOUT" if isinstance(exc, httpx.TimeoutException) else "AUTH_UPSTREAM_ERROR", "Authentication temporarily unavailable")
+    else:
+        content = {"detail": "Backend temporarily unavailable. Retry."}
+    return JSONResponse(status_code=503, content=content, headers={"Retry-After": "1"})
 
 
 def _job_is_stale(row: dict) -> bool:
@@ -292,18 +368,24 @@ def _ensure_translation_job(
 async def request_metrics(request: Request, call_next):
     start = time.perf_counter()
     client_request_id = request.headers.get("x-request-id", "")
-    correlation_id = (
+    request_id = (
         client_request_id
         if 8 <= len(client_request_id) <= 64
         and all(character.isalnum() or character == "-" for character in client_request_id)
         else new_correlation_id()
     )
+    correlation_id = new_correlation_id()
+    request.state.request_id = request_id
     request.state.correlation_id = correlation_id
     content_length = request.headers.get("content-length")
     is_probe = request.url.path in {"/health", "/ready"}
     # Public sslip Host must not expose ops UI — Tailscale/cpanel proxy only.
     if dashboard_publicly_blocked(request):
-        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+        return _apply_security_headers(
+            request,
+            JSONResponse(status_code=404, content={"detail": "Not Found"}),
+            correlation_id,
+        )
     if is_scanner_probe(request.url.path):
         client_ip = request_ip(request)
         if allow_rate_limit(f"scanner-log:{client_ip}", limit=30, window_seconds=3600):
@@ -312,10 +394,11 @@ async def request_metrics(request: Request, call_next):
                 request=request,
                 metadata={"path": request.url.path[:200], "ip": client_ip},
             )
-        response = JSONResponse(status_code=403, content={"detail": "Forbidden"})
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
-        return response
+        return _apply_security_headers(
+            request,
+            JSONResponse(status_code=403, content={"detail": "Forbidden"}),
+            correlation_id,
+        )
     response = None
     user_id = _bearer_user_id(request)
     actor, rls_user_id = db_context_for_request(request.url.path, user_id)
@@ -380,31 +463,16 @@ async def _finish_request_metrics(request, call_next, start, correlation_id, con
         except Exception:
             pass
     logger.info(
-        "request completed method=%s path=%s status=%s duration_ms=%s correlation_id=%s",
-        request.method,
+        "request completed endpoint=%s method=%s status=%s server_code=%s request_id=%s correlation_id=%s duration_ms=%s",
         request.url.path,
+        request.method,
         response.status_code,
-        duration_ms,
+        _http_error_code(response.status_code, "")[0] if response.status_code >= 400 else "",
+        getattr(request.state, "request_id", "unknown"),
         correlation_id,
+        duration_ms,
     )
-    response.headers["X-Correlation-ID"] = correlation_id
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["Referrer-Policy"] = "no-referrer"
-    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-    response.headers["Cross-Origin-Resource-Policy"] = "same-site"
-    response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
-    if request.url.path.startswith("/v1/"):
-        response.headers["Cache-Control"] = "no-store"
-    forwarded_proto = (request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip().lower()
-    if request.url.scheme == "https" or forwarded_proto == "https":
-        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-    if request.url.path.startswith("/dashboard"):
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
-            "base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
-        )
-    return response
+    return _apply_security_headers(request, response, correlation_id)
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -596,13 +664,16 @@ def auth_apple(request: Request, body: AuthAppleRequest) -> AuthTokenResponse:
     try:
         apple = verify_apple_identity_token(body.identity_token, nonce=body.nonce)
     except Exception as exc:
-        raise HTTPException(status_code=401, detail="Invalid Apple identity token") from exc
+        code = "APPLE_NONCE_INVALID" if "nonce" in str(exc).lower() else "APPLE_TOKEN_INVALID"
+        auth_error(request=request, code=code, phase="identity_token", status=401, level="warning", message="Apple identity token rejected")
+        raise HTTPException(status_code=401, detail={"code": code, "message": "Apple identity token rejected"}) from exc
     display_name = (body.full_name or "").strip()[:200] or None
     try:
         row = _upsert_apple_profile(apple, display_name)
     except Exception as exc:
+        auth_error(request=request, code="AUTH_DATABASE_ERROR", phase="profile_upsert", status=503, exc=exc)
         logger.warning("apple profile upsert failed error_type=%s", type(exc).__name__)
-        raise HTTPException(status_code=503, detail="Authentication temporarily unavailable", headers={"Retry-After": "1"}) from exc
+        raise HTTPException(status_code=503, detail={"code": "AUTH_DATABASE_ERROR", "message": "Authentication temporarily unavailable"}, headers={"Retry-After": "1"}) from exc
     if not row:
         raise account_error(ACCOUNT_UNAVAILABLE, "Account unavailable")
     user_id = UUID(str(row["id"]))
@@ -619,16 +690,22 @@ def auth_apple(request: Request, body: AuthAppleRequest) -> AuthTokenResponse:
             user=_auth_user_response(row),
         )
     except Exception as exc:
+        auth_error(request=request, code="AUTH_SESSION_ISSUE_FAILED", phase="jwt", status=503, exc=exc)
         logger.warning("apple session issue failed error_type=%s", type(exc).__name__)
-        raise HTTPException(status_code=503, detail="Authentication temporarily unavailable", headers={"Retry-After": "1"}) from exc
+        raise HTTPException(status_code=503, detail={"code": "AUTH_SESSION_ISSUE_FAILED", "message": "Authentication temporarily unavailable"}, headers={"Retry-After": "1"}) from exc
 
 
 @app.post("/v1/auth/refresh", response_model=AuthTokenResponse)
-def auth_refresh(body: AuthRefreshRequest) -> AuthTokenResponse:
+def auth_refresh(request: Request, body: AuthRefreshRequest) -> AuthTokenResponse:
     _require_auth_secret()
-    pair = rotate_refresh_token(body.refresh_token)
+    try:
+        pair = rotate_refresh_token(body.refresh_token)
+    except Exception as exc:
+        auth_error(request=request, code="REFRESH_DATABASE_ERROR", phase="refresh_token", status=503, exc=exc)
+        raise HTTPException(status_code=503, detail={"code": "REFRESH_DATABASE_ERROR", "message": "Authentication temporarily unavailable"}, headers={"Retry-After": "1"}) from exc
     if not pair:
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
+        auth_error(request=request, code="REFRESH_TOKEN_EXPIRED", phase="refresh_token", status=401, level="warning", message="Refresh token rejected")
+        raise HTTPException(status_code=401, detail={"code": "REFRESH_TOKEN_EXPIRED", "message": "Refresh token rejected"})
     return AuthTokenResponse(
         access_token=pair["access_token"],
         refresh_token=pair["refresh_token"],
@@ -637,8 +714,12 @@ def auth_refresh(body: AuthRefreshRequest) -> AuthTokenResponse:
 
 
 @app.post("/v1/auth/logout", response_model=OkResponse)
-def auth_logout(body: AuthLogoutRequest) -> OkResponse:
-    revoke_refresh_token(body.refresh_token)
+def auth_logout(request: Request, body: AuthLogoutRequest) -> OkResponse:
+    try:
+        revoke_refresh_token(body.refresh_token)
+    except Exception as exc:
+        auth_error(request=request, code="LOGOUT_DATABASE_ERROR", phase="logout", status=503, exc=exc)
+        raise HTTPException(status_code=503, detail={"code": "LOGOUT_DATABASE_ERROR", "message": "Logout temporarily unavailable"}) from exc
     return OkResponse()
 
 

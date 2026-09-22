@@ -21,7 +21,7 @@ class UserLimits:
 
 @dataclass
 class AppDefaults:
-    free_weekly_limit: int = 10
+    free_weekly_limit: int = 3
     pro_margin_ratio: float = 0.40
     default_pro_monthly_price_cents: int = _DEFAULT_PRO_MONTHLY_CENTS
 
@@ -37,7 +37,7 @@ def get_app_defaults() -> AppDefaults:
     if not row:
         return AppDefaults()
     return AppDefaults(
-        free_weekly_limit=int(row.get("free_weekly_limit") or 10),
+        free_weekly_limit=int(row.get("free_weekly_limit") or 3),
         pro_margin_ratio=float(row.get("pro_margin_ratio") or 0.40),
         default_pro_monthly_price_cents=int(
             row.get("default_pro_monthly_price_cents") or _DEFAULT_PRO_MONTHLY_CENTS

@@ -18,7 +18,7 @@
 
 ## Dashboard
 
-- Dashboard requires password, session secret and TOTP.
+- Dashboard requires password, session secret and TOTP; without all three it stays disabled.
 - Session cookie: `HttpOnly`, `Secure`, `SameSite=Strict`, path `/dashboard`.
 
 ## Operator controls

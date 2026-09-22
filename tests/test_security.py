@@ -4,9 +4,11 @@ import socket
 
 import pytest
 from fastapi import HTTPException
+from fastapi.responses import JSONResponse
 from starlette.requests import Request
 
 import app.security as security
+from app.main import _apply_security_headers
 
 
 def _request(*, client: str, xff: str | None = None) -> Request:
@@ -77,6 +79,25 @@ def test_scanner_probe_paths():
     assert not security.is_scanner_probe("/v1/me")
     assert not security.is_scanner_probe("/dashboard")
     assert not security.is_scanner_probe("/.well-known/acme-challenge/x")
+
+
+def test_security_headers_cover_api_responses():
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "scheme": "http",
+            "path": "/v1/me",
+            "headers": [(b"x-forwarded-proto", b"https")],
+            "client": ("203.0.113.10", 1234),
+        }
+    )
+    response = _apply_security_headers(request, JSONResponse({"ok": True}), "corr-12345678")
+
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["strict-transport-security"].startswith("max-age=31536000")
 
 
 def test_ban_ladder_escalates(monkeypatch):

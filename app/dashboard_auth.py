@@ -23,11 +23,17 @@ def _serializer() -> URLSafeTimedSerializer:
 
 
 def dashboard_enabled() -> bool:
-    return bool(settings.dashboard_password and settings.dashboard_session_secret)
+    # The dashboard is an operational control plane. Password-only access is
+    # intentionally disabled; missing TOTP configuration fails closed.
+    return bool(
+        settings.dashboard_password
+        and settings.dashboard_session_secret
+        and settings.dashboard_totp_secret
+    )
 
 
 def totp_required() -> bool:
-    return bool(settings.dashboard_totp_secret)
+    return True
 
 
 def verify_password(password: str) -> bool:
@@ -39,8 +45,7 @@ def verify_password(password: str) -> bool:
 
 def verify_totp(code: str) -> bool:
     if not settings.dashboard_totp_secret:
-        # Password-only until DASHBOARD_TOTP_SECRET is set in Coolify.
-        return True
+        return False
     try:
         import pyotp
 
@@ -70,7 +75,10 @@ def set_session_cookie(response: RedirectResponse, token: str) -> None:
         key=COOKIE_NAME,
         value=token,
         httponly=True,
-        secure=bool(settings.dashboard_cookie_secure),
+        secure=bool(
+            settings.dashboard_cookie_secure
+            or settings.environment.lower() in {"production", "prod"}
+        ),
         samesite="strict",
         max_age=COOKIE_MAX_AGE,
         path="/dashboard",

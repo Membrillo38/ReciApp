@@ -5,6 +5,14 @@ from app.limits import (
 )
 
 
+def test_missing_app_defaults_use_three_free_recipes_per_year(monkeypatch):
+    import app.limits as limits
+
+    monkeypatch.setattr(limits, "fetch_one", lambda *args, **kwargs: None)
+
+    assert limits.get_app_defaults().free_weekly_limit == 3
+
+
 def test_weekly_product_monthlyizes_for_fair_use():
     data = {"price": 9.99, "productId": "reciapp_wk_999"}
     assert billing_period_from_superwall(data) == "week"
