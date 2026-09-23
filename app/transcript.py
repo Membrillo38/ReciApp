@@ -139,7 +139,8 @@ def _ocr_image(
                 ],
             }
         ],
-        max_tokens=settings.ocr_slide_max_tokens,
+        reasoning_effort="none",
+        max_completion_tokens=settings.ocr_slide_max_tokens,
     )
     record_chat_usage(
         response,
@@ -277,7 +278,8 @@ def _ocr_overlay_batch(
     response = client.chat.completions.create(
         model=settings.vision_model,
         messages=[{"role": "user", "content": content}],
-        max_tokens=settings.ocr_overlay_max_tokens,
+        reasoning_effort="none",
+        max_completion_tokens=settings.ocr_overlay_max_tokens,
     )
     record_chat_usage(
         response,

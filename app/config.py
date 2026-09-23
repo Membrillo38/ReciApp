@@ -42,17 +42,17 @@ class Settings(BaseSettings):
 
     max_duration_seconds: int = 600
     transcribe_model: str = "gpt-4o-mini-transcribe"
-    recipe_model: str = "gpt-4o-mini"
-    vision_model: str = "gpt-4o-mini"
+    recipe_model: str = "gpt-6-luna"
+    vision_model: str = "gpt-6-luna"
     job_ttl_seconds: int = 3600
 
     cost_transcribe_cents_per_min: float = 0.3
     cost_text_cents_per_extract: float = 0.1
     cost_ocr_cents_per_slide: float = 0.25
     # List prices used for real dashboard cost (USD per 1M tokens / per minute).
-    openai_chat_input_usd_per_mtok: float = 0.15
-    openai_chat_output_usd_per_mtok: float = 0.60
-    openai_chat_cached_input_usd_per_mtok: float = 0.075
+    openai_chat_input_usd_per_mtok: float = 0.10
+    openai_chat_output_usd_per_mtok: float = 0.50
+    openai_chat_cached_input_usd_per_mtok: float = 0.01
     openai_transcribe_input_usd_per_mtok: float = 1.25
     openai_transcribe_output_usd_per_mtok: float = 5.0
     openai_transcribe_usd_per_min: float = 0.003

@@ -813,7 +813,8 @@ def _request_structured_recipe(messages: list[dict]) -> dict:
                 model=settings.recipe_model,
                 messages=request_messages,
                 response_format={"type": "json_schema", "json_schema": RECIPE_SCHEMA},
-                max_tokens=max_tokens,
+                reasoning_effort="none",
+                max_completion_tokens=max_tokens,
             )
         except Exception as exc:
             logger.warning("recipe_model attempt=%d error_type=%s", attempt + 1, type(exc).__name__)
