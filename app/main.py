@@ -34,7 +34,7 @@ from app.auth import (
     current_user_allow_closed,
     require_api_key,
 )
-from app.auth_tokens import create_access_token, create_refresh_token, revoke_all_refresh_tokens, revoke_refresh_token, rotate_refresh_token
+from app.auth_tokens import create_access_token, create_refresh_token, revoke_refresh_token, rotate_refresh_token
 from app.apple_notifications import process_signed_notification
 from app.config import settings
 from app.dashboard_routes import router as dashboard_router
@@ -64,7 +64,7 @@ from app.models import (
 from app.pipeline import run_extract_job, run_translation_job
 from app.quota import assert_can_extract, get_quota, record_usage
 from app.job_guard import claim as claim_job, release as release_job, try_claim as try_claim_job
-from app.job_errors import STALE_JOB, localize_job_error
+from app.job_errors import STALE_JOB, job_error_code, localize_job_error
 from app.localization import normalize_language
 from app.observability import AUTH_PATHS, auth_error, init_sentry
 from app.security import (
@@ -84,6 +84,7 @@ from app.store import (
     claim_next_pending_extract_for_user,
     count_user_open_extract_jobs,
     create_job,
+    delete_account_data,
     delete_user_recipe,
     get_job,
     get_active_job,
@@ -99,8 +100,6 @@ from app.store import (
     list_user_recipe_summaries,
     recipe_public_from_row,
     save_user_recipe,
-    soft_delete_profile,
-    anonymize_user_data,
     delete_apple_refresh_token,
     get_apple_refresh_token_ciphertext,
     upsert_apple_refresh_token,
@@ -192,10 +191,13 @@ def _apply_security_headers(request: Request, response: Response, correlation_id
     return response
 
 
-def _auth_error_payload(request: Request, code: str, message: str) -> dict[str, str]:
+def _auth_error_payload(request: Request, code: str, message: str) -> dict[str, object]:
     return {
         "code": code,
         "message": message,
+        # Keep the auth envelope and standard FastAPI detail shape so both
+        # AuthService and APIClient can classify transient failures.
+        "detail": {"code": code, "message": message},
         "request_id": getattr(request.state, "request_id", "unknown"),
         "correlation_id": getattr(request.state, "correlation_id", "unknown"),
     }
@@ -272,6 +274,21 @@ def _job_is_stale(row: dict) -> bool:
     if timestamp.tzinfo is None:
         timestamp = timestamp.replace(tzinfo=timezone.utc)
     return (datetime.now(timezone.utc) - timestamp).total_seconds() > settings.job_ttl_seconds
+
+
+def _attach_recipe_or_retry(user_id: UUID, recipe_id: UUID) -> None:
+    try:
+        save_user_recipe(user_id, recipe_id)
+    except Exception as exc:
+        logger.warning("recipe user-link write failed error_type=%s", type(exc).__name__)
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "RECIPE_ATTACH_UNAVAILABLE",
+                "message": "Recipe temporarily unavailable. Retry.",
+            },
+            headers={"Retry-After": "1"},
+        ) from exc
 
 
 def _expire_stale_job(row: dict) -> bool:
@@ -670,9 +687,18 @@ def revoke_stored_apple_authorization(user_id: UUID) -> None:
 
 def _purge_account(user_id: UUID) -> None:
     revoke_stored_apple_authorization(user_id)
-    anonymize_user_data(user_id)
-    revoke_all_refresh_tokens(user_id)
-    soft_delete_profile(user_id)
+    try:
+        delete_account_data(user_id)
+    except Exception as exc:
+        logger.error("account deletion transaction failed error_type=%s", type(exc).__name__)
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "ACCOUNT_DELETION_UNAVAILABLE",
+                "message": "Account deletion temporarily unavailable. Retry.",
+            },
+            headers={"Retry-After": "3"},
+        ) from exc
 
 
 @app.post("/v1/auth/apple", response_model=AuthTokenResponse)
@@ -750,6 +776,7 @@ def me(user: AuthUser = Depends(current_user)) -> MeResponse:
         is_pro=user.is_pro,
         pro_expires_at=user.pro_expires_at,
         free_used_this_week=q.free_used_this_week,
+        free_used_this_year=q.free_used_this_week,
         free_limit=q.free_limit,
         free_remaining=q.free_remaining,
         pro_remaining_cents=q.pro_remaining_cents if user.is_pro else None,
@@ -792,6 +819,12 @@ def extract_recipe(
                         "message": "This delivery identifier was already used for another import.",
                     },
                 )
+            if (
+                existing_delivery.get("status") == JobStatus.completed.value
+                and existing_delivery.get("cache_hit")
+                and existing_delivery.get("recipe_id")
+            ):
+                _attach_recipe_or_retry(user.id, _as_uuid(existing_delivery["recipe_id"]))
             return ExtractJobResponse(
                 job_id=_as_uuid(existing_delivery["id"]),
                 status=JobStatus(existing_delivery["status"]),
@@ -851,16 +884,7 @@ def extract_recipe(
                     cache_hit=bool(job.get("cache_hit")),
                     progress=int(job.get("progress") or 0),
                 )
-            try:
-                save_user_recipe(user.id, recipe_id)
-            except Exception as exc:
-                # A transient attachment failure must not turn a cache hit
-                # into a missing recipe response.
-                logger.warning(
-                    "cached recipe attach failed recipe_id=%s error_type=%s",
-                    recipe_id,
-                    type(exc).__name__,
-                )
+            _attach_recipe_or_retry(user.id, recipe_id)
             try:
                 record_usage(
                     user_id=user.id,
@@ -1057,16 +1081,7 @@ def get_job_status(
     if row.get("recipe_id"):
         r = get_recipe(_as_uuid(row["recipe_id"]))
         if r:
-            try:
-                save_user_recipe(user.id, _as_uuid(row["recipe_id"]))
-            except Exception as exc:
-                # A transient attachment failure must not hide a recipe that
-                # was already completed and can be returned to the client.
-                logger.warning(
-                    "job recipe attach failed job_id=%s error_type=%s",
-                    job_id,
-                    type(exc).__name__,
-                )
+            _attach_recipe_or_retry(user.id, _as_uuid(row["recipe_id"]))
             requested_language = normalize_language(language)
             row_language = normalize_language(row.get("language_code"))
             resolution_language = row_language if row.get("job_kind") == "translation" else requested_language
@@ -1104,6 +1119,7 @@ def get_job_status(
         recipe=recipe,
         recipe_id=_as_uuid(row["recipe_id"]) if row.get("recipe_id") else None,
         error=localize_job_error(row.get("error"), language) if row.get("error") else None,
+        error_code=job_error_code(row.get("error")),
         progress=int(row.get("progress") or 0),
         next_job_id=next_job_id,
     )

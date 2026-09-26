@@ -1,10 +1,10 @@
 # Superwall server checklist (ReciApp)
 
-The iOS app is wired. Superwall dashboard already has products, entitlement `pro`, and campaign **Pro** with placements `free_limit_reached` and `settings_upgrade`. The webhook URL points at the **VPS** (not Render).
+The iOS and server source are wired. Dashboard values below are historical documentation, not live-verified in the 2026-09-26 integration audit. Another pricing note reports `0 active endpoints`; verify dashboard delivery and a sandbox purchase before treating Pro sync as production-ready. The endpoint URL below targets the VPS (not Render).
 
 You still need App Store products plus a server that maps Superwall events to `profiles.is_pro`. The client never trusts StoreKit for Pro. After purchase it polls `GET /v1/me` until `is_pro` flips.
 
-## Already configured in Superwall
+## Documented Superwall values — verify in dashboard
 
 | Item | Value |
 | --- | --- |

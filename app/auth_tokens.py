@@ -42,43 +42,36 @@ def create_refresh_token(user_id: UUID, *, user_agent: str | None = None, ip_has
 
 
 def rotate_refresh_token(raw: str) -> dict | None:
-    row = fetch_one(
-        """
-        select t.id, t.user_id, p.email
-          from auth_refresh_tokens t
-          join profiles p on p.id = t.user_id
-         where t.token_hash = %s
-           and t.revoked_at is null
-           and t.expires_at > now()
-           and p.deleted_at is null
-         limit 1
-        """,
-        (_hash(raw),),
-    )
-    if not row:
-        return None
     new_refresh = secrets.token_urlsafe(48)
     new_hash = _hash(new_refresh)
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=settings.auth_refresh_token_ttl_seconds)
-    updated = execute_returning(
+    row = execute_returning(
         """
-        update auth_refresh_tokens
-           set revoked_at = now()
-         where id = %s
-           and revoked_at is null
-        returning id
+        with revoked as (
+            update auth_refresh_tokens t
+               set revoked_at = now()
+             where t.token_hash = %s
+               and t.revoked_at is null
+               and t.expires_at > now()
+               and exists (
+                   select 1 from profiles p
+                    where p.id = t.user_id and p.deleted_at is null
+               )
+            returning t.user_id, t.user_agent, t.ip_hash
+        ), issued as (
+            insert into auth_refresh_tokens (user_id, token_hash, expires_at, user_agent, ip_hash)
+            select user_id, %s, %s, user_agent, ip_hash from revoked
+            returning user_id
+        )
+        select issued.user_id, p.email
+          from issued
+          join profiles p on p.id = issued.user_id
+         where p.deleted_at is null
         """,
-        (row["id"],),
+        (_hash(raw), new_hash, expires_at),
     )
-    if not updated:
+    if not row:
         return None
-    execute(
-        """
-        insert into auth_refresh_tokens (user_id, token_hash, expires_at)
-        values (%s, %s, %s)
-        """,
-        (row["user_id"], new_hash, expires_at),
-    )
     return {
         "access_token": create_access_token(UUID(str(row["user_id"])), row.get("email")),
         "refresh_token": new_refresh,
