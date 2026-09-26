@@ -42,7 +42,7 @@ Confirmación de solo lectura en producción, 2026-09-26:
 - Reconsulta pública actual: `/health` HTTP 200 y `/ready` HTTP 200 (`environment=production`, `maintenance=false`). La respuesta no expone qué esquema valida; el `/ready` del código desplegado antes solo comprobaba conexión PostgreSQL. Por sí solo, ese 200 no demuestra que 008 esté aplicada.
 - La API desplegada acepta `client_delivery_id`; `OPENAI_API_KEY` está configurada (no se leyó su valor).
 - La última introspección PostgreSQL registrada en esta revisión encontró ausentes `extract_jobs.client_delivery_id` y `extract_jobs_user_delivery_unique`; no pude repetir esa introspección en esta reconsulta.
-- En los logs disponibles desde el último arranque del contenedor: 0 respuestas `request completed` 4xx/5xx, 0 `extract failed`, 0 errores upstream de auth y 0 rate limits. El contenedor arrancó dentro de las últimas 24 horas, así que este conteo no cubre la ventana histórica completa.
+- En los logs consultados anteriormente desde el último arranque: 0 respuestas `request completed` 4xx/5xx, 0 `extract failed`, 0 errores upstream de auth y 0 rate limits. Ese conteo no cubre la ventana histórica completa. En esta reconsulta no pude renovar los logs: la conexión SSH de solo lectura falló con estado 255 y no expuse el host ni el error sin filtrar.
 
 Por eso, el `POST /v1/extract` de ShareInbox/Share Extension falla antes de crear el trabajo: el servidor busca la columna inexistente. No publicar esta integración antes de aplicar `migrations/008_extract_delivery_idempotency.sql`. El código local de `/ready` ya comprueba ambos objetos y devolverá 503 hasta que exista el esquema.
 
