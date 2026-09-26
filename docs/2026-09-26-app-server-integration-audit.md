@@ -63,6 +63,7 @@ La integración de código está: `SubscriptionService.identify()` envía el UUI
 - Suite servidor + contratos cruzados iOS: 240 pasaron, 2 omitidas deliberadamente porque están reemplazadas por tests de comportamiento del ClientStateHarness. Se comprueban campos `free_used_this_year`, `client_delivery_id` y `error_code` en Swift/FastAPI. Los tests cruzados antes se omitían por una ruta fija `IosAPP/`; ahora localizan el checkout hermano `ReciApp-iOS` o `RECIAPP_IOS_ROOT`. El entorno local no tiene `sentry_sdk`; para ejecutar suite se usa shim temporal sin cambios en el repositorio, así que telemetría Sentry no queda validada.
 - Xcode Debug unsigned Simulator: build actual correcto. ClientStateHarness: 46 tests pasaron. `simctl`/`devicectl` no pudieron iniciar CoreSimulator/CoreDevice, así que no hubo ejecución visual ni prueba firmada en dispositivo.
 - Consulté el SQL real de readiness en un PostgreSQL temporal aislado: migración 008 correcta → `delivery_column=t`, `delivery_index=t`; índice no único y mal definido con el mismo nombre → `delivery_index=f`.
+- No pude consultar issues actuales de Sentry: no hay `SENTRY_AUTH_TOKEN` local configurado. No se leyó ni compartió ningún token.
 - `/health` y `/ready` públicos respondieron HTTP 200. La respuesta pública de `/ready` no identifica qué comprobaciones ejecuta, así que no confirma por sí sola el estado de la migración.
 - No se probó una cuenta autenticada ni una extracción real.
 - Los cambios hechos en esta revisión están en el árbol local; no se han desplegado ni publicado.
