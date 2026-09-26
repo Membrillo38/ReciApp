@@ -36,6 +36,18 @@ def _year_start_utc(now: datetime | None = None) -> datetime:
     return now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
 
 
+def _next_month_start_utc(now: datetime | None = None) -> datetime:
+    now = now or datetime.now(timezone.utc)
+    if now.month == 12:
+        return now.replace(year=now.year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+    return now.replace(month=now.month + 1, day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def _next_year_start_utc(now: datetime | None = None) -> datetime:
+    now = now or datetime.now(timezone.utc)
+    return now.replace(year=now.year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
 def get_quota(user: AuthUser) -> QuotaStatus:
     year_start = _year_start_utc()
     month_start = _month_start_utc()
@@ -92,10 +104,13 @@ def assert_can_extract(user: AuthUser, *, cache_hit: bool) -> None:
             raise HTTPException(
                 status_code=403,
                 detail={
-                    "code": "FREE_WEEKLY_LIMIT",
+                    "code": "FREE_YEARLY_LIMIT",
                     "message": f"Free plan: {q.free_limit} recipe(s) per year. Upgrade to Pro.",
                     "free_used_this_week": q.free_used_this_week,
+                    "free_used_this_year": q.free_used_this_week,
                     "free_limit": q.free_limit,
+                    "period": "year",
+                    "reset_at": _next_year_start_utc().isoformat(),
                 },
             )
         return
@@ -111,6 +126,8 @@ def assert_can_extract(user: AuthUser, *, cache_hit: bool) -> None:
                 "pro_cost_cents_this_month": q.pro_cost_cents_this_month,
                 "pro_budget_cents": q.pro_budget_cents,
                 "pro_monthly_price_cents": q.pro_monthly_price_cents,
+                "period": "month",
+                "reset_at": _next_month_start_utc().isoformat(),
             },
         )
 

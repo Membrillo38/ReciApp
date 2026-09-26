@@ -87,6 +87,7 @@ from app.store import (
     delete_user_recipe,
     get_job,
     get_active_job,
+    get_job_by_delivery_id,
     grant_job_access,
     get_recipe,
     get_recipe_by_norm,
@@ -308,6 +309,7 @@ def _ensure_translation_job(
     source_url_raw: str,
     source_url_norm: str,
     language_code: str,
+    client_delivery_id: UUID | None = None,
     background: BackgroundTasks,
 ) -> dict:
     require_writes_enabled()
@@ -339,7 +341,23 @@ def _ensure_translation_job(
             status=JobStatus.pending.value,
             cache_hit=False,
             recipe_id=recipe_id,
+            client_delivery_id=client_delivery_id,
         )
+        if job.get("_idempotent_replay"):
+            if (
+                job.get("source_url_norm") != source_url_norm
+                or job.get("language_code") != language_code
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "IDEMPOTENCY_KEY_REUSED",
+                        "message": "This delivery identifier was already used for another import.",
+                    },
+                )
+            if local_claimed:
+                release_job(user.id)
+            return job
         job_id = _as_uuid(job["id"])
         reserve_spend(user_id=user.id, job_id=job_id)
     except Exception:
@@ -753,6 +771,35 @@ def extract_recipe(
 ) -> ExtractJobResponse:
     url = str(body.url)
     language_code = normalize_language(body.language)
+    try:
+        allowed = {"youtube.com", "youtu.be", "tiktok.com", "instagram.com", "facebook.com", "fb.watch"}
+        validate_public_url(url, allowed_hosts=allowed)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Unsupported or unsafe URL") from exc
+    url_norm = normalize_url(url)
+
+    if body.client_delivery_id is not None:
+        existing_delivery = get_job_by_delivery_id(user.id, body.client_delivery_id)
+        if existing_delivery:
+            if (
+                existing_delivery.get("source_url_norm") != url_norm
+                or existing_delivery.get("language_code") != language_code
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "IDEMPOTENCY_KEY_REUSED",
+                        "message": "This delivery identifier was already used for another import.",
+                    },
+                )
+            return ExtractJobResponse(
+                job_id=_as_uuid(existing_delivery["id"]),
+                status=JobStatus(existing_delivery["status"]),
+                cache_hit=bool(existing_delivery.get("cache_hit")),
+                progress=int(existing_delivery.get("progress") or 0),
+                queued=existing_delivery["status"] in {JobStatus.pending.value, JobStatus.processing.value},
+            )
+
     require_rate_limit(
         request,
         key=f"extract-ip:{request_ip(request)}",
@@ -775,12 +822,6 @@ def extract_recipe(
         event="extract_user_daily_rate_limited",
         retry_after_seconds=60 * 60,
     )
-    try:
-        allowed = {"youtube.com", "youtu.be", "tiktok.com", "instagram.com", "facebook.com", "fb.watch"}
-        validate_public_url(url, allowed_hosts=allowed)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="Unsupported or unsafe URL") from exc
-    url_norm = normalize_url(url)
 
     cached = get_recipe_by_norm(url_norm)
     if cached:
@@ -796,7 +837,20 @@ def extract_recipe(
                 cache_hit=True,
                 recipe_id=recipe_id,
                 cost_cents=0,
+                client_delivery_id=body.client_delivery_id,
             )
+            if job.get("_idempotent_replay"):
+                if job.get("source_url_norm") != url_norm or job.get("language_code") != language_code:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={"code": "IDEMPOTENCY_KEY_REUSED", "message": "This delivery identifier was already used for another import."},
+                    )
+                return ExtractJobResponse(
+                    job_id=_as_uuid(job["id"]),
+                    status=JobStatus(job["status"]),
+                    cache_hit=bool(job.get("cache_hit")),
+                    progress=int(job.get("progress") or 0),
+                )
             try:
                 save_user_recipe(user.id, recipe_id)
             except Exception as exc:
@@ -835,6 +889,7 @@ def extract_recipe(
             source_url_raw=url,
             source_url_norm=url_norm,
             language_code=language_code,
+            client_delivery_id=body.client_delivery_id,
             background=background,
         )
         return ExtractJobResponse(
@@ -884,7 +939,23 @@ def extract_recipe(
             job_kind="extract",
             status=JobStatus.pending.value,
             cache_hit=False,
+            client_delivery_id=body.client_delivery_id,
         )
+        if job.get("_idempotent_replay"):
+            if job.get("source_url_norm") != url_norm or job.get("language_code") != language_code:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "IDEMPOTENCY_KEY_REUSED", "message": "This delivery identifier was already used for another import."},
+                )
+            if local_claimed:
+                release_job(user.id)
+            return ExtractJobResponse(
+                job_id=_as_uuid(job["id"]),
+                status=JobStatus(job["status"]),
+                cache_hit=bool(job.get("cache_hit")),
+                progress=int(job.get("progress") or 0),
+                queued=job["status"] in {JobStatus.pending.value, JobStatus.processing.value},
+            )
         job_id = _as_uuid(job["id"])
         reserve_spend(user_id=user.id, job_id=job_id)
     except HTTPException as exc:

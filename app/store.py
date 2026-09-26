@@ -214,6 +214,17 @@ def get_recipe_by_norm(url_norm: str) -> dict | None:
     return fetch_one("select * from recipes where source_url_norm = %s limit 1", (url_norm,))
 
 
+def get_job_by_delivery_id(user_id: UUID, client_delivery_id: UUID) -> dict | None:
+    return fetch_one(
+        """
+        select * from extract_jobs
+         where user_id = %s and client_delivery_id = %s
+         limit 1
+        """,
+        (user_id, client_delivery_id),
+    )
+
+
 def upsert_recipe(recipe: Recipe, *, source_url_norm: str, language_code: str = "en-US") -> dict:
     existing = get_recipe_by_norm(source_url_norm)
     payload = recipe_to_row(recipe, source_url_norm=source_url_norm, language_code=language_code)
@@ -326,6 +337,7 @@ def create_job(
     status: str = "pending",
     cache_hit: bool = False,
     recipe_id: UUID | None = None,
+    client_delivery_id: UUID | None = None,
     cost_cents: float = 0,
 ) -> dict:
     payload = {
@@ -338,12 +350,18 @@ def create_job(
         "cache_hit": cache_hit,
         "cost_cents": cost_cents,
         "recipe_id": recipe_id,
+        "client_delivery_id": client_delivery_id,
         "progress": 100 if status == "completed" else 0,
     }
     sql, params = _insert_sql("extract_jobs", payload)
     try:
         return execute_returning(sql, params) or {}
     except UniqueViolation:
+        if client_delivery_id is not None:
+            replay = get_job_by_delivery_id(user_id, client_delivery_id)
+            if replay:
+                replay["_idempotent_replay"] = True
+                return replay
         # Concurrent extract for same normalized URL — return the winner.
         active = get_active_job(
             source_url_norm=source_url_norm,

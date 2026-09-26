@@ -109,6 +109,7 @@ class RecipeSummary(BaseModel):
 class ExtractRequest(BaseModel):
     url: HttpUrl
     language: str = "en-US"
+    client_delivery_id: UUID | None = None
 
 
 class JobStatus(str, Enum):

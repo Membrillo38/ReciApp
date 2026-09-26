@@ -187,6 +187,12 @@ _ban_states: dict[str, _BanState] = defaultdict(_BanState)
 
 
 def _ban_key(key: str) -> str:
+    # Extract abuse bans must remain scoped to extract endpoints. If these are
+    # normalized to the generic ip:/user: keys, middleware blocks library reads
+    # after an import burst.
+    for prefix in ("extract-ip:", "extract-user:", "extract-user-day:"):
+        if key.startswith(prefix):
+            return key
     for marker, prefix in (("-ip:", "ip:"), ("ip:", "ip:"), ("-user:", "user:"), ("user:", "user:")):
         if marker in key:
             return prefix + key.split(marker, 1)[1]

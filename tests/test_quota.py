@@ -45,7 +45,10 @@ def test_free_user_blocked_after_yearly_cap(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         quota.assert_can_extract(user, cache_hit=False)
     assert exc.value.status_code == 403
-    assert exc.value.detail["code"] == "FREE_WEEKLY_LIMIT"
+    assert exc.value.detail["code"] == "FREE_YEARLY_LIMIT"
+    assert exc.value.detail["free_used_this_year"] == 3
+    assert exc.value.detail["period"] == "year"
+    assert exc.value.detail["reset_at"].endswith("+00:00")
     assert "per year" in exc.value.detail["message"]
 
 

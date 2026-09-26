@@ -45,7 +45,7 @@ Archivo: `ReciApp/Services/ClientStatePolicy.swift` (+ mensaje en `Models.swift`
 
 ### 2. Copy cuota Free
 
-Server real: **3 miss / año** (`FREE_WEEKLY_LIMIT` = nombre legacy).
+Server real: **3 miss / año** (`FREE_YEARLY_LIMIT`; la app aún acepta `FREE_WEEKLY_LIMIT` como alias legacy).
 
 **Hacer:** unificar copy UI + docs a **3 / año**.
 
@@ -75,7 +75,7 @@ Server guarda mensajes canónicos en inglés (localiza en API cuando aplica):
 3. **Carrusel** con caption incompleta → puede OCR slides; si falla mid-way, mensaje carousel incompleto.
 4. **Video sin caption** → local STT primero; si local habla bastante, no debería ir a OpenAI STT.
 5. **Mismo enlace otra vez** → cache hit, no cuenta cuota Free.
-6. Free: 3 miss nuevos en el año → paywall. El 4.º falla con `FREE_WEEKLY_LIMIT`.
+6. Free: 3 miss nuevos en el año → paywall. El 4.º falla con `FREE_YEARLY_LIMIT`.
 7. Pro: tras mucho uso OpenAI del mes (budget = precio×0.60) → `PRO_FAIR_USE_LIMIT`, no paywall de compra.
 
 ### 5. Superwall dashboard
