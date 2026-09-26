@@ -350,9 +350,10 @@ def create_job(
         "cache_hit": cache_hit,
         "cost_cents": cost_cents,
         "recipe_id": recipe_id,
-        "client_delivery_id": client_delivery_id,
         "progress": 100 if status == "completed" else 0,
     }
+    if client_delivery_id is not None:
+        payload["client_delivery_id"] = client_delivery_id
     sql, params = _insert_sql("extract_jobs", payload)
     try:
         return execute_returning(sql, params) or {}
