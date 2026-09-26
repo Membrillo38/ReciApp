@@ -20,6 +20,7 @@ En las fuentes locales, los contratos principales de login, perfil, biblioteca, 
 - El aviso de receta lista está traducido a los 46 idiomas no ingleses del catálogo. Sigue siendo una notificación local de mejor esfuerzo.
 - Actualicé las pruebas del servidor que apuntaban a APIs antiguas del extractor/STT, límites y precios anteriores; mantienen la intención de comprobar los casos actuales.
 - Añadidas pruebas unitarias para la rotación atómica del refresh token y el contador anual de perfil.
+- Añadí cobertura iOS para respuestas HTTP 500/502: conserva el import y permite recuperarlo sin repetir automáticamente el `POST` incierto.
 
 ## Contratos comprobados
 
