@@ -21,6 +21,7 @@ En las fuentes locales, los contratos principales de login, perfil, biblioteca, 
 - Actualicé las pruebas del servidor que apuntaban a APIs antiguas del extractor/STT, límites y precios anteriores; mantienen la intención de comprobar los casos actuales.
 - Añadidas pruebas unitarias para la rotación atómica del refresh token y el contador anual de perfil.
 - Añadí cobertura iOS para respuestas HTTP 500/502: conserva el import y permite recuperarlo sin repetir automáticamente el `POST` incierto.
+- ShareInbox guardaba la entrega, pero repetía errores transitorios del extractor cada 2 segundos. Ahora aplica backoff exponencial hasta 60 segundos, respeta `Retry-After` cuando fija un mínimo y limpia el estado al completar o reintentar manualmente. Verificado con 46 pruebas del `ClientStateHarness` y build iOS Simulator.
 
 ## Contratos comprobados
 
